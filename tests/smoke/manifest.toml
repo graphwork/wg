@@ -3127,8 +3127,8 @@ timeout_seconds = 120
 [[scenario]]
 name = "completion_validation_evidence"
 script = "scenarios/completion_validation_evidence.sh"
-owners = ["bind-completion-validation-evidence", "validate-stigmergic-loop", "preserve-review-identity-across-restart"]
-description = "Credential-free real terminal fake-Pi canary for one-step completion evidence: WG executes an exact configured deterministic command, captures bounded stdout/stderr digests and content, exit/timing, cwd/repository/candidate and task/generation/attempt/fence/requirements binding; valid evidence reaches FLIP Pass then completion Eval and both immutable activity rows survive landing, Done, a pre-Done stale daemon save, and restart. Worker-prose-only, same-size CAS-tampered, stale cross-candidate, and failing-command evidence are visibly refused before review; a semantic FLIP rejection remains advisory and lifecycle-neutral by default."
+owners = ["bind-completion-validation-evidence", "validate-stigmergic-loop", "preserve-review-identity-across-restart", "simplify-validation-evidence-boundary"]
+description = "Credential-free real terminal fake-Pi canary for one-step completion evidence: WG executes exact configured commands and optional worker-selected checks, captures bounded stdout/stderr plus environment/cwd/repository/candidate and task/generation/attempt/fence/requirements binding, and does not mutate required authority. Valid evidence reaches review and survives publication/restart; worker-prose-only, same-size CAS-tampered, stale cross-candidate, and failing required evidence are refused before review. Advisory rejection remains visible without veto, while explicitly strict policy remains fail-closed."
 timeout_seconds = 120
 
 [[scenario]]
@@ -3137,6 +3137,13 @@ script = "scenarios/completion_repair_loop.sh"
 owners = ["simplify-completion-repair-loop"]
 description = "Credential-free candidate-binary real-entry-point regression for bounded deterministic completion repair: exact preflight provenance, redacted immutable evidence, same owner/attempt/fence retention, unchanged-candidate escalation without further validation, explicit request-help, exactly two changed-candidate opportunities, and root stalled-chain impact in show/status JSON and human output."
 timeout_seconds = 120
+
+[[scenario]]
+name = "completion_semantic_help"
+script = "scenarios/completion_semantic_help.sh"
+owners = ["fix-completion-help-after-review"]
+description = "Credential-free candidate-binary terminal regression for explicit help after a controlled receipt-backed semantic rejection (not live semantic proof): exact current source/candidate/review identity, redacted idempotent attention across source exit and daemon restart, no reviewer retry at request time, explicit operator contract correction invalidating stale binding, ordinary new validation/review, timeout-visible pending decision, and deliberate separation from acceptance."
+timeout_seconds = 180
 
 [[scenario]]
 name = "terminal_receipt_precedence"

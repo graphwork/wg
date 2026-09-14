@@ -334,6 +334,10 @@ pub enum WorkerOperation {
     DoneHandoff {
         converged: bool,
         full_smoke: bool,
+        /// Worker-selected checks captured as optional candidate evidence. They
+        /// are part of the exact brokered operation but never task authority.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        optional_checks: Vec<String>,
     },
     FailHandoff {
         reason: String,
@@ -1595,6 +1599,7 @@ mod tests {
         let operation = WorkerOperation::DoneHandoff {
             converged: false,
             full_smoke: false,
+            optional_checks: Vec::new(),
         };
         begin_request(&dir, "intent-1", &token, &operation).unwrap();
         let prepared = prepare_done_transaction(&dir, &binding, "intent-1", &operation).unwrap();

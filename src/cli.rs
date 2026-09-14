@@ -529,6 +529,11 @@ pub enum Commands {
         #[arg(value_name = "TASK")]
         id: String,
 
+        /// Run and attach a worker-selected check as trustworthy optional
+        /// evidence. Repeatable. This does not edit or waive mandatory gates.
+        #[arg(long = "check", value_name = "COMMAND")]
+        checks: Vec<String>,
+
         /// Signal that the task's iterative loop has converged (stops loop edges from firing)
         #[arg(long)]
         converged: bool,
@@ -671,10 +676,10 @@ pub enum Commands {
         #[arg(long, value_name = "CLASS")]
         class: Option<String>,
 
-        /// Source intent when deterministic completion repair evidence exists:
-        /// deliberate-stop, request-help, or request-contract-correction.
-        /// Without an intent, a repairable completion failure is preserved and
-        /// escalated rather than rewritten as terminal source failure.
+        /// Source intent after a current deterministic completion failure or
+        /// receipt-verified semantic rejection: deliberate-stop, request-help,
+        /// or request-contract-correction. Without an intent, an active repair
+        /// or pending explicit decision is preserved rather than overwritten.
         #[arg(long, value_name = "INTENT")]
         intent: Option<String>,
 

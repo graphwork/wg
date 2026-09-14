@@ -16,8 +16,9 @@
 //!
 //! 1. Fetches OpenRouter's *current* model catalog (`GET /api/v1/models`).
 //! 2. **Bootstraps from whatever tiers are currently set** — reads the active
-//!    config (`strong ← agent.model`, `weak ← tiers.fast`, with role fallbacks)
-//!    and uses those incumbents as the baseline to beat.
+//!    config through the effective standard/fast tier resolver (including the
+//!    canonical project-default inheritance) and uses those incumbents as the
+//!    baseline to beat.
 //! 3. Selects, per documented criteria (never hardcoded model ids):
 //!    - **strong** = best **value** coding/work model available right now —
 //!      quality proxy *minus* a capped logarithmic cost penalty, so a much more
@@ -48,7 +49,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
 
-use crate::config::{Config, RoleModelConfig, pi_strong_route};
+use crate::config::{Config, pi_strong_route};
 use crate::executor::native::openai_client::{
     self, OpenRouterModel, fetch_openrouter_models_blocking,
 };
@@ -176,15 +177,15 @@ pub fn scout(dir: &Path, no_cache: bool, max_cost: Option<f64>) -> Result<Propos
     // - **strong** must execute through the self-authenticating `pi` handler,
     //   never the in-process nex OpenRouter client (which would require a
     //   wg-side key). Rewrite to a `pi:openrouter:<model>` route.
-    // - **weak** keeps its native route per the two-tier design (§1.2a), but in
-    //   canonical handler-first form — `nex:openrouter:<model>` — never a bare
-    //   deprecated `openrouter:` spec.
+    // - **weak** uses the same Pi-owned model plane. Legacy native or bare
+    //   OpenRouter spellings are rewritten to `pi:openrouter:<model>` so the
+    //   proposal is valid under the unified execution-route contract.
     //
     // `old` is preserved *verbatim* from the baseline so the displayed
     // incumbent matches the config exactly (no spurious prefix churn); `new`
     // is the canonical form for the proposed model.
     let strong = finalize_tier(strong, baseline.strong_spec.as_deref(), pi_strong_route);
-    let weak = finalize_tier(weak, baseline.weak_spec.as_deref(), native_weak_route);
+    let weak = finalize_tier(weak, baseline.weak_spec.as_deref(), pi_weak_route);
 
     Ok(Proposal {
         fetched,
@@ -222,42 +223,28 @@ fn finalize_tier(
     change
 }
 
-/// Canonical handler-first native route for the **weak/agency** tier, per the
-/// two-tier design §1.2a ("weak keeps its native openrouter route"). The bare
-/// `openrouter:` prefix is a deprecated provider-only spec (handler-first
-/// model-spec design); the canonical native form is `nex:openrouter:<model>`,
-/// which routes to the in-process native OpenRouter handler and keeps the loud
-/// keyless-native `claude:haiku` fallback in `resolve_agency_dispatch`.
-pub fn native_weak_route(spec: &str) -> String {
+/// Canonical Pi route for an OpenRouter **weak/agency** model. Historical
+/// scout output used the now-unsupported `nex:openrouter:<model>` worker route;
+/// accept that spelling as migration input but never persist it again.
+pub fn pi_weak_route(spec: &str) -> String {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
         return spec.to_string();
     }
-    // Already handler-first native: leave verbatim.
-    if trimmed.starts_with("nex:openrouter:") {
+    if crate::config::parse_exact_pi_route(trimmed).is_ok() {
         return trimmed.to_string();
     }
-    // `pi:openrouter:<model>` (colon) or `pi:openrouter:<model>` (slash):
-    // the user may have weak set to a pi-routed spec; preserve its model id
-    // but emit the canonical native route.
     if let Some(rest) = trimmed
-        .strip_prefix("pi:openrouter:")
-        .or_else(|| trimmed.strip_prefix("pi:openrouter:"))
-    {
-        return format!("nex:openrouter:{rest}");
-    }
-    // Bare `openrouter:<model>` / `openrouter/<model>` → canonical native.
-    if let Some(rest) = trimmed
-        .strip_prefix("openrouter:")
+        .strip_prefix("nex:openrouter:")
+        .or_else(|| trimmed.strip_prefix("openrouter:"))
         .or_else(|| trimmed.strip_prefix("openrouter/"))
     {
-        return format!("nex:openrouter:{rest}");
+        return format!("pi:openrouter:{rest}");
     }
-    // Bare `vendor/model` (no provider prefix) → OpenRouter native.
     if !trimmed.contains(':') && trimmed.contains('/') {
-        return format!("nex:openrouter:{trimmed}");
+        return format!("pi:openrouter:{trimmed}");
     }
-    // Non-OpenRouter (claude:, codex:, nex:local, …): leave verbatim.
+    // Non-OpenRouter explicit routes retain their selected execution system.
     trimmed.to_string()
 }
 
@@ -294,9 +281,9 @@ pub struct TierChange {
     /// Incumbent spec (verbatim from config, e.g. `pi:openrouter:z-ai/glm-5.2`),
     /// if any.
     pub old: Option<String>,
-    /// Proposed spec in canonical handler-first form (e.g.
-    /// `pi:openrouter:z-ai/glm-5.2` for strong, `nex:openrouter:deepseek/...`
-    /// for weak).
+    /// Proposed spec in canonical handler-first form (for example,
+    /// `pi:openrouter:z-ai/glm-5.2` for strong or
+    /// `pi:openrouter:deepseek/...` for weak).
     pub new: String,
     /// True when the selected model id differs from the incumbent's model id.
     pub changed: bool,
@@ -827,7 +814,7 @@ fn weak_shortlist(pool: &[&Candidate]) -> Vec<ShortlistEntry> {
 
 fn weak_entry(c: &Candidate) -> ShortlistEntry {
     ShortlistEntry {
-        spec: native_weak_route(&c.spec()),
+        spec: pi_weak_route(&c.spec()),
         label: "cheapest-reliable".to_string(),
         score: weak_rank_cost(c),
         blended_cost: c.blended_cost(),
@@ -1052,12 +1039,10 @@ fn revert_command(p: &Proposal, written: &[&str]) -> String {
 /// Write the proposed tier changes into the config for `dir`, returning which
 /// tiers were written. Only changed tiers are touched (partial update).
 ///
-/// This writes the same key-set the design's `wg profile pi` setter owns
-/// (`strong` → work/default/standard/premium keys via
-/// [`Config::pin_default_route_model`]; `weak` → `tiers.fast` plus the four
-/// agency-role overrides). Until the canonical `wg profile pi` setter lands,
-/// this self-contained writer makes `--apply` real and testable; afterwards
-/// `--apply` becomes a thin call into it.
+/// This writes the same sparse tier selectors the canonical `wg profile pi`
+/// setter owns: `strong` → `tiers.standard`, `weak` → `tiers.fast`. The project
+/// default and explicit role overrides remain operator-owned; inherited roles
+/// observe the new tier without duplicating route authority.
 fn apply_proposal<'a>(dir: &Path, p: &'a Proposal) -> Result<Vec<&'a str>> {
     if !p.any_change() {
         return Ok(vec![]);
@@ -1069,25 +1054,14 @@ fn apply_proposal<'a>(dir: &Path, p: &'a Proposal) -> Result<Vec<&'a str>> {
         // Defensive (idempotent): persist the strong tier as a pi: route so it
         // runs through the self-authenticating pi handler even if a caller hands
         // us a proposal that did not pass through `scout()`'s normalization.
-        config.pin_default_route_model(&pi_strong_route(&p.strong.new));
+        config.tiers.standard = Some(pi_strong_route(&p.strong.new));
         written.push(p.strong.tier);
     }
     if p.weak.changed {
-        // Persist weak as the canonical native route (nex:openrouter:<model>),
-        // never a bare deprecated `openrouter:` spec.
-        let weak_spec = native_weak_route(&p.weak.new);
-        config.tiers.fast = Some(weak_spec.clone());
-        let role = RoleModelConfig {
-            provider: None,
-            model: Some(weak_spec.clone()),
-            tier: None,
-            endpoint: None,
-            reasoning: None,
-        };
-        config.models.evaluator = Some(role.clone());
-        config.models.assigner = Some(role.clone());
-        config.models.flip_inference = Some(role.clone());
-        config.models.flip_comparison = Some(role);
+        // Persist weak on the supported Pi model plane, never as the retired
+        // native OpenRouter worker route. Do not overwrite any explicit role
+        // route: inherited weak roles follow tiers.fast.
+        config.tiers.fast = Some(pi_weak_route(&p.weak.new));
         written.push(p.weak.tier);
     }
 
@@ -1394,7 +1368,7 @@ mod tests {
             fetched: 1,
             max_cost: None,
             baseline_strong: Some("pi:openrouter:vendor/frontier".into()),
-            baseline_weak: Some("nex:openrouter:vendor/incumbent-weak".into()),
+            baseline_weak: Some("pi:openrouter:vendor/incumbent-weak".into()),
             strong: TierChange {
                 tier: "strong",
                 old: Some("pi:openrouter:vendor/frontier".into()),
@@ -1405,8 +1379,8 @@ mod tests {
             },
             weak: TierChange {
                 tier: "weak",
-                old: Some("nex:openrouter:vendor/incumbent-weak".into()),
-                new: "nex:openrouter:vendor/cheap-flash".into(),
+                old: Some("pi:openrouter:vendor/incumbent-weak".into()),
+                new: "pi:openrouter:vendor/cheap-flash".into(),
                 changed: true,
                 reason: "y".into(),
                 shortlist: Vec::new(),
@@ -1414,18 +1388,21 @@ mod tests {
         };
         assert_eq!(
             apply_command(&p),
-            "wg profile pi --weak nex:openrouter:vendor/cheap-flash"
+            "wg profile pi --weak pi:openrouter:vendor/cheap-flash"
         );
     }
 
     #[test]
-    fn apply_proposal_persists_strong_as_pi_and_weak_as_native_route() {
+    fn apply_proposal_persists_both_tiers_as_supported_pi_routes() {
         // The scout's selectors run in `openrouter:` space; `scout()`
-        // canonicalizes strong → `pi:openrouter:<model>` (self-authenticating
-        // pi handler) and weak → `nex:openrouter:<model>` (canonical native,
-        // never a bare deprecated `openrouter:` spec). `apply_proposal`
-        // re-applies those canonicalizations defensively.
+        // canonicalizes both tiers to `pi:openrouter:<model>`. `apply_proposal`
+        // also migrates a historical nex-routed weak proposal defensively.
         let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            "[models.evaluator]\nmodel = \"claude:haiku\"\n",
+        )
+        .unwrap();
         let p = Proposal {
             fetched: 1,
             max_cost: None,
@@ -1451,31 +1428,53 @@ mod tests {
         apply_proposal(tmp.path(), &p).unwrap();
         let content = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
         let cfg: Config = toml::from_str(&content).unwrap();
-        // Strong routes to the pi handler (self-authenticating).
-        assert_eq!(cfg.agent.model, "pi:openrouter:z-ai/glm-5.2");
+        // Strong is the sparse standard-tier selector; premium inherits it.
+        // Model scouting must not create a project default or legacy aliases.
+        assert!(cfg.agent.model.is_empty());
+        assert!(cfg.coordinator.model.is_none());
+        assert!(cfg.models.default.is_none());
         assert_eq!(
             cfg.tiers.standard.as_deref(),
             Some("pi:openrouter:z-ai/glm-5.2")
         );
+        assert!(cfg.tiers.premium.is_none());
         assert_eq!(
-            cfg.tiers.premium.as_deref(),
-            Some("pi:openrouter:z-ai/glm-5.2")
+            cfg.resolve_tier_route(crate::config::Tier::Premium)
+                .unwrap()
+                .route,
+            "pi:openrouter:z-ai/glm-5.2"
         );
-        // Weak keeps its native route, in canonical handler-first form (no bare
-        // `openrouter:`).
+        // Weak is migrated to the supported Pi model plane. An explicit role
+        // route remains operator-owned while an inherited agency role follows
+        // the new fast tier.
         assert_eq!(
             cfg.tiers.fast.as_deref(),
-            Some("nex:openrouter:deepseek/deepseek-chat")
+            Some("pi:openrouter:deepseek/deepseek-chat")
         );
         assert_eq!(
-            cfg.models.evaluator.as_ref().unwrap().model.as_deref(),
-            Some("nex:openrouter:deepseek/deepseek-chat")
+            cfg.models
+                .evaluator
+                .as_ref()
+                .and_then(|role| role.model.as_deref()),
+            Some("claude:haiku")
         );
-        assert!(content.contains("nex:openrouter:deepseek/deepseek-chat"));
+        assert_eq!(
+            cfg.resolve_execution_route_for_role(crate::config::DispatchRole::Evaluator)
+                .unwrap()
+                .route,
+            "claude:haiku"
+        );
+        assert_eq!(
+            cfg.resolve_execution_route_for_role(crate::config::DispatchRole::Assigner)
+                .unwrap()
+                .route,
+            "pi:openrouter:deepseek/deepseek-chat"
+        );
+        assert!(!content.contains("nex:openrouter:deepseek/deepseek-chat"));
         assert!(!content.contains("= \"openrouter:"));
         // The persisted strong spec routes to the pi handler.
         assert_eq!(
-            crate::dispatch::handler_for_model(&cfg.agent.model),
+            crate::dispatch::handler_for_model(cfg.tiers.standard.as_deref().unwrap()),
             crate::dispatch::ExecutorKind::Pi
         );
     }
@@ -1511,7 +1510,7 @@ mod tests {
         let out = finalize_tier(
             unchanged,
             Some("pi:openrouter:deepseek/deepseek-chat"),
-            native_weak_route,
+            pi_weak_route,
         );
         assert_eq!(
             out.old.as_deref(),
@@ -1531,46 +1530,29 @@ mod tests {
         let out = finalize_tier(
             changed,
             Some("pi:openrouter:deepseek/deepseek-chat"),
-            native_weak_route,
+            pi_weak_route,
         );
         assert_eq!(
             out.old.as_deref(),
             Some("pi:openrouter:deepseek/deepseek-chat")
         );
-        assert_eq!(out.new, "nex:openrouter:vendor/cheap-flash");
+        assert_eq!(out.new, "pi:openrouter:vendor/cheap-flash");
     }
 
     #[test]
-    fn native_weak_route_emits_canonical_nex_no_bare_openrouter() {
-        assert_eq!(
-            native_weak_route("openrouter:deepseek/deepseek-chat"),
-            "nex:openrouter:deepseek/deepseek-chat"
-        );
-        assert_eq!(
-            native_weak_route("openrouter/deepseek/deepseek-chat"),
-            "nex:openrouter:deepseek/deepseek-chat"
-        );
-        assert_eq!(
-            native_weak_route("pi:openrouter:deepseek/deepseek-chat"),
-            "nex:openrouter:deepseek/deepseek-chat"
-        );
-        assert_eq!(
-            native_weak_route("pi:openrouter:deepseek/deepseek-chat"),
-            "nex:openrouter:deepseek/deepseek-chat"
-        );
-        // Already canonical → idempotent.
-        assert_eq!(
-            native_weak_route("nex:openrouter:deepseek/deepseek-chat"),
-            "nex:openrouter:deepseek/deepseek-chat"
-        );
-        // Bare vendor/model → canonical native.
-        assert_eq!(
-            native_weak_route("deepseek/deepseek-chat"),
-            "nex:openrouter:deepseek/deepseek-chat"
-        );
-        // Non-OpenRouter → verbatim.
-        assert_eq!(native_weak_route("claude:haiku"), "claude:haiku");
-        assert_eq!(native_weak_route(""), "");
+    fn pi_weak_route_migrates_native_and_bare_openrouter_routes() {
+        for input in [
+            "openrouter:deepseek/deepseek-chat",
+            "openrouter/deepseek/deepseek-chat",
+            "pi:openrouter:deepseek/deepseek-chat",
+            "nex:openrouter:deepseek/deepseek-chat",
+            "deepseek/deepseek-chat",
+        ] {
+            assert_eq!(pi_weak_route(input), "pi:openrouter:deepseek/deepseek-chat");
+        }
+        // Non-OpenRouter explicit routes and empty input remain verbatim.
+        assert_eq!(pi_weak_route("claude:haiku"), "claude:haiku");
+        assert_eq!(pi_weak_route(""), "");
     }
 
     #[test]

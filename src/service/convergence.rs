@@ -2003,6 +2003,7 @@ mod tests {
         let operation = crate::worker_control::WorkerOperation::DoneHandoff {
             converged: false,
             full_smoke: false,
+            optional_checks: Vec::new(),
         };
         crate::worker_control::begin_request(&dir, "intent-1", &token, &operation).unwrap();
         let prepared =

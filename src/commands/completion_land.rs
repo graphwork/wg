@@ -445,21 +445,22 @@ fn run_at_inner(
         load_exact_review_pair(&completion_store, &submission, &manifest, &resolved)?;
     } else {
         let evidence = load_review_evidence(&completion_store, &submission, &manifest, &resolved)?;
-        if evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Reject
+        let rejected = evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Reject
             || evidence.eval.as_ref().is_some_and(|receipt| {
                 receipt.verdict == worksgood::simple_land::ReviewVerdict::Reject
-            })
-        {
-            bail!(
-                "semantic completion rejection is authoritative: publication of manifest {} is refused and the exact source attempt remains retained for repair",
-                manifest.digest().map_err(anyhow::Error::msg)?
-            );
-        }
-        if evidence.flip.verdict != worksgood::simple_land::ReviewVerdict::Pass
+            });
+        let unavailable = evidence.flip.verdict != worksgood::simple_land::ReviewVerdict::Pass
+            && !rejected
             || evidence.eval.as_ref().is_some_and(|receipt| {
                 receipt.verdict != worksgood::simple_land::ReviewVerdict::Pass
-            })
-        {
+                    && receipt.verdict != worksgood::simple_land::ReviewVerdict::Reject
+            });
+        if rejected {
+            eprintln!(
+                "WARNING: attributed semantic rejection remains visible for manifest {}, but configured advisory review policy permits deterministic publication; this is policy-authorized completion with advisory findings, not semantic approval.",
+                manifest.digest().map_err(anyhow::Error::msg)?
+            );
+        } else if unavailable {
             eprintln!(
                 "WARNING: model review was unavailable (not semantically rejected). Advisory availability policy permits deterministic publication; inspect `wg show {id}` for the separate infrastructure finding."
             );
@@ -1750,6 +1751,9 @@ fn verify_refreshed_validation_evidence(
                 {
                     bail!("refreshed baseline validation command identity changed");
                 }
+            }
+            ValidationPurpose::Optional => {
+                bail!("optional evidence is not required reconciliation authority")
             }
         }
     }

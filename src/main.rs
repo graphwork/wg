@@ -1350,6 +1350,7 @@ fn main() -> Result<()> {
         }
         Commands::Done {
             id,
+            checks,
             converged,
             skip_verify,
             ignore_unmerged_worktree,
@@ -1359,7 +1360,12 @@ fn main() -> Result<()> {
             reason,
         } => {
             if operator_accept {
-                if converged || skip_verify || ignore_unmerged_worktree || full_smoke || skip_smoke
+                if !checks.is_empty()
+                    || converged
+                    || skip_verify
+                    || ignore_unmerged_worktree
+                    || full_smoke
+                    || skip_smoke
                 {
                     anyhow::bail!(
                         "--operator-accept cannot be combined with legacy completion flags"
@@ -1380,7 +1386,7 @@ fn main() -> Result<()> {
                         "legacy wg done bypass/merge/cycle flags are not supported by publication-derived completion; use --operator-accept --reason <WHY> for an attributed human recovery"
                     );
                 }
-                commands::completion_finish::run(&workgraph_dir, &id, "refs/heads/main")
+                commands::completion_finish::run(&workgraph_dir, &id, "refs/heads/main", &checks)
             }
         }
         Commands::CompletionObject {

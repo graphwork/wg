@@ -178,6 +178,10 @@ pub struct ReviewedCompletionReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eval_receipt_digest: Option<String>,
     pub review_policy: String,
+    /// Separates semantic approval from lifecycle authorization. Historical
+    /// receipts omit this field and retain their original interpretation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_outcome: Option<String>,
     pub contract: String,
     pub publication: String,
     pub completed_at: String,
@@ -1181,6 +1185,7 @@ mod tests {
             flip_receipt_digest: format!("b3:{}", "3".repeat(64)),
             eval_receipt_digest: None,
             review_policy: "advisory".into(),
+            semantic_outcome: None,
             contract: "report".into(),
             publication: format!("artifacts:b3:{}", "4".repeat(64)),
             completed_at: "2026-08-09T00:00:00Z".into(),

@@ -2717,7 +2717,7 @@ mod tests {
             DispatchSelectionSource::ScaffoldConfig,
         )
         .unwrap_err();
-        assert!(format!("{error:#}").contains("WG-EXEC-ROUTE-REQUIRED"));
+        assert!(format!("{error:#}").contains("WG-EXEC-ROUTE-UNSUPPORTED"));
     }
 
     #[test]
