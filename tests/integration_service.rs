@@ -1042,15 +1042,35 @@ fn test_service_start_readiness_timeout_is_nonzero_and_loud() {
 #[serial]
 fn test_service_start_does_not_admit_implicit_coordinator_config() {
     let tmp = tempfile::tempdir().unwrap();
-    let wg_dir = tmp.path().join(".wg");
-    // setup_workgraph intentionally runs `init --route pi`; this negative
-    // fixture needs the real graph-only entry point instead.
-    wg_ok(&wg_dir, &["init"]);
+
+    // Prove the selected side of the boundary through the same real CLI used
+    // by setup_workgraph: an intact `init --route pi` fixture has a route.
+    let routed_wg = tmp.path().join("routed/.wg");
+    wg_ok(&routed_wg, &["init", "--route", "pi"]);
+    let routed_models = wg_cmd(&routed_wg, &["config", "--models"]);
+    assert!(routed_models.status.success());
+    assert!(
+        String::from_utf8_lossy(&routed_models.stdout).contains("project default = pi:"),
+        "explicit route was not selected: {}",
+        String::from_utf8_lossy(&routed_models.stderr)
+    );
+
+    // Reproduce the old failing fixture exactly: setup_workgraph first selects
+    // Pi, but replacing its only route-bearing config with agency-only settings
+    // makes this a truly unconfigured project.
+    let wg_dir = setup_workgraph(&tmp.path().join("unconfigured"));
     fs::write(
         wg_dir.join("config.toml"),
         "[agency]\nauto_assign = false\nauto_evaluate = false\n",
     )
     .unwrap();
+    let unconfigured_models = wg_cmd(&wg_dir, &["config", "--models"]);
+    assert!(!unconfigured_models.status.success());
+    assert!(
+        String::from_utf8_lossy(&unconfigured_models.stderr).contains("WG-EXEC-ROUTE-MISSING"),
+        "overwritten fixture retained route authority: {}",
+        String::from_utf8_lossy(&unconfigured_models.stderr)
+    );
     wg_ok(
         &wg_dir,
         &[
