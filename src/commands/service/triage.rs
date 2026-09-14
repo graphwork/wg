@@ -1815,6 +1815,7 @@ mod tests {
         let operation = worksgood::worker_control::WorkerOperation::DoneHandoff {
             converged: false,
             full_smoke: false,
+            optional_checks: Vec::new(),
         };
         worksgood::worker_control::begin_request(&wg_dir, "intent-1", &token, &operation).unwrap();
         worksgood::worker_control::prepare_done_transaction(

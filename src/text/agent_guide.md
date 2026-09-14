@@ -229,7 +229,10 @@ Use it only when the human explicitly requested that exact command or a
 checked-in repository policy names it as authoritative. Never strengthen a
 canonical command with extra features, warning denial, full-suite scope, or
 other flags unless that stronger form is itself authorized. Agent-selected
-checks belong in `## Validation` and the completion report.
+checks belong in `## Validation` and the completion report. When candidate-bound
+machine evidence is useful, pass a repeatable `--check '<COMMAND>'` to `wg done`.
+WG captures it without editing the task contract; optional success never waives
+a failed required gate.
 
 When an authorized command is configured, WG executes it and captures bounded
 stdout/stderr digests, exit/timing, cwd/repository and candidate/attempt/fence

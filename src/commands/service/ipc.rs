@@ -512,6 +512,7 @@ fn replay_pending_completion(
     let WorkerOperation::DoneHandoff {
         converged,
         full_smoke,
+        optional_checks: _,
     } = &request.operation
     else {
         return Ok(None);
@@ -1191,6 +1192,7 @@ fn execute_worker_operation(
             WorkerOperation::DoneHandoff {
                 converged,
                 full_smoke,
+                optional_checks,
             } => {
                 if converged || full_smoke {
                     anyhow::bail!("legacy Done handoff flags are not supported");
@@ -1198,12 +1200,13 @@ fn execute_worker_operation(
                 // Capability validation above authenticates the exact task,
                 // generation, attempt/fence, and retained worktree. Execute
                 // checks only there; the daemon CWD is never source authority.
-                crate::commands::completion_finish::run_at_with_smoke(
+                crate::commands::completion_finish::run_at_with_smoke_and_checks(
                     dir,
                     &binding.task_id,
                     "refs/heads/main",
                     std::path::Path::new(&binding.worktree_path),
                     true,
+                    &optional_checks,
                 )?;
                 Ok(serde_json::json!({"handoff": "done", "derived": true}))
             }
@@ -3635,6 +3638,7 @@ mod tests {
             operation: WorkerOperation::DoneHandoff {
                 converged: false,
                 full_smoke: false,
+                optional_checks: Vec::new(),
             },
         };
         assert!(matches!(
@@ -3719,6 +3723,7 @@ mod tests {
                 operation: WorkerOperation::DoneHandoff {
                     converged: false,
                     full_smoke: false,
+                    optional_checks: Vec::new(),
                 },
             },
             &logger,

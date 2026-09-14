@@ -21,12 +21,18 @@ cat >"$fakebin/pi" <<'SH'
 set -euo pipefail
 : "${FAKE_REVIEW_STATE:?}"
 args="$*"
-cat >/dev/null || true
+if [[ "$args" == *"--list-models"* ]]; then
+  printf 'provider model\ntest fake-review\n'
+  exit 0
+fi
+input=$(cat || true)
 n=$(($(cat "$FAKE_REVIEW_STATE.count" 2>/dev/null || echo 0)+1))
 printf '%s\n' "$n" >"$FAKE_REVIEW_STATE.count"
 printf '%s\n' "$args" >>"$FAKE_REVIEW_STATE.argv"
 verdict=$(cat "$FAKE_REVIEW_STATE.mode" 2>/dev/null || echo pass)
-if [[ "$verdict" == reject ]]; then
+if [[ "$args $input" == *"BLIND PROMPT RECONSTRUCTION"* ]]; then
+  response='{"goal":"reconstruct the requested artifact","constraints":[],"invariants":[],"failure_modes":[]}'
+elif [[ "$verdict" == reject ]]; then
   response='{"verdict":"reject","findings":[{"code":"canary.semantic","message":"advisory disagreement"}]}'
 else
   response='{"verdict":"pass","findings":[]}'
@@ -54,9 +60,24 @@ git add base.txt && git commit -qm base
 "$WG_BIN" init --no-agency >/dev/null
 git add .gitignore AGENTS.md CLAUDE.md && git commit -qm init-wg
 wgrun(){ env -u WG_TASK_ID -u WG_AGENT_ID -u WG_GRAPH_ID WG_DIR="$repo/.wg" "$WG_BIN" "$@"; }
+set_review_policy(){
+  python3 - "$repo/worksgood.toml" "$1" <<'PY'
+import pathlib,re,sys
+path=pathlib.Path(sys.argv[1]); value=sys.argv[2]
+text=path.read_text()
+if re.search(r'^completion_review_strict\s*=',text,re.M):
+    text=re.sub(r'^completion_review_strict\s*=.*$',f'completion_review_strict = {value}',text,flags=re.M)
+else:
+    match=re.search(r'^\[agency\]\s*$',text,re.M)
+    assert match,'config has no [agency] section'
+    text=text[:match.end()]+f'\ncompletion_review_strict = {value}'+text[match.end():]
+path.write_text(text)
+PY
+}
 wgrun config --local --model pi:test:fake-review --reasoning low --auto-assign false \
   --auto-evaluate false --set-model reviewer pi:test:fake-review --set-reasoning reviewer low \
   --set-model evaluator pi:test:fake-review --set-reasoning evaluator low --no-reload >/dev/null
+git add worksgood.toml && git commit -qm review-route-fixture
 
 # Start the latest daemon before any reviewed task exists. Its in-memory graph
 # projections are therefore older than the rows written by Done below; any
@@ -76,6 +97,8 @@ wgrun claim evidence-pass --actor validation-worker >/dev/null
 git switch -qc worker/evidence-pass
 echo result > result.txt
 git add result.txt && git commit -qm evidence-pass
+[[ -z "$(git status --porcelain)" ]] \
+  || loud_fail "land candidate was dirty before validation: $(git status --porcelain)"
 if ! env WG_TASK_ID=evidence-pass WG_AGENT_ID=validation-worker \
   "$WG_BIN" --dir "$repo/.wg" done evidence-pass >"$scratch/pass.out" 2>"$scratch/pass.err"; then
   loud_fail "valid one-step completion failed: $(cat "$scratch/pass.err")"
@@ -114,7 +137,49 @@ for ref in manifest['validation_evidence']:
         assert body[stream]['captured_bytes']<=32768,body[stream]
 assert seen=={'configured','baseline'},seen
 PY
-[[ "$(cat "$scratch/review.count")" == 2 ]] || loud_fail "valid evidence did not reach exactly FLIP then Eval"
+[[ "$(cat "$scratch/review.count")" == 3 ]] || loud_fail "valid evidence did not reach exactly two-phase FLIP then Eval"
+
+# A neutral non-Rust Report can attach a worker-selected check through the
+# ordinary Done entry point. The command is host/candidate/environment-bound
+# evidence, but it does not mutate the task's required validation authority.
+wgrun add "Optional neutral check" --id evidence-optional \
+  -d $'Produce optional.txt.\n\n## Validation\n- [ ] report contains the expected neutral value\n\n## Coordination\nSend progress within five minutes.' >/dev/null
+wgrun contract evidence-optional report >/dev/null
+wgrun publish evidence-optional --only >/dev/null
+wgrun claim evidence-optional --actor optional-worker >/dev/null
+git switch -qc worker/evidence-optional refs/heads/main
+printf 'violet\n' > optional.txt
+wgrun artifact evidence-optional optional.txt >/dev/null
+wgrun show evidence-optional --json >"$scratch/optional-preflight.json"
+python3 - "$scratch/optional-preflight.json" <<'PY'
+import json,sys
+x=json.load(open(sys.argv[1])); p=x['completion_preflight']
+assert x.get('validation_commands',[]) == [],x
+assert [c['purpose'] for c in p['checks']] == ['artifact-integrity'],p
+assert 'wg done TASK --check' in p['optional_evidence_capture'],p
+PY
+if ! env WG_TASK_ID=evidence-optional WG_AGENT_ID=optional-worker \
+  "$WG_BIN" --dir "$repo/.wg" done evidence-optional \
+  --check "python3 -c 'from pathlib import Path; assert Path(\"optional.txt\").read_text() == \"violet\\n\"'" \
+  >"$scratch/optional.out" 2>"$scratch/optional.err"; then
+  loud_fail "optional worker check completion failed: $(cat "$scratch/optional.err")"
+fi
+wgrun show evidence-optional --json >"$scratch/optional.json"
+python3 - "$scratch/optional.json" "$repo/.wg/completion/v3/objects" <<'PY'
+import json,pathlib,sys
+x=json.load(open(sys.argv[1])); objects=pathlib.Path(sys.argv[2])
+assert x['status']=='done' and x.get('validation_commands',[]) == [],x
+manifest=json.loads((objects/x['completion_candidate']['manifest']['content_digest'].removeprefix('b3:')).read_text())
+assert len(manifest['validation_evidence'])==1,manifest
+ref=manifest['validation_evidence'][0]
+assert ref['evidence_kind']=='deterministic-validation/optional/v1',ref
+body=json.loads((objects/ref['content_digest'].removeprefix('b3:')).read_text())
+assert body['purpose']=='optional' and body['exit']['code']==0,body
+assert body['environment']['environment_identity'].startswith('b3:'),body
+assert body['repository']['before_head_oid']==manifest['source_revision'],body
+assert any('purpose=Optional' in row['message'] for row in x['log']),x['log']
+PY
+[[ "$(cat "$scratch/review.count")" == 6 ]] || loud_fail "optional evidence did not reach ordinary two-phase FLIP then Eval"
 
 # A configured command cannot be replaced by worker prose. Resolver rejection
 # occurs before any model call and remains a hard, visible deterministic gate.
@@ -139,7 +204,7 @@ if env WG_TASK_ID=evidence-missing WG_AGENT_ID=missing-worker \
 fi
 grep -q 'incomplete deterministic evidence' "$scratch/missing.err" \
   || loud_fail "missing evidence rejection was not visible: $(cat "$scratch/missing.err")"
-[[ "$(cat "$scratch/review.count")" == 2 ]] || loud_fail "missing evidence reached a model reviewer"
+[[ "$(cat "$scratch/review.count")" == 6 ]] || loud_fail "missing evidence reached a model reviewer"
 wgrun show evidence-missing --json >"$scratch/missing.json"
 python3 - "$scratch/missing.json" <<'PY'
 import json,sys
@@ -188,7 +253,7 @@ fi
 cp "$scratch/original-evidence" "$tampered_object"
 grep -q 'incomplete deterministic evidence' "$scratch/tampered.err" \
   || loud_fail "tampered evidence rejection was not visible: $(cat "$scratch/tampered.err")"
-[[ "$(cat "$scratch/review.count")" == 2 ]] || loud_fail "tampered evidence reached a model reviewer"
+[[ "$(cat "$scratch/review.count")" == 6 ]] || loud_fail "tampered evidence reached a model reviewer"
 wgrun show evidence-tampered --json >"$scratch/tampered.json"
 python3 - "$scratch/tampered.json" <<'PY'
 import json,sys
@@ -227,7 +292,7 @@ if env WG_TASK_ID=evidence-stale WG_AGENT_ID=stale-worker \
 fi
 grep -q 'incomplete deterministic evidence' "$scratch/stale.err" \
   || loud_fail "stale evidence rejection was not visible: $(cat "$scratch/stale.err")"
-[[ "$(cat "$scratch/review.count")" == 2 ]] || loud_fail "stale evidence reached a model reviewer"
+[[ "$(cat "$scratch/review.count")" == 6 ]] || loud_fail "stale evidence reached a model reviewer"
 
 # A failing configured command is authoritative regardless of advisory model
 # policy. Its bounded failure receipt is logged; no candidate/reviewer exists.
@@ -253,7 +318,7 @@ x=json.load(open(sys.argv[1]))
 assert x['status']=='in-progress' and x.get('completion_candidate') is None,x
 assert any('exit=Some(9)' in row['message'] and 'evidence=b3:' in row['message'] for row in x['log']),x['log']
 PY
-[[ "$(cat "$scratch/review.count")" == 2 ]] || loud_fail "failing command reached model review"
+[[ "$(cat "$scratch/review.count")" == 6 ]] || loud_fail "failing command reached model review"
 
 # Semantic disagreement remains advisory by default once deterministic evidence
 # is valid: FLIP rejects, Eval is correctly skipped, and lifecycle still lands.
@@ -263,10 +328,12 @@ wgrun add "Advisory semantic disagreement" --id evidence-advisory \
   -d $'Produce advisory.txt.\n\n## Validation\n- [ ] deterministic command passes' >/dev/null
 wgrun publish evidence-advisory --only >/dev/null
 wgrun claim evidence-advisory --actor advisory-worker >/dev/null
-rm -f missing-* worker-prose.txt stale-* tampered-*
+rm -f missing-* optional.txt worker-prose.txt stale-* tampered-*
 git switch -qc worker/evidence-advisory refs/heads/main
 echo advisory > advisory.txt
 git add advisory.txt && git commit -qm evidence-advisory
+[[ -z "$(git status --porcelain)" ]] \
+  || loud_fail "advisory land candidate was dirty before validation: $(git status --porcelain)"
 env WG_TASK_ID=evidence-advisory WG_AGENT_ID=advisory-worker \
   "$WG_BIN" --dir "$repo/.wg" done evidence-advisory >"$scratch/advisory.out" 2>"$scratch/advisory.err" \
   || loud_fail "advisory semantic rejection changed lifecycle authority: $(cat "$scratch/advisory.err")"
@@ -277,7 +344,41 @@ x=json.load(open(sys.argv[1])); rows=x['completion_review_activity']
 assert x['status']=='done' and x['completion_disposition']=='landed',x
 assert [(r['reviewer_kind'],r['verdict']) for r in rows]==[('flip','reject')],rows
 PY
-[[ "$(cat "$scratch/review.count")" == 3 ]] || loud_fail "advisory FLIP unexpectedly reached Eval"
+[[ "$(cat "$scratch/review.count")" == 8 ]] || loud_fail "advisory FLIP unexpectedly reached Eval"
+python3 - "$scratch/advisory.json" "$repo/.wg/completion/v3/objects" <<'PY'
+import json,pathlib,sys
+x=json.load(open(sys.argv[1])); objects=pathlib.Path(sys.argv[2])
+receipt=json.loads((objects/x['completion_receipt'].removeprefix('b3:')).read_text())
+assert receipt['review_policy']=='advisory',receipt
+assert receipt['semantic_outcome']=='advisory-findings',receipt
+PY
+
+# The same attributed rejection is mandatory only under an explicitly strict
+# configured policy. Deterministic and identity/publication protections remain
+# unchanged in both modes.
+set_review_policy true
+wgrun add "Strict semantic disagreement" --id evidence-strict \
+  -d $'Produce strict.txt.\n\n## Validation\n- [ ] strict review is fail-closed' >/dev/null
+wgrun contract evidence-strict report >/dev/null
+wgrun publish evidence-strict --only >/dev/null
+wgrun claim evidence-strict --actor strict-worker >/dev/null
+printf 'strict\n' > strict.txt
+wgrun artifact evidence-strict strict.txt >/dev/null
+if env WG_TASK_ID=evidence-strict WG_AGENT_ID=strict-worker \
+  "$WG_BIN" --dir "$repo/.wg" done evidence-strict >"$scratch/strict.out" 2>"$scratch/strict.err"; then
+  loud_fail "explicit strict policy allowed semantic rejection"
+fi
+grep -q 'explicit strict review policy' "$scratch/strict.err" \
+  || loud_fail "strict rejection was not actionable: $(cat "$scratch/strict.err")"
+wgrun show evidence-strict --json >"$scratch/strict.json"
+python3 - "$scratch/strict.json" <<'PY'
+import json,sys
+x=json.load(open(sys.argv[1])); rows=x['completion_review_activity']
+assert x['status']=='in-progress' and x.get('completion_receipt') is None,x
+assert [(r['reviewer_kind'],r['verdict']) for r in rows]==[('flip','reject')],rows
+PY
+[[ "$(cat "$scratch/review.count")" == 10 ]] || loud_fail "strict FLIP unexpectedly reached Eval"
+set_review_policy false
 
 # Let the pre-Done daemon complete another loop/save, then restart it. Neither
 # a stale full save nor process restart may lose the immutable FLIP/Eval rows.

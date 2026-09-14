@@ -1003,8 +1003,12 @@ fn print_human_readable(details: &TaskDetails) {
         );
     }
     println!(
-        "  evidence: {}",
+        "  required evidence: {}",
         details.completion_preflight.evidence_capture
+    );
+    println!(
+        "  optional evidence: {}",
+        details.completion_preflight.optional_evidence_capture
     );
     println!(
         "  repair boundary: {} — {} (budget={})",

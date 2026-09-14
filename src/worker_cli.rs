@@ -544,6 +544,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
         }
         Commands::Done {
             id,
+            checks,
             converged,
             full_smoke,
             skip_verify,
@@ -562,6 +563,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
             Some(WorkerOperation::DoneHandoff {
                 converged: *converged,
                 full_smoke: *full_smoke,
+                optional_checks: checks.clone(),
             })
         }
         Commands::Fail {

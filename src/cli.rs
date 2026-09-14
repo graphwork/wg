@@ -529,6 +529,11 @@ pub enum Commands {
         #[arg(value_name = "TASK")]
         id: String,
 
+        /// Run and attach a worker-selected check as trustworthy optional
+        /// evidence. Repeatable. This does not edit or waive mandatory gates.
+        #[arg(long = "check", value_name = "COMMAND")]
+        checks: Vec<String>,
+
         /// Signal that the task's iterative loop has converged (stops loop edges from firing)
         #[arg(long)]
         converged: bool,

@@ -256,12 +256,21 @@ pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> R
             "incomplete deterministic evidence for manifest {}; repair the immutable evidence and submit a new manifest",
             outcome.flip.receipt.manifest_digest
         ),
+        ReviewValveStatus::FlipRejected | ReviewValveStatus::EvalRejected
+            if !config.agency.completion_review_strict =>
+        {
+            eprintln!(
+                "WARNING: attributed model review rejected manifest {}. Review policy is advisory, so deterministic completion authority is unchanged; the finding remains recorded and visible in `wg show {id}`.",
+                outcome.flip.receipt.manifest_digest
+            );
+            Ok(())
+        }
         ReviewValveStatus::FlipRejected => bail!(
-            "FLIP semantically rejected manifest {}; publication and Done are refused. The exact candidate, source attempt, session, and worktree remain selected for repair; inspect the findings above, change the candidate bytes, revalidate, and run `wg done {id}` again",
+            "FLIP semantically rejected manifest {} under explicit strict review policy; publication and Done are refused. Repair the candidate, or request one precise decision with `wg fail {id} --intent request-help --reason <DECISION>` / `--intent request-contract-correction --reason <ONE EXACT MISSING CHECK AND WHY>`; the candidate and source authority remain retained",
             outcome.flip.receipt.manifest_digest
         ),
         ReviewValveStatus::EvalRejected => bail!(
-            "Eval semantically rejected manifest {}; publication and Done are refused. The exact candidate, source attempt, session, and worktree remain selected for repair; inspect the findings above, change the candidate bytes, revalidate, and run `wg done {id}` again",
+            "Eval semantically rejected manifest {} under explicit strict review policy; publication and Done are refused. Repair the candidate, or request one precise decision with `wg fail {id} --intent request-help --reason <DECISION>` / `--intent request-contract-correction --reason <ONE EXACT MISSING CHECK AND WHY>`; the candidate and source authority remain retained",
             outcome.flip.receipt.manifest_digest
         ),
         ReviewValveStatus::ReviewUnavailable if !config.agency.completion_review_strict => {

@@ -349,6 +349,130 @@ timeout_seconds = 10
 }
 
 #[test]
+fn neutral_optional_check_is_captured_without_mutating_required_authority() {
+    let temp = tempdir().unwrap();
+    let project = temp.path();
+    let wg_dir = project.join(".wg");
+    let candidate_dir = project.join("candidate");
+    std::fs::create_dir_all(&wg_dir).unwrap();
+    std::fs::create_dir_all(&candidate_dir).unwrap();
+    std::fs::write(
+        wg_dir.join("config.toml"),
+        "[agency]\ncompletion_review_strict = false\n",
+    )
+    .unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(project)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "user.name", "Test"]);
+    std::fs::write(project.join("answer.txt"), "forty two\n").unwrap();
+    git(&["add", "answer.txt"]);
+    git(&["commit", "-qm", "neutral report"]);
+
+    let mut task = Task {
+        id: "neutral-report".into(),
+        title: "Produce a neutral text report".into(),
+        description: Some(
+            "Produce answer.txt.\n\n## Validation\n- [ ] answer contains two words.\n\n## Coordination\nSend status quickly."
+                .into(),
+        ),
+        status: Status::InProgress,
+        assigned: Some("neutral-worker".into()),
+        completion_contract: CompletionContract::Report,
+        artifacts: vec![project.join("answer.txt").display().to_string()],
+        ..Task::default()
+    };
+    task.lifecycle.fence = 4;
+    task.lifecycle.current_attempt = Some(AttemptRef {
+        id: "attempt-0-1".into(),
+        generation: 0,
+        fence: 4,
+        actor_id: "neutral-worker".into(),
+        disposition: None,
+    });
+    let captured = worksgood::completion_validation::capture_validation(
+        &task,
+        "test \"$(wc -w < answer.txt)\" -eq 2",
+        0,
+        worksgood::completion_validation::ValidationPurpose::Optional,
+        project,
+    )
+    .unwrap();
+    assert!(captured.exit.success);
+    let optional = completion_finish::store_validation_evidence(
+        &wg_dir,
+        &captured,
+        worksgood::completion_validation::OPTIONAL_VALIDATION_EVIDENCE_KIND,
+    )
+    .unwrap();
+    assert!(task.validation_commands.is_empty());
+
+    let store = completion_submit::store(&wg_dir).unwrap();
+    let output = store
+        .put_file(&project.join("answer.txt"), "text/plain")
+        .unwrap();
+    let summary = b"neutral report complete\n";
+    let manifest = CompletionManifest {
+        manifest_version: COMPLETION_MANIFEST_VERSION,
+        task_id: task.id.clone(),
+        generation: task.lifecycle.generation,
+        completion_contract: ManifestContract::Report,
+        requirements_digest: requirements_digest(&task).unwrap(),
+        source_revision: captured.repository.before_head_oid.clone(),
+        outputs: vec![OutputRef::Artifact(output)],
+        validation_evidence: vec![optional],
+        worker_summary_digest: ContentDigest::of_bytes(summary),
+    };
+    let manifest_path = candidate_dir.join("manifest.json");
+    let summary_path = candidate_dir.join("summary.txt");
+    std::fs::write(&manifest_path, manifest.canonical_bytes().unwrap()).unwrap();
+    std::fs::write(&summary_path, summary).unwrap();
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(task));
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
+
+    let mut flip = ScriptedReviewer::new("pi:neutral-flip", Script::Reject);
+    let mut eval = ScriptedReviewer::new("pi:neutral-eval", Script::Pass);
+    let outcome = completion_submit::run_with_reviewers(
+        &wg_dir,
+        "neutral-report",
+        &manifest_path,
+        &summary_path,
+        &mut flip,
+        &mut eval,
+    )
+    .unwrap();
+    assert_eq!(
+        outcome.status,
+        worksgood::completion_review::ReviewValveStatus::FlipRejected
+    );
+    completion_done::run(&wg_dir, "neutral-report", "refs/heads/main").unwrap();
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let completed = graph.get_task("neutral-report").unwrap();
+    assert_eq!(completed.status, Status::Done);
+    assert!(completed.validation_commands.is_empty());
+    let receipt = completed.completion_receipt.as_ref().unwrap();
+    let receipt = std::fs::read(
+        wg_dir
+            .join("completion/v3/objects")
+            .join(receipt.trim_start_matches("b3:")),
+    )
+    .unwrap();
+    let receipt: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
+    assert_eq!(receipt["review_policy"], "advisory");
+    assert_eq!(receipt["semantic_outcome"], "advisory-findings");
+}
+
+#[test]
 fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
     let temp = tempdir().unwrap();
     let project = temp.path();
@@ -356,6 +480,11 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
     let candidate_dir = project.join("candidates");
     std::fs::create_dir_all(&wg_dir).unwrap();
     std::fs::create_dir_all(&candidate_dir).unwrap();
+    std::fs::write(
+        wg_dir.join("config.toml"),
+        "[agency]\ncompletion_review_strict = true\n",
+    )
+    .unwrap();
     // Real projects establish one graph identity before concurrent review
     // attempts. Pin it here so the canary exercises review concurrency rather
     // than racing first-use graph bootstrap.

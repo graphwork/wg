@@ -37,6 +37,7 @@ pub const DETERMINISTIC_VALIDATION_MEDIA_TYPE: &str =
     "application/vnd.worksgood.deterministic-validation+json";
 pub const CONFIGURED_VALIDATION_EVIDENCE_KIND: &str = "deterministic-validation/configured/v1";
 pub const BASELINE_VALIDATION_EVIDENCE_KIND: &str = "deterministic-validation/baseline/v1";
+pub const OPTIONAL_VALIDATION_EVIDENCE_KIND: &str = "deterministic-validation/optional/v1";
 pub const SMOKE_FAILURE_EVIDENCE_KIND: &str = "completion-smoke/failure/v1";
 const DETERMINISTIC_VALIDATION_PREFIX: &str = "deterministic-validation/";
 // Validation output is immutable review evidence. Keep the bound finite, but
@@ -56,6 +57,9 @@ const VALIDATION_AUTHORITY_DIR: &str = "completion/v3/validation-authority";
 pub enum ValidationPurpose {
     Configured,
     Baseline,
+    /// Worker-selected evidence. This is never completion authority and cannot
+    /// satisfy a configured or built-in check.
+    Optional,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -74,6 +78,18 @@ pub struct ValidationLifecycleBinding {
     pub attempt_id: Option<String>,
     pub attempt_fence: u64,
     pub requirements_digest: ContentDigest,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ValidationEnvironmentBinding {
+    /// Digest of the exact parent environment inherited by `bash -lc`, plus
+    /// the WG executable identity and host/platform identity. Values are never
+    /// disclosed in evidence; only their canonical digest is retained.
+    pub environment_identity: ContentDigest,
+    pub platform: String,
+    pub architecture: String,
+    pub host_identity: ContentDigest,
+    pub executable_identity: ContentDigest,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -131,6 +147,10 @@ pub struct DeterministicValidationEvidence {
     pub purpose: ValidationPurpose,
     pub command: ValidationCommandIdentity,
     pub lifecycle: ValidationLifecycleBinding,
+    /// Additive for v1 compatibility. Historical configured/baseline receipts
+    /// remain readable; optional evidence always requires this binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<ValidationEnvironmentBinding>,
     pub repository: ValidationRepositoryBinding,
     pub started_at: String,
     pub finished_at: String,
@@ -145,9 +165,10 @@ impl DeterministicValidationEvidence {
         Ok(canonical_json(&serde_json::to_value(self)?))
     }
 
-    /// Deterministic validation is hard authority.  A command is acceptable
-    /// only when it passed and observed one unchanged candidate/worktree state.
-    pub fn authoritative_pass(&self, contract: CompletionContract) -> bool {
+    /// The execution observed one stable candidate/worktree state. Optional
+    /// evidence may truthfully record failure, so stability is separate from
+    /// the authoritative configured-check predicate.
+    pub fn stable_capture(&self, contract: CompletionContract) -> bool {
         let repository_unchanged = self.repository.before_head_oid
             == self.repository.after_head_oid
             && self.repository.before_tree_oid == self.repository.after_tree_oid
@@ -156,12 +177,17 @@ impl DeterministicValidationEvidence {
                 == self.repository.after_candidate_content_digest;
         let clean_land = contract != CompletionContract::Land
             || self.repository.before_status_digest == ContentDigest::of_bytes(b"");
+        repository_unchanged && clean_land
+    }
+
+    /// Deterministic validation is hard authority. A configured command is
+    /// acceptable only when it passed and observed one unchanged candidate.
+    pub fn authoritative_pass(&self, contract: CompletionContract) -> bool {
         self.exit.success
             && self.exit.code == Some(0)
             && self.exit.signal.is_none()
             && !self.exit.timed_out
-            && repository_unchanged
-            && clean_land
+            && self.stable_capture(contract)
     }
 }
 
@@ -233,6 +259,7 @@ pub struct CompletionValidationCheck {
 pub struct CompletionPreflight {
     pub checks: Vec<CompletionValidationCheck>,
     pub evidence_capture: String,
+    pub optional_evidence_capture: String,
     pub prose_is_authority: bool,
     pub repair_boundary: CompletionRepairBoundary,
     pub deterministic_repair_budget: u32,
@@ -304,7 +331,8 @@ pub fn completion_preflight(task: &Task) -> CompletionPreflight {
     };
     CompletionPreflight {
         checks,
-        evidence_capture: "wg done executes each command in the retained worktree and registers a host-bound immutable deterministic-validation/v1 evidence object before semantic review".into(),
+        evidence_capture: "wg done executes each required command in the retained worktree and registers a host-bound immutable deterministic-validation/v1 evidence object before semantic review".into(),
+        optional_evidence_capture: "pass worker-selected commands with `wg done TASK --check '<COMMAND>'`; WG captures them with the same candidate/command/environment binding but records them as optional evidence, never as a gate or contract mutation".into(),
         prose_is_authority: false,
         repair_boundary: policy.boundary,
         deterministic_repair_budget: policy.deterministic_repair_budget.max(1),
@@ -328,8 +356,9 @@ pub fn format_completion_preflight(task: &Task) -> String {
         ));
     }
     lines.extend([
-        format!("Evidence: {}.", plan.evidence_capture),
-        "Commands merely mentioned in `## Validation` prose are criteria, not executable authority; propose a missing hard check with `wg fail TASK --intent request-contract-correction --reason <PROPOSAL>`. Only an operator-approved contract update adds it.".into(),
+        format!("Required evidence: {}.", plan.evidence_capture),
+        format!("Optional worker evidence: {}.", plan.optional_evidence_capture),
+        "Commands merely mentioned in `## Validation` prose are criteria, not executable authority; propose a missing hard check with `wg fail TASK --intent request-contract-correction --reason <ONE EXACT COMMAND AND WHY IT IS REQUIRED>`. Only an operator-approved contract update adds it, records the revision, and invalidates stale candidate bindings.".into(),
         format!(
             "Permitted repair boundary: `{}` — {}.",
             plan.repair_boundary, plan.boundary_explanation
@@ -936,6 +965,8 @@ pub fn capture_validation(
         return Err(ValidationCaptureError::InvalidCommand);
     }
     let before = repository_state(cwd).map_err(ValidationCaptureError::Repository)?;
+    let environment =
+        validation_environment_binding().map_err(ValidationCaptureError::Repository)?;
     let requirements_digest = requirements_digest(task)
         .map_err(|error| ValidationCaptureError::Lifecycle(error.to_string()))?;
     let command_identity = command_identity(command, configured_index);
@@ -1007,6 +1038,7 @@ pub fn capture_validation(
             attempt_fence: task.lifecycle.fence,
             requirements_digest,
         },
+        environment: Some(environment),
         repository: ValidationRepositoryBinding {
             repository_identity: before.repository_identity,
             worktree_identity: before.worktree_identity,
@@ -1050,6 +1082,8 @@ where
         return Err(ValidationCaptureError::InvalidCommand);
     }
     let before = repository_state(cwd).map_err(ValidationCaptureError::Repository)?;
+    let environment =
+        validation_environment_binding().map_err(ValidationCaptureError::Repository)?;
     let requirements_digest = requirements_digest(task)
         .map_err(|error| ValidationCaptureError::Lifecycle(error.to_string()))?;
     let started = Utc::now();
@@ -1094,6 +1128,7 @@ where
             attempt_fence: task.lifecycle.fence,
             requirements_digest,
         },
+        environment: Some(environment),
         repository: ValidationRepositoryBinding {
             repository_identity: before.repository_identity,
             worktree_identity: before.worktree_identity,
@@ -1147,6 +1182,60 @@ fn validation_timeout(task: &Task) -> Duration {
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
     Duration::from_secs(seconds)
+}
+
+fn validation_environment_binding() -> Result<ValidationEnvironmentBinding, String> {
+    let mut environment = std::env::vars_os()
+        .map(|(key, value)| {
+            (
+                hex::encode(key.as_encoded_bytes()),
+                hex::encode(value.as_encoded_bytes()),
+            )
+        })
+        .collect::<Vec<_>>();
+    environment.sort();
+
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("resolve WG executable: {error}"))?
+        .canonicalize()
+        .map_err(|error| format!("canonicalize WG executable: {error}"))?;
+    let metadata = fs::metadata(&executable)
+        .map_err(|error| format!("inspect WG executable {}: {error}", executable.display()))?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos().to_string());
+    let executable_identity = ContentDigest::of_bytes(&canonical_json(&serde_json::json!({
+        "path": hex::encode(executable.as_os_str().as_encoded_bytes()),
+        "size": metadata.len(),
+        "modified_unix_nanos": modified,
+    })));
+
+    let host_bytes = fs::read("/etc/machine-id")
+        .or_else(|_| fs::read("/var/lib/dbus/machine-id"))
+        .unwrap_or_else(|_| {
+            std::env::var_os("HOSTNAME")
+                .map(|value| value.as_encoded_bytes().to_vec())
+                .unwrap_or_default()
+        });
+    let host_identity = ContentDigest::of_bytes(&host_bytes);
+    let platform = std::env::consts::OS.to_string();
+    let architecture = std::env::consts::ARCH.to_string();
+    let environment_identity = ContentDigest::of_bytes(&canonical_json(&serde_json::json!({
+        "environment": environment,
+        "platform": platform,
+        "architecture": architecture,
+        "host_identity": host_identity,
+        "executable_identity": executable_identity,
+    })));
+    Ok(ValidationEnvironmentBinding {
+        environment_identity,
+        platform,
+        architecture,
+        host_identity,
+        executable_identity,
+    })
 }
 
 fn command_identity(command: &str, configured_index: u32) -> ValidationCommandIdentity {
@@ -1434,6 +1523,7 @@ pub fn verify_validation_evidence(
 
     let expected_repository_identity = live_repository_identity(repository_root)?;
     let mut configured = BTreeMap::new();
+    let mut optional = BTreeMap::new();
     let mut baseline_count = 0_usize;
     for evidence in &structured {
         let parsed: DeterministicValidationEvidence =
@@ -1451,6 +1541,7 @@ pub fn verify_validation_evidence(
             binding,
             &parsed,
             &expected_repository_identity,
+            parsed.purpose != ValidationPurpose::Optional,
         )?;
         match parsed.purpose {
             ValidationPurpose::Configured => {
@@ -1489,6 +1580,32 @@ pub fn verify_validation_evidence(
                         IncompleteEvidenceKind::InvalidManifest,
                         "baseline deterministic validation",
                         "Land baseline command identity is not the configured WG integrity check",
+                    ));
+                }
+            }
+            ValidationPurpose::Optional => {
+                if evidence.evidence_kind != OPTIONAL_VALIDATION_EVIDENCE_KIND {
+                    return Err(incomplete(
+                        IncompleteEvidenceKind::InvalidManifest,
+                        evidence.evidence_kind.clone(),
+                        "optional validation purpose uses the wrong evidence kind",
+                    ));
+                }
+                if parsed.environment.is_none() {
+                    return Err(incomplete(
+                        IncompleteEvidenceKind::Missing,
+                        "optional validation environment binding",
+                        "optional evidence cannot be reused without exact execution-environment identity",
+                    ));
+                }
+                if optional
+                    .insert(parsed.command.configured_index, parsed)
+                    .is_some()
+                {
+                    return Err(incomplete(
+                        IncompleteEvidenceKind::InvalidManifest,
+                        "optional validation evidence",
+                        "duplicate optional validation index",
                     ));
                 }
             }
@@ -1538,6 +1655,7 @@ fn verify_one(
     binding: Option<&CompletionReviewBinding>,
     evidence: &DeterministicValidationEvidence,
     expected_repository_identity: &ContentDigest,
+    require_success: bool,
 ) -> Result<(), IncompleteEvidence> {
     if evidence.evidence_version != DETERMINISTIC_VALIDATION_VERSION
         || evidence.capture_origin != "wg_done"
@@ -1594,15 +1712,38 @@ fn verify_one(
             "evidence does not bind the reviewed Git commit/tree/base",
         ));
     }
-    if !evidence.authoritative_pass(manifest.completion_contract) {
+    if !evidence.stable_capture(manifest.completion_contract) {
         return Err(incomplete(
             IncompleteEvidenceKind::DigestMismatch,
-            "deterministic validation result",
+            "deterministic validation candidate binding",
+            "command did not observe one unchanged candidate/worktree state",
+        ));
+    }
+    if require_success && !evidence.authoritative_pass(manifest.completion_contract) {
+        return Err(incomplete(
+            IncompleteEvidenceKind::DigestMismatch,
+            "required deterministic validation result",
             format!(
-                "command did not pass on one unchanged candidate (exit={:?}, signal={:?}, timeout={})",
+                "required command did not pass (exit={:?}, signal={:?}, timeout={})",
                 evidence.exit.code, evidence.exit.signal, evidence.exit.timed_out
             ),
         ));
+    }
+    if let Some(environment) = evidence.environment.as_ref() {
+        let current = validation_environment_binding().map_err(|detail| {
+            incomplete(
+                IncompleteEvidenceKind::Inaccessible,
+                "deterministic validation environment",
+                detail,
+            )
+        })?;
+        if *environment != current {
+            return Err(incomplete(
+                IncompleteEvidenceKind::DigestMismatch,
+                "deterministic validation environment binding",
+                "execution environment or WG executable changed; revalidation is required",
+            ));
+        }
     }
     verify_timing(evidence)?;
     verify_output_shape("stdout", &evidence.stdout)?;
@@ -1841,7 +1982,12 @@ mod tests {
         EvidenceRef {
             content_digest: artifact.content_digest,
             immutable_locator: artifact.immutable_locator,
-            evidence_kind: CONFIGURED_VALIDATION_EVIDENCE_KIND.into(),
+            evidence_kind: match evidence.purpose {
+                ValidationPurpose::Configured => CONFIGURED_VALIDATION_EVIDENCE_KIND,
+                ValidationPurpose::Baseline => BASELINE_VALIDATION_EVIDENCE_KIND,
+                ValidationPurpose::Optional => OPTIONAL_VALIDATION_EVIDENCE_KIND,
+            }
+            .into(),
             media_type: artifact.media_type,
             size: artifact.size,
             review_projection: artifact.review_projection,
@@ -2018,6 +2164,113 @@ mod tests {
         assert_eq!(failing.exit.code, Some(9));
         assert!(!failing.authoritative_pass(CompletionContract::Land));
         assert!(failing.stderr.content.contains("nope"));
+    }
+
+    #[test]
+    fn optional_success_is_evidence_but_cannot_satisfy_a_failed_required_gate() {
+        let (temp, mut task) = fixture();
+        task.validation_commands = vec!["exit 9".into()];
+        let store = CompletionArtifactStore::open(temp.path().join("store")).unwrap();
+        let authority_dir = temp.path().join(".wg");
+        let required = capture_validation(
+            &task,
+            "exit 9",
+            0,
+            ValidationPurpose::Configured,
+            temp.path(),
+        )
+        .unwrap();
+        let optional = capture_validation(
+            &task,
+            "printf 'useful signal\\n'",
+            0,
+            ValidationPurpose::Optional,
+            temp.path(),
+        )
+        .unwrap();
+        assert!(!required.authoritative_pass(CompletionContract::Report));
+        assert!(optional.authoritative_pass(CompletionContract::Report));
+        let output = store.put_bytes(b"report", "text/plain").unwrap();
+        let manifest = CompletionManifest {
+            manifest_version: COMPLETION_MANIFEST_VERSION,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            completion_contract: CompletionContract::Report,
+            requirements_digest: requirements_digest(&task).unwrap(),
+            source_revision: required.repository.before_head_oid.clone(),
+            outputs: vec![OutputRef::Artifact(output)],
+            validation_evidence: vec![
+                evidence_ref(&store, &authority_dir, &required),
+                evidence_ref(&store, &authority_dir, &optional),
+            ],
+            worker_summary_digest: ContentDigest::of_bytes(b"summary"),
+        };
+        let bundle = crate::completion_manifest::ReviewResolver::new(&store)
+            .resolve(
+                &manifest,
+                &crate::completion_task::task_requirements_bytes(&task).unwrap(),
+                b"summary",
+            )
+            .unwrap();
+        let error = verify_validation_evidence(
+            &task,
+            &manifest,
+            None,
+            &bundle,
+            temp.path(),
+            &authority_dir,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, IncompleteEvidenceKind::DigestMismatch);
+        assert_eq!(error.reference, "required deterministic validation result");
+    }
+
+    #[test]
+    fn optional_evidence_is_bound_to_the_capture_environment() {
+        let (temp, mut task) = fixture();
+        task.validation_commands.clear();
+        let store = CompletionArtifactStore::open(temp.path().join("store")).unwrap();
+        let authority_dir = temp.path().join(".wg");
+        let mut optional = capture_validation(
+            &task,
+            "printf 'ok\\n'",
+            0,
+            ValidationPurpose::Optional,
+            temp.path(),
+        )
+        .unwrap();
+        optional.environment.as_mut().unwrap().environment_identity =
+            ContentDigest::of_bytes(b"foreign environment");
+        let output = store.put_bytes(b"report", "text/plain").unwrap();
+        let manifest = CompletionManifest {
+            manifest_version: COMPLETION_MANIFEST_VERSION,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            completion_contract: CompletionContract::Report,
+            requirements_digest: requirements_digest(&task).unwrap(),
+            source_revision: optional.repository.before_head_oid.clone(),
+            outputs: vec![OutputRef::Artifact(output)],
+            validation_evidence: vec![evidence_ref(&store, &authority_dir, &optional)],
+            worker_summary_digest: ContentDigest::of_bytes(b"summary"),
+        };
+        let bundle = crate::completion_manifest::ReviewResolver::new(&store)
+            .resolve(
+                &manifest,
+                &crate::completion_task::task_requirements_bytes(&task).unwrap(),
+                b"summary",
+            )
+            .unwrap();
+        let error = verify_validation_evidence(
+            &task,
+            &manifest,
+            None,
+            &bundle,
+            temp.path(),
+            &authority_dir,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, IncompleteEvidenceKind::DigestMismatch);
+        assert!(error.reference.contains("environment"));
     }
 
     #[test]
