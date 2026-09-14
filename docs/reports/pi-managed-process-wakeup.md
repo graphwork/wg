@@ -27,6 +27,10 @@ handler.
   `68377ce7fcf8465f754661a47f50581dea0a30c864fedb9c72c2820f99da14ee`.
 - Locked isolated install recipe: `tests/fixtures/pi-process-wakeup/package-lock.json`.
 - Neutral command fixture: `tests/fixtures/pi-process-wakeup/long-command.mjs`.
+- Controlled RPC-wire fixture:
+  `tests/fixtures/pi-process-wakeup/fake-pi-rpc.mjs` (used only to make races,
+  failures, and cancellation deterministic at the candidate-binary entry point;
+  it does not replace the real-provider proof).
 
 The adapter verifies the enclosing package name and exact version before spawn;
 a missing, relative, or differently-versioned entry fails closed. The proof
@@ -108,9 +112,20 @@ match the trusted local coordination boundary in
 artifacts above were retained rather than hidden or regenerated.
 
 The branch was subsequently reconciled with integrated main `bd1c4e1f`, which
-contains the separately owned baseline and service-start fixture repairs. On
-that reconciled candidate, the unchanged configured command passes in full:
-`cargo fmt --check`, `cargo clippy --locked`, all 21
+contains the separately owned baseline and service-start fixture repairs. The
+exercised `integration_pi_watchdog` target now also launches the actual
+candidate `wg pi-process-worker` entry point with isolated HOME/cache and the
+same pinned extension identity. Its controlled RPC wire delivers completion
+before the yield boundary plus a duplicate, distinguishes exit 0 from exit 7,
+asserts exactly one continuation and one command record, exercises a lost RPC
+owner that preserves evidence and refuses replay, and applies a bounded timeout
+to the exact process group while an unrelated process survives. This fixture
+makes adversarial ordering deterministic; the authenticated Pi run above is the
+non-fake proof that Pi 0.84.4 and the real extension produce the compatible
+wire and wake behavior.
+
+On that reconciled candidate, the unchanged configured command passes in full:
+`cargo fmt --check`, `cargo clippy --locked`, all 24
 `integration_pi_watchdog` tests, all 8 `integration_pi_sole_model_plane` tests,
 all 3 `integration_service_control_permissions` tests, the Worksgood Pi 29-test
 suite, its 12-tool/2-command selftest, and `git diff --check`. The ordinary

@@ -1,6 +1,9 @@
 use tempfile::tempdir;
 use worksgood::pi_watchdog::*;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 fn fixture(now: i64) -> PiWatchdog {
     let dir = tempdir().unwrap().keep();
     let source = SourceTuple {
@@ -73,6 +76,186 @@ fn pinned_pi_process_fixture_records_compatible_exact_artifact() {
         "sha512-LAt8fKvGuVManprlSsiJ0V6cDb5hlL9DlZrGpIW5dpgHVJKozgtBOiCKNovBZR4JYqlFIzbrBvJd9VEfvM0Gmg=="
     );
     assert!(root.join("long-command.mjs").is_file());
+    assert!(root.join("fake-pi-rpc.mjs").is_file());
+}
+
+#[cfg(unix)]
+fn process_adapter_command(root: &std::path::Path, scenario: &str) -> std::process::Command {
+    let wg_dir = root.join(".wg");
+    let session_dir = root.join("sessions");
+    let extension_dir = root.join("isolated/node_modules/@mjakl/pi-processes");
+    std::fs::create_dir_all(extension_dir.join("src")).unwrap();
+    std::fs::create_dir_all(&wg_dir).unwrap();
+    std::fs::write(
+        extension_dir.join("package.json"),
+        r#"{"name":"@mjakl/pi-processes","version":"2.0.0"}"#,
+    )
+    .unwrap();
+    let extension = extension_dir.join("src/index.ts");
+    std::fs::write(&extension, "export default () => {};\n").unwrap();
+    let prompt = root.join("prompt.md");
+    std::fs::write(&prompt, "Use the loaded process tool exactly once.\n").unwrap();
+    let fake_pi = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/pi-process-wakeup/fake-pi-rpc.mjs");
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_wg"));
+    command
+        .args([
+            "--dir",
+            wg_dir.to_str().unwrap(),
+            "pi-process-worker",
+            "--task-id",
+            "entrypoint-proof",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--session-id",
+            "same-authorized-session",
+            "--session-dir",
+            session_dir.to_str().unwrap(),
+            "--evidence-file",
+            root.join("evidence.json").to_str().unwrap(),
+            "--process-extension",
+            extension.to_str().unwrap(),
+            "--pi-command",
+            fake_pi.to_str().unwrap(),
+            "--provider",
+            "controlled-wire",
+            "--model",
+            "neutral-fixture",
+            "--reasoning",
+            "low",
+        ])
+        .env("HOME", root.join("home"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("WG_PI_PROCESS_TEST_SCENARIO", scenario)
+        // This subprocess is the isolated system under test, not a nested WG
+        // graph actor borrowing the parent test worker's attempt capability.
+        .env_remove("WG_WORKER_CONTROL_MODE");
+    command
+}
+
+#[cfg(unix)]
+#[test]
+fn production_process_adapter_reconciles_completion_before_yield_duplicate_and_nonzero() {
+    for (scenario, expected_exit, expected_success) in [
+        ("race-success", 0_i64, true),
+        ("race-nonzero", 7_i64, false),
+    ] {
+        let temp = tempdir().unwrap();
+        let output = process_adapter_command(temp.path(), scenario)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "adapter failed for {scenario}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stream = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(stream.matches("ONE_CONTINUATION").count(), 1);
+        assert_eq!(stream.matches("\"toolCallId\":\"start-1\"").count(), 1);
+
+        let evidence: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(temp.path().join("evidence.json")).unwrap())
+                .unwrap();
+        assert_eq!(evidence["adapter"], "wg-pi-process-rpc-v1");
+        assert_eq!(evidence["session_id"], "same-authorized-session");
+        assert_eq!(evidence["duplicate_events"], 1);
+        assert_eq!(evidence["completed"], true);
+        assert_eq!(evidence["processes"].as_array().unwrap().len(), 1);
+        assert_eq!(evidence["processes"][0]["id"], "proc_1");
+        assert_eq!(evidence["processes"][0]["exit_code"], expected_exit);
+        assert_eq!(evidence["processes"][0]["success"], expected_success);
+        assert_eq!(
+            evidence["processes"][0]["log_reference"],
+            "/bounded/owned/proc_1-stdout.log"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn production_process_adapter_disconnect_preserves_state_and_refuses_reexecution() {
+    let temp = tempdir().unwrap();
+    let output = process_adapter_command(temp.path(), "disconnect")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("WG-PI-PROCESS-DISCONNECTED"), "{stderr}");
+    assert!(stderr.contains("refusing blind command replay"), "{stderr}");
+    let evidence: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("evidence.json")).unwrap()).unwrap();
+    assert_eq!(evidence["completed"], false);
+    assert_eq!(evidence["processes"].as_array().unwrap().len(), 1);
+    assert_eq!(evidence["processes"][0]["status"], "running");
+}
+
+#[cfg(unix)]
+fn pid_is_live(pid: u32) -> bool {
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(unix)]
+#[test]
+fn production_process_adapter_timeout_cancels_only_owned_process_group() {
+    let temp = tempdir().unwrap();
+    let long_fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/pi-process-wakeup/long-command.mjs");
+    let mut unrelated = std::process::Command::new("node")
+        .args([long_fixture.to_str().unwrap(), "60000", "0", "UNRELATED"])
+        .spawn()
+        .unwrap();
+    let unrelated_pid = unrelated.id();
+
+    let child_pid_file = temp.path().join("owned-child.pid");
+    let mut command = process_adapter_command(temp.path(), "owned-cancellation");
+    command
+        .env("WG_PI_PROCESS_LONG_FIXTURE", &long_fixture)
+        .env("WG_PI_PROCESS_CHILD_PID_FILE", &child_pid_file)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut adapter = command.spawn().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !child_pid_file.is_file() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let owned_pid: u32 = std::fs::read_to_string(&child_pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(pid_is_live(owned_pid));
+    assert!(pid_is_live(unrelated_pid));
+
+    // This bounded test timeout mirrors the production wrapper's process-group
+    // cancellation boundary: signal the exact session, never the host broadly.
+    unsafe {
+        assert_eq!(libc::kill(-(adapter.id() as libc::pid_t), libc::SIGTERM), 0);
+    }
+    let reap_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if !pid_is_live(owned_pid) {
+            break;
+        }
+        if std::time::Instant::now() >= reap_deadline {
+            unsafe {
+                libc::kill(-(adapter.id() as libc::pid_t), libc::SIGKILL);
+            }
+            panic!("owned descendant {owned_pid} was not reaped");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = adapter.wait();
+    assert!(pid_is_live(unrelated_pid));
+    unrelated.kill().unwrap();
+    unrelated.wait().unwrap();
 }
 
 #[test]
