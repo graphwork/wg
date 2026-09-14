@@ -131,7 +131,20 @@ all 3 `integration_service_control_permissions` tests, the Worksgood Pi 29-test
 suite, its 12-tool/2-command selftest, and `git diff --check`. The ordinary
 `wg done` completion controller remains the authority that reruns this exact
 configured command and binds its immutable host-side result to the final
-candidate; the extension event or its log is never treated as that gate.
+candidate; the extension event or its log is never treated as that gate. For a
+final-candidate authenticated confirmation, the checked-in
+`tests/fixtures/pi-process-wakeup/real-provider-proof.sh` builds HEAD into an
+explicit disposable target, performs one Pi-authenticated RPC run, checks the
+exact session/command/exit/wake/output identities, and prints only bounded
+hashes and references. It is intended for one host-captured optional evidence
+run:
+
+```bash
+wg done prove-pi-process-wakeup \
+  --check 'bash tests/fixtures/pi-process-wakeup/real-provider-proof.sh'
+```
+
+It is not a new mandatory gate or repeatable semantic submission.
 
 ## Operator use
 
