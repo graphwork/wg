@@ -159,7 +159,8 @@ Actual commands/cases used:
 - opaque actual daemon admission with canonical route (fail-closed, no attempt)
 - opaque Shell advisory and strict completion runs
 - opaque actual daemon with explicitly requested missing optional wake extension (fail-closed, no attempt)
-- focused Rust tests and the owned controlled smoke scenario are run as repository validation; their results are recorded in the task log/completion evidence
+- `cargo test --locked execution_assignment --lib -- --test-threads=1` (8/8 passed)
+- `cargo test --locked --test integration_pi_opaque_execution_boundary -- --test-threads=1` runs the existing controlled scenario through the supported Linux subreaper entry point; this focused invocation is captured as optional evidence rather than made a new mandatory gate
 
 Raw disposable roots retained during this evaluation:
 
