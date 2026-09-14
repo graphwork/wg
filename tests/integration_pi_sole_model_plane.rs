@@ -1,5 +1,7 @@
 use tempfile::TempDir;
-use worksgood::config::{Config, DispatchRole, ModelRegistryEntry, ReasoningLevel, Tier};
+use worksgood::config::{
+    Config, DispatchRole, ModelRegistryEntry, ReasoningLevel, RoleModelConfig, Tier,
+};
 use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 use worksgood::execution_selection::{SelectionState, resolve};
 use worksgood::service::executor::ExecutorRegistry;
@@ -171,7 +173,13 @@ fn missing_non_pi_and_missing_reasoning_fail_closed() {
     assert!(empty.validate_pi_model_plane().is_err());
 
     let mut non_pi = config_for_route(SetupRoute::Pi, RouteParams::default());
-    non_pi.models.task_agent.as_mut().unwrap().model = Some("codex:gpt-x".into());
+    non_pi.models.task_agent = Some(RoleModelConfig {
+        provider: None,
+        model: Some("codex:gpt-x".into()),
+        tier: None,
+        endpoint: None,
+        reasoning: Some(ReasoningLevel::High),
+    });
     let error = non_pi
         .resolve_pi_route_for_role(DispatchRole::TaskAgent)
         .unwrap_err()
@@ -179,7 +187,10 @@ fn missing_non_pi_and_missing_reasoning_fail_closed() {
     assert!(error.contains("WG-PI-ROUTE-REQUIRED"), "{error}");
 
     let mut no_reasoning = config_for_route(SetupRoute::Pi, RouteParams::default());
-    no_reasoning.models.task_agent.as_mut().unwrap().reasoning = None;
+    // The unified project route is intentionally sparse: task_agent inherits
+    // the canonical default rather than requiring a duplicated role entry.
+    // Remove reasoning at its actual authority and retain the same fail-closed
+    // negative check without inventing task_agent fixture state.
     no_reasoning.models.default.as_mut().unwrap().reasoning = None;
     no_reasoning.tiers.standard_reasoning = None;
     let error = no_reasoning

@@ -502,6 +502,10 @@ fn one_model_profile_content(
         strong_reasoning,
         weak_reasoning,
     )?;
+    // The sparse Pi starter carries its own canonical project default. Replace
+    // that single authority instead of resurrecting the legacy agent/dispatcher
+    // aliases removed by project-route unification.
+    content = named::set_toml_string_value(&content, "models.default.model", route);
 
     // Pin every concrete dispatch slot, rather than merely relying on tier
     // inheritance. This enumeration grows with DispatchRole::ALL, so a newly
@@ -528,8 +532,14 @@ fn one_model_profile_content(
     let config: Config = toml::from_str(&content)?;
     config.validate_model_format()?;
     config.validate_pi_model_plane()?;
-    if config.agent.model != route || config.coordinator.model.as_deref() != Some(route) {
-        anyhow::bail!("one-model profile failed to pin agent/dispatcher to the exact route");
+    let project_default = config.project_default_route()?;
+    if project_default.route != route || project_default.source != "models.default.model" {
+        anyhow::bail!(
+            "one-model profile failed to pin the canonical project default to the exact route"
+        );
+    }
+    if !config.agent.model.is_empty() || config.coordinator.model.is_some() {
+        anyhow::bail!("one-model profile unexpectedly recreated legacy route aliases");
     }
     for role in std::iter::once(crate::config::DispatchRole::Default)
         .chain(crate::config::DispatchRole::ALL.iter().copied())
@@ -2175,8 +2185,9 @@ mod tests {
         let content =
             one_model_profile_content(route, ReasoningLevel::High, ReasoningLevel::Low).unwrap();
         let config: Config = toml::from_str(&content).unwrap();
-        assert_eq!(config.agent.model, route);
-        assert_eq!(config.coordinator.model.as_deref(), Some(route));
+        assert!(config.agent.model.is_empty());
+        assert!(config.coordinator.model.is_none());
+        assert_eq!(config.project_default_route().unwrap().route, route);
         for role in std::iter::once(crate::config::DispatchRole::Default)
             .chain(crate::config::DispatchRole::ALL.iter().copied())
         {

@@ -678,8 +678,13 @@ mod tests {
     #[test]
     fn standalone_prefers_project_nex_when_initialized_else_user_home() {
         let tmp = TempDir::new().unwrap();
-        let home = tmp.path().join("home");
-        let project = tmp.path().join("project");
+        // Keep the injected home as the test project's ancestor and materialize
+        // its user-level .nex. WG test runners may redirect TMPDIR beneath a
+        // live checkout; without this boundary the nearest-directory lookup can
+        // accidentally discover the worker operator's real ~/.nex.
+        let home = tmp.path().to_path_buf();
+        std::fs::create_dir_all(home.join(".nex")).unwrap();
+        let project = home.join("project");
         let nested = project.join("src").join("deep");
         std::fs::create_dir_all(project.join(".nex")).unwrap();
         std::fs::create_dir_all(project.join(".wg")).unwrap();
