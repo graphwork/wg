@@ -96,25 +96,27 @@ and nonzero exit are recorded distinctly, but ordinary task success still runs
 WG's configured host-side completion validation exactly once. This proof does
 not rerun an expensive managed command merely to manufacture a gate receipt.
 
-## Validation status and inherited baseline failures
+## Validation status and baseline reconciliation
 
-The candidate-specific watchdog and adapter tests pass, as do `cargo fmt
---check`, `cargo clippy --locked`, the Worksgood Pi 29-test suite and host
-selftest. Two configured integration targets have inherited failures on the
-specified base commit `5a0b28a685962a63754fdb0e8563e512c00e0082` and on this
-candidate:
+The original proof candidate was based on
+`5a0b28a685962a63754fdb0e8563e512c00e0082`. Its process-wake targets passed,
+but the configured combined gate exposed two unrelated baseline fixture
+failures: an absent `models.task_agent` unwrap in
+`integration_pi_sole_model_plane`, and worker-control expectations that did not
+match the trusted local coordination boundary in
+`integration_service_control_permissions`. Those failures and the real Pi
+artifacts above were retained rather than hidden or regenerated.
 
-- `integration_pi_sole_model_plane::missing_non_pi_and_missing_reasoning_fail_closed`
-  panics at line 174 because `models.task_agent` is `None` before the test's
-  `unwrap()`.
-- `integration_service_control_permissions` has two worker cases refused as
-  `worker_control.admin_operation_refused: command is outside trusted local
-  graph coordination`, rather than the assertions' expected status/diagnostic.
-
-Both were reproduced in a clean detached worktree at the exact base commit;
-this task does not alter those tests or their control-plane code. The configured
-combined gate therefore remains red for those pre-existing reasons, not because
-the process-wake targets fail.
+The branch was subsequently reconciled with integrated main `bd1c4e1f`, which
+contains the separately owned baseline and service-start fixture repairs. On
+that reconciled candidate, the unchanged configured command passes in full:
+`cargo fmt --check`, `cargo clippy --locked`, all 21
+`integration_pi_watchdog` tests, all 8 `integration_pi_sole_model_plane` tests,
+all 3 `integration_service_control_permissions` tests, the Worksgood Pi 29-test
+suite, its 12-tool/2-command selftest, and `git diff --check`. The ordinary
+`wg done` completion controller remains the authority that reruns this exact
+configured command and binds its immutable host-side result to the final
+candidate; the extension event or its log is never treated as that gate.
 
 ## Operator use
 
