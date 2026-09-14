@@ -1344,12 +1344,31 @@ mod tests {
     static HOME_MUTEX: Mutex<()> = Mutex::new(());
 
     fn with_home<F: FnOnce()>(f: F) -> TempDir {
-        let _guard = HOME_MUTEX.lock().unwrap();
+        // A failed assertion must not poison every later profile test. Retain
+        // the original failure while allowing independent coverage to run.
+        let _guard = HOME_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = TempDir::new().unwrap();
         // Ensure the .wg dir exists so Config::global_dir() is stable.
         let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
-        // SAFETY: HOME_MUTEX serializes all callers; single-threaded at this point.
+
+        struct RestoreHome(Option<std::ffi::OsString>);
+        impl Drop for RestoreHome {
+            fn drop(&mut self) {
+                // SAFETY: HOME_MUTEX serializes this module's HOME mutation.
+                unsafe {
+                    match self.0.take() {
+                        Some(home) => std::env::set_var("HOME", home),
+                        None => std::env::remove_var("HOME"),
+                    }
+                }
+            }
+        }
+
+        let _restore = RestoreHome(std::env::var_os("HOME"));
+        // SAFETY: HOME_MUTEX serializes all callers in this module.
         unsafe { std::env::set_var("HOME", tmp.path()) };
         f();
         tmp
@@ -1564,41 +1583,58 @@ is_default = true
         let prof = parse_profile(STARTER_PI, Path::new("pi.toml"), "pi").unwrap();
         let worker = "pi:openrouter:z-ai/glm-5.2";
         let agency = "pi:openrouter:deepseek/deepseek-chat";
-        assert_eq!(prof.config.agent.model, worker);
-        assert_eq!(prof.config.coordinator.model.as_deref(), Some(worker));
+        // The canonical project default is the single strong authority. Legacy
+        // agent/dispatcher aliases and duplicate standard/premium pins stay
+        // absent; effective tiers inherit dynamically.
+        assert!(prof.config.agent.model.is_empty());
+        assert!(prof.config.coordinator.model.is_none());
         assert_eq!(prof.config.tiers.fast.as_deref(), Some(agency));
-        assert_eq!(prof.config.tiers.standard.as_deref(), Some(worker));
-        assert_eq!(prof.config.tiers.premium.as_deref(), Some(worker));
+        assert!(prof.config.tiers.standard.is_none());
+        assert!(prof.config.tiers.premium.is_none());
+        assert_eq!(prof.config.project_default_route().unwrap().route, worker);
         assert_eq!(
             prof.config
-                .models
-                .default
-                .as_ref()
-                .and_then(|m| m.model.as_deref()),
-            Some(worker)
+                .resolve_tier_route(crate::config::Tier::Standard)
+                .unwrap()
+                .route,
+            worker
         );
         assert_eq!(
+            prof.config
+                .resolve_tier_route(crate::config::Tier::Premium)
+                .unwrap()
+                .route,
+            worker
+        );
+        assert!(
             prof.config
                 .models
                 .task_agent
                 .as_ref()
-                .and_then(|m| m.model.as_deref()),
-            Some(worker)
+                .and_then(|m| m.model.as_deref())
+                .is_none()
+        );
+        assert_eq!(
+            prof.config
+                .resolve_execution_route_for_role(crate::config::DispatchRole::TaskAgent)
+                .unwrap()
+                .route,
+            worker
         );
 
-        // Only the four agency one-shots are explicitly pinned to DeepSeek
-        // (they ignore the tier cascade today, so they must be explicit).
+        // The starter deliberately retains its established weak judgment pins.
         let agency_oneshots = [
             prof.config.models.evaluator.as_ref(),
             prof.config.models.assigner.as_ref(),
             prof.config.models.flip_inference.as_ref(),
             prof.config.models.flip_comparison.as_ref(),
+            prof.config.models.reviewer.as_ref(),
         ];
         for role in agency_oneshots {
             assert_eq!(
                 role.and_then(|m| m.model.as_deref()),
                 Some(agency),
-                "the four pi agency one-shot roles must be pinned to DeepSeek (weak tier)"
+                "the Pi judgment roles must retain their explicit DeepSeek pin"
             );
         }
 
@@ -1802,7 +1838,20 @@ is_default = true
             let cfg = Config::load_global()
                 .unwrap()
                 .expect("global must be present");
-            assert_eq!(cfg.agent.model, "pi:openrouter:z-ai/glm-5.2");
+            // The sparse profile installs the canonical project default while
+            // preserving the unrelated legacy agent alias from the existing
+            // global file. Canonical authority wins for effective execution.
+            assert_eq!(cfg.agent.model, "claude:opus");
+            assert_eq!(
+                cfg.project_default_route().unwrap().route,
+                "pi:openrouter:z-ai/glm-5.2"
+            );
+            assert_eq!(
+                cfg.resolve_execution_route_for_role(crate::config::DispatchRole::TaskAgent)
+                    .unwrap()
+                    .route,
+                "pi:openrouter:z-ai/glm-5.2"
+            );
             let ep = cfg
                 .llm_endpoints
                 .find_by_name("openrouter")
@@ -2224,10 +2273,9 @@ assigner_agent = "local-agent"
             let content = std::fs::read_to_string(&path).unwrap();
             // Pi-ownership comment survives the write.
             assert!(content.contains("Pi owns providers, authentication, model discovery"));
-            // Parse and verify the full key-set via the reader. The strong tier
-            // is normalized to a pi: route on write (so it runs through the
-            // self-authenticating pi handler, not the in-process nex OpenRouter
-            // client); the weak/agency tier keeps its native openrouter: route.
+            // Parse and verify the sparse tier selectors via the effective
+            // reader. Both OpenRouter values normalize to supported Pi routes;
+            // existing explicit role overrides remain operator-owned.
             let cfg: Config = toml::from_str(&content).unwrap();
             let (strong, weak) = cfg.pi_tiers();
             assert_eq!(strong.as_deref(), Some("pi:openrouter:z-ai/glm-5.2"));
@@ -2235,16 +2283,20 @@ assigner_agent = "local-agent"
                 weak.as_deref(),
                 Some("pi:openrouter:deepseek/deepseek-v3.1")
             );
+            assert!(cfg.tiers.premium.is_none());
             assert_eq!(
-                cfg.tiers.premium.as_deref(),
-                Some("pi:openrouter:z-ai/glm-5.2")
+                cfg.resolve_tier_route(crate::config::Tier::Premium)
+                    .unwrap()
+                    .route,
+                "pi:openrouter:z-ai/glm-5.2"
             );
             assert_eq!(
                 cfg.models
                     .assigner
                     .as_ref()
                     .and_then(|m| m.model.as_deref()),
-                Some("pi:openrouter:deepseek/deepseek-v3.1")
+                Some("pi:openrouter:deepseek/deepseek-chat"),
+                "an explicit role override must not be rewritten by a tier edit"
             );
         });
     }
@@ -2306,10 +2358,15 @@ reasoning = "high"
             .unwrap();
             let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
-            assert_eq!(cfg.agent.model, "codex:gpt-5.6-terra");
+            assert_eq!(cfg.tiers.standard.as_deref(), Some("codex:gpt-5.6-terra"));
+            assert_eq!(
+                cfg.agent.model, "pi:openai-codex:gpt-5.6-sol",
+                "legacy explicit aliases remain untouched"
+            );
             assert_eq!(
                 cfg.models.default.as_ref().unwrap().model.as_deref(),
-                Some("codex:gpt-5.6-terra")
+                Some("pi:openai-codex:gpt-5.6-sol"),
+                "the canonical project default is separate from an explicit strong tier"
             );
             assert_eq!(
                 cfg.models.default.as_ref().unwrap().reasoning,

@@ -72,17 +72,56 @@ fn should_skip_timing_tests() -> bool {
     false
 }
 
-/// Helper: run `wg` with given args in a specific WG directory.
-fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
-    let wg = wg_binary();
-    Command::new(&wg)
+/// Build an isolated `wg` child rooted in the disposable fixture.
+///
+/// An explicit `--dir` selects the graph, but the service process and any
+/// descendants still inherit the caller's cwd and environment. Keep both out
+/// of the source checkout so a bare child lookup cannot create `./.wg`, and
+/// strip worker/chat authority inherited from the test runner.
+fn wg_command(wg_dir: &Path) -> Command {
+    let fixture_root = fake_home_for(wg_dir);
+    fs::create_dir_all(&fixture_root).expect("create isolated service fixture root");
+
+    let mut command = Command::new(wg_binary());
+    command
         .arg("--dir")
         .arg(wg_dir)
+        .current_dir(&fixture_root)
+        .env("HOME", &fixture_root)
+        .env("XDG_CONFIG_HOME", fixture_root.join(".config"))
+        .env("XDG_CACHE_HOME", fixture_root.join(".cache"));
+    for name in [
+        "WG_DIR",
+        "WG_PROJECT_ROOT",
+        "WG_TASK_ID",
+        "WG_AGENT_ID",
+        "WG_CHAT_ID",
+        "WG_CHAT_REF",
+        "WG_WORKER_CAPABILITY",
+        "WG_WORKER_CONTROL_PROTOCOL",
+        "WG_WORKER_CONTROL_MODE",
+        "WG_WORKER_GENERATION",
+        "WG_WORKER_ATTEMPT_ID",
+        "WG_WORKER_ATTEMPT_FENCE",
+        "WG_GRAPH_ID",
+        "WG_WORKTREE_PATH",
+        "WG_BRANCH",
+        "WG_WORKTREE_ACTIVE",
+        "WG_SERVICE_INSTANCE_NONCE",
+        "WG_CONFIG_REVISION",
+        "WG_EXECUTOR_TYPE",
+        "WG_MODEL",
+        "WG_REASONING",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
+/// Helper: run `wg` with given args in a specific WG directory.
+fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
+    wg_command(wg_dir)
         .args(args)
-        .env("HOME", fake_home_for(wg_dir))
-        .env_remove("WG_DIR")
-        .env_remove("WG_TASK_ID")
-        .env_remove("WG_AGENT_ID")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -160,10 +199,11 @@ PATH = "{}"
     wg_dir
 }
 
-/// Helper: generate a unique socket path for this test's temp directory.
-/// Each test gets its own socket to avoid conflicts when running in parallel.
-fn socket_path_for(tmp_root: &Path) -> String {
-    format!("{}/wg-test.sock", tmp_root.display())
+/// Helper: use the fixture's canonical, graph-bound socket path.
+/// Each graph lives in its own temp directory, so the path remains unique while
+/// service lifecycle identity checks can authenticate it during teardown.
+fn socket_path_for(wg_dir: &Path) -> String {
+    wg_dir.join("service/daemon.sock").display().to_string()
 }
 
 /// Helper: add a task with a shell exec command.
@@ -258,14 +298,53 @@ fn read_registry(wg_dir: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&content).ok()
 }
 
-/// Helper: stop the service daemon and kill any running agents.
-fn stop_service(wg_dir: &Path) {
-    let _ = wg_cmd(wg_dir, &["service", "stop", "--force", "--kill-agents"]);
+/// Capture process identities while state is still present. Reading state
+/// after `service stop` is too late because a successful stop removes it.
+fn owned_service_processes(wg_dir: &Path) -> Vec<(u32, String)> {
+    let Ok(bytes) = fs::read(wg_dir.join("service/state.json")) else {
+        return Vec::new();
+    };
+    let Ok(state) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Vec::new();
+    };
+    let mut owned = Vec::new();
+    for (pid_key, birth_key) in [
+        ("supervisor_pid", "supervisor_pid_start_identity"),
+        ("pid", "pid_start_identity"),
+    ] {
+        if let (Some(pid), Some(birth)) = (state[pid_key].as_u64(), state[birth_key].as_str()) {
+            let process = (pid as u32, birth.to_string());
+            if !owned.contains(&process) {
+                owned.push(process);
+            }
+        }
+    }
+    owned
+}
+
+fn process_still_owned(pid: u32, birth: &str) -> bool {
+    worksgood::service_identity::pid_start_identity(pid).as_deref() == Some(birth)
+}
+
+fn assert_service_teardown(wg_dir: &Path) {
+    let owned = owned_service_processes(wg_dir);
+    let output = wg_cmd(wg_dir, &["service", "stop", "--force", "--kill-agents"]);
+    assert!(
+        output.status.success(),
+        "service fixture teardown failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        wait_for(Duration::from_secs(3), 25, || owned
+            .iter()
+            .all(|(pid, birth)| !process_still_owned(*pid, birth))),
+        "service fixture left an owned daemon/supervisor alive: {owned:?}"
+    );
 }
 
 /// Guard that ensures daemon cleanup on drop, even if a test panics.
-/// Without this, panicking assertions skip the manual `stop_service()` call
-/// at the end of tests, leaving orphaned daemon processes.
+/// Without this, panicking assertions skip the manual teardown call at the end
+/// of tests, leaving orphaned daemon processes.
 struct ServiceGuard<'a> {
     wg_dir: &'a Path,
 }
@@ -278,18 +357,18 @@ impl<'a> ServiceGuard<'a> {
 
 impl Drop for ServiceGuard<'_> {
     fn drop(&mut self) {
-        // Graceful stop via CLI (kills agents too)
-        stop_service(self.wg_dir);
+        let owned = owned_service_processes(self.wg_dir);
+        let _ = wg_cmd(
+            self.wg_dir,
+            &["service", "stop", "--force", "--kill-agents"],
+        );
 
-        // Belt-and-suspenders: read PID from state.json and kill directly
-        // in case `wg service stop` itself fails or the daemon is unresponsive.
-        let state_path = self.wg_dir.join("service").join("state.json");
-        if let Ok(content) = fs::read_to_string(&state_path) {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(pid) = state["pid"].as_u64() {
-                    unsafe {
-                        libc::kill(pid as i32, libc::SIGKILL);
-                    }
+        // Belt-and-suspenders cleanup for panic paths or an unresponsive CLI.
+        // Signal only the exact birth identities captured from this fixture.
+        for (pid, birth) in owned {
+            if process_still_owned(pid, &birth) {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
                 }
             }
         }
@@ -365,7 +444,7 @@ fn test_auto_pickup_via_graph_changed() {
 
     // Start the service with a long poll interval so we can distinguish
     // GraphChanged fast-path from the slow poll.
-    let socket = socket_path_for(tmp.path());
+    let socket = socket_path_for(&wg_dir);
     let out = wg_ok(
         &wg_dir,
         &[
@@ -468,7 +547,7 @@ fn test_fallback_poll_pickup() {
     let _guard = ServiceGuard::new(&wg_dir);
 
     // Start service with a short poll interval for this test
-    let socket = socket_path_for(tmp.path());
+    let socket = socket_path_for(&wg_dir);
     let out = wg_ok(
         &wg_dir,
         &[
@@ -598,7 +677,7 @@ fn test_dead_agent_recovery() {
     config.save(&wg_dir).unwrap();
 
     // Start service
-    let socket = socket_path_for(tmp.path());
+    let socket = socket_path_for(&wg_dir);
     let out = wg_ok(
         &wg_dir,
         &[
@@ -770,11 +849,11 @@ fn test_dead_agent_recovery() {
 fn test_service_start_on_selected_graph_does_not_create_daemon_tasks() {
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
-    let socket = socket_path_for(tmp.path());
+    let socket = socket_path_for(&wg_dir);
+    let _guard = ServiceGuard::new(&wg_dir);
 
-    let mut child = Command::new(wg_binary())
-        .arg("--dir")
-        .arg(&wg_dir)
+    let mut child = wg_command(&wg_dir);
+    child
         .args([
             "service",
             "start",
@@ -784,15 +863,10 @@ fn test_service_start_on_selected_graph_does_not_create_daemon_tasks() {
             "shell",
             "--no-coordinator-agent",
         ])
-        .env("HOME", fake_home_for(&wg_dir))
-        .env_remove("WG_DIR")
-        .env_remove("WG_TASK_ID")
-        .env_remove("WG_AGENT_ID")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start daemon");
+        .stderr(Stdio::piped());
+    let mut child = child.spawn().expect("failed to start daemon");
 
     assert!(
         wait_for_service_ready(&wg_dir, Duration::from_secs(10)),
@@ -815,7 +889,7 @@ fn test_service_start_on_selected_graph_does_not_create_daemon_tasks() {
         status
     );
 
-    let _ = wg_cmd(&wg_dir, &["service", "stop", "--force"]);
+    assert_service_teardown(&wg_dir);
     let _ = child.wait();
 }
 
@@ -973,21 +1047,16 @@ fn test_service_start_replaces_stale_socket_and_requires_readiness() {
 fn test_service_start_child_exit_before_readiness_is_nonzero_and_loud() {
     let tmp = short_service_tempdir();
     let wg_dir = setup_workgraph(tmp.path());
-    let output = Command::new(wg_binary())
-        .arg("--dir")
-        .arg(&wg_dir)
+    let mut command = wg_command(&wg_dir);
+    let output = command
         .args([
             "service",
             "start",
             "--no-coordinator-agent",
             "--no-supervise",
         ])
-        .env("HOME", fake_home_for(&wg_dir))
         .env("WG_TEST_SERVICE_EXIT_BEFORE_READY", "1")
         .env("WG_TEST_SERVICE_START_TIMEOUT_MS", "2000")
-        .env_remove("WG_DIR")
-        .env_remove("WG_TASK_ID")
-        .env_remove("WG_AGENT_ID")
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -1006,21 +1075,16 @@ fn test_service_start_child_exit_before_readiness_is_nonzero_and_loud() {
 fn test_service_start_readiness_timeout_is_nonzero_and_loud() {
     let tmp = short_service_tempdir();
     let wg_dir = setup_workgraph(tmp.path());
-    let output = Command::new(wg_binary())
-        .arg("--dir")
-        .arg(&wg_dir)
+    let mut command = wg_command(&wg_dir);
+    let output = command
         .args([
             "service",
             "start",
             "--no-coordinator-agent",
             "--no-supervise",
         ])
-        .env("HOME", fake_home_for(&wg_dir))
         .env("WG_TEST_SERVICE_START_DELAY_MS", "1500")
         .env("WG_TEST_SERVICE_START_TIMEOUT_MS", "150")
-        .env_remove("WG_DIR")
-        .env_remove("WG_TASK_ID")
-        .env_remove("WG_AGENT_ID")
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -1040,18 +1104,106 @@ fn test_service_start_readiness_timeout_is_nonzero_and_loud() {
 
 #[test]
 #[serial]
-fn test_service_start_rejects_implicit_coordinator_config() {
+fn test_service_start_does_not_admit_implicit_coordinator_config() {
     let tmp = tempfile::tempdir().unwrap();
-    let wg_dir = setup_workgraph(tmp.path());
-    fs::write(
-        wg_dir.join("config.toml"),
-        "[agency]\nauto_assign = false\nauto_evaluate = false\n",
-    )
-    .unwrap();
+    let caller_graph = std::env::current_dir().unwrap().join(".wg/graph.jsonl");
+    let caller_graph_preexisted = caller_graph.exists();
 
-    let output = wg_cmd(&wg_dir, &["service", "start"]);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("WG-EXEC-UNSELECTED"), "{stderr}");
-    assert!(!wg_dir.join("service/state.json").exists());
+    // Prove the selected side of the boundary through the real CLI.
+    let routed_wg = tmp.path().join("routed/.wg");
+    wg_ok(&routed_wg, &["init", "--route", "pi"]);
+    let routed_models = wg_cmd(&routed_wg, &["config", "--models"]);
+    assert!(routed_models.status.success());
+    assert!(
+        String::from_utf8_lossy(&routed_models.stdout).contains("project default = pi:"),
+        "explicit route was not selected: {}",
+        String::from_utf8_lossy(&routed_models.stderr)
+    );
+
+    // Create the other side through the real graph-only CLI path. In
+    // particular, do not initialize a route and then approximate an
+    // unconfigured project by rewriting its config behind the CLI's back.
+    let wg_dir = tmp.path().join("unconfigured/.wg");
+    let init = wg_ok(&wg_dir, &["init"]);
+    assert!(
+        init.contains("Initialized WG") && init.contains("graph-only"),
+        "bare init did not report a graph-only project: {init}"
+    );
+    let unconfigured_models = wg_cmd(&wg_dir, &["config", "--models"]);
+    assert!(!unconfigured_models.status.success());
+    assert!(
+        String::from_utf8_lossy(&unconfigured_models.stderr).contains("WG-EXEC-ROUTE-MISSING"),
+        "bare graph-only fixture unexpectedly gained route authority: {}",
+        String::from_utf8_lossy(&unconfigured_models.stderr)
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Must remain unlaunched without a route",
+            "--id",
+            "unconfigured-task",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
+
+    // The graph service is useful without an LLM route, so startup itself is
+    // allowed. Admission must still fail closed before reserving an attempt or
+    // launching a model process.
+    let _guard = ServiceGuard::new(&wg_dir);
+    let output = wg_cmd(
+        &wg_dir,
+        &[
+            "service",
+            "start",
+            "--no-coordinator-agent",
+            "--no-supervise",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "graph-only service failed to start: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let deferred = wait_for(Duration::from_secs(5), 100, || {
+        let output = wg_cmd(&wg_dir, &["show", "unconfigured-task", "--json"]);
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .ok()
+            .and_then(|task| task["lifecycle"]["audit"].as_array().cloned())
+            .is_some_and(|audit| {
+                audit
+                    .iter()
+                    .any(|event| event["event_kind"] == "admission-deferred")
+            })
+    });
+    assert!(deferred, "route-less task never reached admission control");
+
+    let task_output = wg_cmd(&wg_dir, &["show", "unconfigured-task", "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task_output.stdout).unwrap();
+    assert_eq!(task["status"], "open");
+    assert_eq!(task["lifecycle"]["attempt_sequence"], 0);
+    assert!(task["assigned"].is_null());
+    assert!(
+        task["route_pin"]["current_inheritance"]["unavailable_reason"]
+            .as_str()
+            .is_some_and(|reason| {
+                reason.contains("WG-EXEC-ROUTE-MISSING") && reason.contains("wg setup --route pi")
+            }),
+        "missing route did not include actionable admission guidance: {task}"
+    );
+    let registry = read_registry(&wg_dir).expect("service registry should exist");
+    assert_eq!(
+        registry["agents"].as_object().map(|agents| agents.len()),
+        Some(0)
+    );
+
+    assert_service_teardown(&wg_dir);
+    if !caller_graph_preexisted {
+        assert!(
+            !caller_graph.exists(),
+            "isolated CLI fixture created source-checkout {}",
+            caller_graph.display()
+        );
+    }
 }
