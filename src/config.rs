@@ -3539,6 +3539,13 @@ impl Config {
         }
     }
 
+    /// Resolve the reasoning paired with an explicitly selected task tier.
+    /// Callers that pin `task.tier` must not silently reuse the role's default
+    /// tier reasoning.
+    pub fn resolve_reasoning_for_tier(&self, tier: Tier) -> Option<ReasoningLevel> {
+        self.tier_reasoning(tier)
+    }
+
     /// Resolve reasoning independently from model/provider, retaining enough
     /// provenance for profile/status surfaces to say whether the value is a
     /// role override, inherited, or omitted.

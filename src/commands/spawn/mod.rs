@@ -275,6 +275,29 @@ pub fn spawn_agent(
 /// Coordinator spawn adapter with an optional exact route/model binding.
 /// The canonical plan is recomputed and matched before claim/worktree/registry
 /// mutation, so a config/profile change cannot silently rewrite the route.
+pub fn spawn_agent_with_assignment(
+    dir: &Path,
+    task_id: &str,
+    timeout: Option<&str>,
+    assignment: &worksgood::execution_assignment::ExecutionAssignment,
+) -> Result<(String, u32)> {
+    let result = execution::spawn_agent_inner_with_assignment(
+        dir,
+        task_id,
+        timeout,
+        assignment,
+        "coordinator",
+    )
+    .map_err(|error| {
+        if worksgood::disk_sentinel::admission_deferral_reason(&error).is_some() {
+            error
+        } else {
+            anyhow::Error::new(SpawnPreparationFailure::new(format!("{error:#}")))
+        }
+    })?;
+    Ok((result.agent_id, result.pid))
+}
+
 pub fn spawn_agent_with_binding(
     dir: &Path,
     task_id: &str,

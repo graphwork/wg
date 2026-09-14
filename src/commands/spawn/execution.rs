@@ -870,10 +870,20 @@ struct TaskClaimSnapshot {
     attempt_fence: u64,
 }
 
+#[cfg(test)]
 fn claim_task_for_spawn(
     graph_path: &Path,
     task_id: &str,
     agent_id: &str,
+) -> Result<TaskClaimSnapshot> {
+    claim_task_for_spawn_bound(graph_path, task_id, agent_id, None)
+}
+
+fn claim_task_for_spawn_bound(
+    graph_path: &Path,
+    task_id: &str,
+    agent_id: &str,
+    opaque_authoring: Option<(&str, &str)>,
 ) -> Result<TaskClaimSnapshot> {
     let dir = graph_path.parent().unwrap_or(graph_path);
     let mut snapshot = None;
@@ -906,6 +916,20 @@ fn claim_task_for_spawn(
                 task.assigned
             ));
             return false;
+        }
+        if let Some((expected_fingerprint, config_revision)) = opaque_authoring {
+            let observed = worksgood::execution_assignment::task_authoring_fingerprint(
+                task,
+                config_revision,
+            );
+            if observed != expected_fingerprint {
+                claim_error = Some(anyhow::anyhow!(
+                    "error[WG-OPAQUE-AUTHORING-DRIFT]: task execution inputs changed before atomic claim (expected={} observed={}); no attempt was claimed",
+                    expected_fingerprint,
+                    observed
+                ));
+                return false;
+            }
         }
         let prior_status = task.status;
         let prior_started_at = task.started_at.clone();
@@ -1304,6 +1328,55 @@ pub(crate) fn spawn_agent_inner_authorized(
     spawned_by: &str,
     expected_binding: Option<(&str, &str)>,
 ) -> Result<SpawnResult> {
+    spawn_agent_inner_authorized_impl(
+        dir,
+        task_id,
+        executor_name,
+        timeout,
+        model,
+        reasoning,
+        spawned_by,
+        expected_binding,
+        None,
+    )
+}
+
+pub(crate) fn spawn_agent_inner_with_assignment(
+    dir: &Path,
+    task_id: &str,
+    timeout: Option<&str>,
+    assignment: &worksgood::execution_assignment::ExecutionAssignment,
+    spawned_by: &str,
+) -> Result<SpawnResult> {
+    let executor_name = match &assignment.execution {
+        worksgood::execution_assignment::RuntimeExecution::Pi { .. } => "pi",
+        worksgood::execution_assignment::RuntimeExecution::Shell { .. } => "shell",
+    };
+    spawn_agent_inner_authorized_impl(
+        dir,
+        task_id,
+        executor_name,
+        timeout,
+        Some(&assignment.authored_route),
+        None,
+        spawned_by,
+        None,
+        Some(assignment),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_agent_inner_authorized_impl(
+    dir: &Path,
+    task_id: &str,
+    executor_name: &str,
+    timeout: Option<&str>,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    spawned_by: &str,
+    expected_binding: Option<(&str, &str)>,
+    opaque_assignment: Option<&worksgood::execution_assignment::ExecutionAssignment>,
+) -> Result<SpawnResult> {
     let graph_path = graph_path(dir);
 
     if !graph_path.exists() {
@@ -1318,6 +1391,19 @@ pub(crate) fn spawn_agent_inner_authorized(
     let graph = load_graph(&graph_path).context("Failed to load graph")?;
 
     let task = graph.get_task_or_err(task_id)?;
+    if let Some(assignment) = opaque_assignment {
+        let observed = worksgood::execution_assignment::task_authoring_fingerprint(
+            task,
+            &assignment.config_revision,
+        );
+        if observed != assignment.authoring_fingerprint {
+            anyhow::bail!(
+                "error[WG-OPAQUE-AUTHORING-DRIFT]: task execution inputs changed after immutable assignment authoring (expected={} observed={}); no attempt was claimed",
+                assignment.authoring_fingerprint,
+                observed
+            );
+        }
+    }
     if let Some((dep_id, reason)) = spawn_dependency_blocker(&graph, task_id, dir) {
         anyhow::bail!(
             "Cannot spawn task '{}': blocked by prerequisite '{}': {}. Repair with `wg retry {}` or explicitly remove/relink the edge (`wg rm-dep {} {}`).",
@@ -1333,7 +1419,10 @@ pub(crate) fn spawn_agent_inner_authorized(
     // Selection preflight must happen before plan resolution, worktree creation,
     // registry writes, or the atomic claim. Shell tasks remain graph-only.
     #[cfg(not(test))]
-    if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
+    if opaque_assignment.is_none()
+        && executor_name != "shell"
+        && resolve_task_exec_mode(task, dir) != "shell"
+    {
         let route_handler = execution_route_handler(executor_name);
         // Dispatcher bindings carry `(handler, handler-native model id)` as
         // separate fields. Selection validation requires the original
@@ -1359,19 +1448,20 @@ pub(crate) fn spawn_agent_inner_authorized(
 
     // Look up agency agent preferences if task has an assigned agent identity.
     // These are used later in model/provider resolution.
-    let (agent_preferred_model, agent_preferred_provider) =
-        if let Some(ref agent_hash) = task_agent_for_audit {
-            let agents_dir = dir.join("agency/cache/agents");
-            match agency::find_agent_by_prefix(&agents_dir, agent_hash) {
-                Ok(agent) => (
-                    agent.preferred_model.clone(),
-                    agent.preferred_provider.clone(),
-                ),
-                Err(_) => (None, None),
-            }
-        } else {
-            (None, None)
-        };
+    let (agent_preferred_model, agent_preferred_provider) = if opaque_assignment.is_none()
+        && let Some(ref agent_hash) = task_agent_for_audit
+    {
+        let agents_dir = dir.join("agency/cache/agents");
+        match agency::find_agent_by_prefix(&agents_dir, agent_hash) {
+            Ok(agent) => (
+                agent.preferred_model.clone(),
+                agent.preferred_provider.clone(),
+            ),
+            Err(_) => (None, None),
+        }
+    } else {
+        (None, None)
+    };
 
     // SINGLE SOURCE OF TRUTH: route spawn decisions through plan_spawn so that
     // {executor, model, endpoint} are decided in one place rather than
@@ -1383,26 +1473,40 @@ pub(crate) fn spawn_agent_inner_authorized(
     // The plan-derived endpoint is the only source consulted when assembling
     // native-executor argv flags below; there is no fallback ad-hoc lookup.
     let config = Config::load_merged(dir)
-        .context("Cannot spawn while the project profile selection is invalid")?;
-    // Match the coordinator's per-task profile projection. Without this, the
-    // outer effect could bind a profile endpoint while the inner spawn silently
-    // re-resolved the active/global endpoint.
-    let config = worksgood::dispatch::effective_config_owned(task.profile.as_deref(), config);
-    if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
+        .context("Cannot spawn while the project configuration is invalid")?;
+    // Stable dispatch retains its historical per-task profile projection.
+    // Opaque dispatch already consumed that policy at authoring and must not
+    // consult profile selection again at runtime.
+    let config = if opaque_assignment.is_some() {
+        config
+    } else {
+        worksgood::dispatch::effective_config_owned(task.profile.as_deref(), config)
+    };
+    if opaque_assignment.is_none()
+        && executor_name != "shell"
+        && resolve_task_exec_mode(task, dir) != "shell"
+    {
         config.validate_execution_model_plane().context(
             "spawn refused: every worker role must have an explicit Pi/Claude/Codex route and effective reasoning",
         )?;
     }
     // Get task model preference. Freeform task tags are inert labels, so they
     // never participate in executor/model routing.
-    let task_model = task.model.clone().or_else(|| {
-        task.tier
-            .as_deref()
-            .and_then(|tier| tier.parse::<worksgood::config::Tier>().ok())
-            .and_then(|tier| config.configured_tier_spec(tier))
-    });
+    let task_model = if opaque_assignment.is_none() {
+        task.model.clone().or_else(|| {
+            task.tier
+                .as_deref()
+                .and_then(|tier| tier.parse::<worksgood::config::Tier>().ok())
+                .and_then(|tier| config.configured_tier_spec(tier))
+        })
+    } else {
+        None
+    };
     let plan_default_model = task_model.as_deref().or(model);
-    if executor_name != "shell" && resolve_task_exec_mode(task, dir) != "shell" {
+    if opaque_assignment.is_none()
+        && executor_name != "shell"
+        && resolve_task_exec_mode(task, dir) != "shell"
+    {
         let route_handler = execution_route_handler(executor_name);
         let selected_route = match plan_default_model {
             Some(route) => worksgood::execution_selection::handler_qualified_explicit_route(route)
@@ -1423,7 +1527,18 @@ pub(crate) fn spawn_agent_inner_authorized(
         .map(str::parse::<ReasoningLevel>)
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let plan = plan_spawn(task, &config, Some(executor_name), plan_default_model)?;
+    let plan = if let Some(assignment) = opaque_assignment {
+        if assignment.task_id != task.id {
+            anyhow::bail!(
+                "immutable execution assignment task mismatch: assignment={} requested={}",
+                assignment.task_id,
+                task.id
+            );
+        }
+        worksgood::execution_assignment::as_spawn_plan(assignment)
+    } else {
+        plan_spawn(task, &config, Some(executor_name), plan_default_model)?
+    };
     if let Some((expected_route_id, expected_plan_id)) = expected_binding {
         let actual_route_id = worksgood::service::HealthRouteKey::from_spawn_plan(&plan).id();
         let actual_route_binding = worksgood::dispatch::spawn_route_binding_id(&actual_route_id);
@@ -1446,7 +1561,11 @@ pub(crate) fn spawn_agent_inner_authorized(
     );
     let resolved_executor_name = plan.executor.as_str();
     let resolved_model_for_spawn = Some(plan.model.raw.clone());
-    let resolved_reasoning = explicit_reasoning.or(task.reasoning).or(plan.reasoning);
+    let resolved_reasoning = if opaque_assignment.is_some() {
+        plan.reasoning
+    } else {
+        explicit_reasoning.or(task.reasoning).or(plan.reasoning)
+    };
     validate_worker_execution_selection(&plan.executor, &plan.model.raw, resolved_reasoning)?;
     // One opaque run identity ties the spawned route, completion outcome, and
     // dead-agent triage together. Unlike PID/timestamps, it cannot collide on
@@ -1515,9 +1634,10 @@ pub(crate) fn spawn_agent_inner_authorized(
     // Resolve context scope (config was loaded earlier for plan_spawn)
 
     // Check OpenRouter cost caps before proceeding with expensive operations
-    if let Some(provider) = resolved_model_for_spawn
-        .as_deref()
-        .and_then(|m| worksgood::config::parse_model_spec(m).provider)
+    if opaque_assignment.is_none()
+        && let Some(provider) = resolved_model_for_spawn
+            .as_deref()
+            .and_then(|m| worksgood::config::parse_model_spec(m).provider)
         && provider == "openrouter"
     {
         check_openrouter_cost_caps(&config, dir, task_id, resolved_model_for_spawn.as_deref())?;
@@ -1580,87 +1700,148 @@ pub(crate) fn spawn_agent_inner_authorized(
         }
     }
 
-    // Get task exec command for shell executor
-    let task_exec = task.exec.clone();
+    // Runtime execution fields come exclusively from the assignment when the
+    // experiment is enabled. Stable dispatch retains the historical task and
+    // executor-registry path byte-for-byte.
+    let task_exec = match opaque_assignment.map(|assignment| &assignment.execution) {
+        Some(worksgood::execution_assignment::RuntimeExecution::Shell { argv, .. }) => {
+            argv.get(2).cloned()
+        }
+        Some(worksgood::execution_assignment::RuntimeExecution::Pi { .. }) => None,
+        None => task.exec.clone(),
+    };
     // Get per-task timeout override
     let task_timeout = task.timeout.clone();
-    // Capture the task's quality tier (may be set by tier escalation on retry)
-    let task_tier = task.tier.clone();
-    // Get session_id for resume (from previous wg wait)
-    let resume_session_id = task.session_id.clone();
-    // Resolve exec_mode: task.exec_mode > role.default_exec_mode > "full"
-    let resolved_exec_mode = resolve_task_exec_mode(task, dir);
-    // Load executor config using the registry
-    let executor_registry = ExecutorRegistry::new(dir);
-    let executor_config = executor_registry.load_config(resolved_executor_name)?;
+    // Capture the task's quality tier only on the stable path. Opaque runtime
+    // never consults task/profile/tier policy after authoring.
+    let task_tier = opaque_assignment
+        .is_none()
+        .then(|| task.tier.clone())
+        .flatten();
+    // Session selection is execution policy: opaque assignments pin explicit
+    // fresh-vs-resume state and never reread mutable task session metadata.
+    let resume_session_id = match opaque_assignment.map(|assignment| &assignment.execution) {
+        Some(worksgood::execution_assignment::RuntimeExecution::Pi { session_id, .. }) => {
+            session_id.clone()
+        }
+        Some(worksgood::execution_assignment::RuntimeExecution::Shell { .. }) => None,
+        None => task.session_id.clone(),
+    };
+    let resolved_exec_mode = match opaque_assignment.map(|assignment| &assignment.execution) {
+        Some(worksgood::execution_assignment::RuntimeExecution::Shell { .. }) => "shell".into(),
+        Some(worksgood::execution_assignment::RuntimeExecution::Pi { .. }) => "full".into(),
+        None => resolve_task_exec_mode(task, dir),
+    };
+    let executor_config = if let Some(assignment) = opaque_assignment {
+        use worksgood::service::executor::{ExecutorConfig, ExecutorSettings};
+        let executor = match &assignment.execution {
+            worksgood::execution_assignment::RuntimeExecution::Pi { program, .. } => {
+                ExecutorSettings {
+                    executor_type: "pi".to_string(),
+                    command: program.to_string_lossy().into_owned(),
+                    args: vec!["--mode".into(), "json".into()],
+                    env: std::collections::HashMap::from([(
+                        "WG_TASK_ID".to_string(),
+                        task.id.clone(),
+                    )]),
+                    prompt_template: None,
+                    working_dir: None,
+                    timeout: None,
+                    model: None,
+                }
+            }
+            worksgood::execution_assignment::RuntimeExecution::Shell {
+                argv,
+                environment,
+                working_directory,
+            } => ExecutorSettings {
+                executor_type: "shell".to_string(),
+                command: argv
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("opaque shell assignment has empty argv"))?,
+                args: argv.iter().skip(1).cloned().collect(),
+                env: environment.clone().into_iter().collect(),
+                prompt_template: None,
+                working_dir: Some(working_directory.to_string_lossy().into_owned()),
+                timeout: None,
+                model: None,
+            },
+        };
+        ExecutorConfig { executor }
+    } else {
+        ExecutorRegistry::new(dir).load_config(resolved_executor_name)?
+    };
 
     // For shell executor, we need an exec command
     if executor_config.executor.executor_type == "shell" && task_exec.is_none() {
         anyhow::bail!("Task '{}' has no exec command for shell executor", task_id);
     }
 
-    // --- Unified model + provider resolution ---
-    // Resolves model and provider in a single pass through the precedence hierarchy.
-    // At each tier, if the model uses `provider:model` format, the provider is
-    // extracted automatically via parse_model_spec().
-    let task_provider = graph.get_task(task_id).and_then(|t| t.provider.clone());
-    let resolved_task_agent =
-        config.resolve_model_for_role(worksgood::config::DispatchRole::TaskAgent);
-    let resolved = resolve_model_and_provider(
-        resolved_model_for_spawn.clone(),
-        task_provider.clone(),
-        agent_preferred_model,
-        agent_preferred_provider.clone(),
-        executor_config.executor.model.clone(),
-        Some(resolved_task_agent.model.clone()),
-        resolved_task_agent.provider.clone(),
-        resolved_model_for_spawn.as_deref(),
-        config.coordinator.provider.clone(),
-    );
-
-    // --- Model registry alias resolution ---
-    // If the effective model string matches a registry entry, resolve it to the
-    // actual API model ID, provider, and endpoint. Built-in tier aliases
-    // (haiku/sonnet/opus) are kept as-is for backward compatibility with the
-    // Claude CLI, which understands them natively.
-    let (effective_model, registry_provider, registry_endpoint) = resolve_spawn_model_via_registry(
-        resolved_executor_name,
-        resolved.model,
-        resolved_model_for_spawn.as_ref(),
-        &config,
-        dir,
-    )?;
-
-    // --- Pre-flight model validation ---
-    // Validate OpenRouter-style models against the cached model list before spawning.
-    // This is a warning/suggestion system, not a hard gate.
-    let (effective_model, model_validation_warning) = {
-        let mut model = effective_model;
-        let mut warning: Option<String> = None;
-        if resolved_executor_name == "native"
-            && let Some(ref m) = model
-            && m.contains('/')
-            && !BUILTIN_TIER_ALIASES.contains(&m.as_str())
-        {
-            let validation =
-                worksgood::executor::native::openai_client::validate_openrouter_model(m, dir);
-            if !validation.was_valid {
-                if let Some(ref w) = validation.warning {
-                    eprintln!("[spawn] WARNING: {}", w);
+    // The experimental runtime consumes the authored assignment directly.
+    // Its Pi route never enters provider parsing, registry lookup, endpoint
+    // inference, tier/profile merging, or fallback selection.  The stable path
+    // below remains unchanged for compatibility.
+    let (effective_model, registry_endpoint, effective_provider, model_validation_warning) =
+        if let Some(assignment) = opaque_assignment {
+            match &assignment.execution {
+                worksgood::execution_assignment::RuntimeExecution::Pi { opaque_route, .. } => {
+                    (Some(opaque_route.clone()), None, None, None)
                 }
-                warning = validation.warning;
-                model = Some(validation.model);
-            } else {
-                eprintln!("[spawn] Model '{}' validated against model cache", m);
+                worksgood::execution_assignment::RuntimeExecution::Shell { .. } => {
+                    (None, None, None, None)
+                }
             }
-        }
-        (model, warning)
-    };
-
-    // Provider is still resolved by resolve_model_and_provider() above.
-    // The registry may contribute a provider if the model matched a registry entry;
-    // use it only when the tier cascade didn't already produce one.
-    let effective_provider: Option<String> = resolved.provider.or(registry_provider.clone());
+        } else {
+            // --- Unified model + provider resolution (stable compatibility path) ---
+            let task_provider = graph.get_task(task_id).and_then(|t| t.provider.clone());
+            let resolved_task_agent =
+                config.resolve_model_for_role(worksgood::config::DispatchRole::TaskAgent);
+            let resolved = resolve_model_and_provider(
+                resolved_model_for_spawn.clone(),
+                task_provider,
+                agent_preferred_model,
+                agent_preferred_provider.clone(),
+                executor_config.executor.model.clone(),
+                Some(resolved_task_agent.model.clone()),
+                resolved_task_agent.provider.clone(),
+                resolved_model_for_spawn.as_deref(),
+                config.coordinator.provider.clone(),
+            );
+            let (mut model, registry_provider, registry_endpoint) =
+                resolve_spawn_model_via_registry(
+                    resolved_executor_name,
+                    resolved.model,
+                    resolved_model_for_spawn.as_ref(),
+                    &config,
+                    dir,
+                )?;
+            let mut warning: Option<String> = None;
+            if resolved_executor_name == "native"
+                && let Some(ref candidate) = model
+                && candidate.contains('/')
+                && !BUILTIN_TIER_ALIASES.contains(&candidate.as_str())
+            {
+                let validation =
+                    worksgood::executor::native::openai_client::validate_openrouter_model(
+                        candidate, dir,
+                    );
+                if !validation.was_valid {
+                    if let Some(ref message) = validation.warning {
+                        eprintln!("[spawn] WARNING: {}", message);
+                    }
+                    warning = validation.warning;
+                    model = Some(validation.model);
+                } else {
+                    eprintln!(
+                        "[spawn] Model '{}' validated against model cache",
+                        candidate
+                    );
+                }
+            }
+            let provider = resolved.provider.or(registry_provider.clone());
+            (model, registry_endpoint, provider, warning)
+        };
 
     // Override model in template vars with the effective model. External CLI
     // adapters receive their native model spelling here too, so TOML-backed
@@ -1782,7 +1963,12 @@ pub(crate) fn spawn_agent_inner_authorized(
     let project_root = dir
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine project root from {:?}", dir))?;
-    let needs_worktree = contract_needs_worktree(task.completion_contract)
+    let needs_worktree = opaque_assignment.is_none_or(|assignment| {
+        !matches!(
+            &assignment.execution,
+            worksgood::execution_assignment::RuntimeExecution::Shell { .. }
+        )
+    }) && contract_needs_worktree(task.completion_contract)
         && should_create_worktree(
             config.coordinator.worktree_isolation,
             task_id,
@@ -1883,6 +2069,13 @@ pub(crate) fn spawn_agent_inner_authorized(
 
     // Apply templates to executor settings (with effective model in vars)
     let mut settings = executor_config.apply_templates(&vars);
+    if let Some(worksgood::execution_assignment::ExecutionAssignment {
+        execution: worksgood::execution_assignment::RuntimeExecution::Pi { program, .. },
+        ..
+    }) = opaque_assignment
+    {
+        settings.command = program.to_string_lossy().to_string();
+    }
 
     // Universal wg context injection for all executor types.
     // Ensures all executors receive consistent WG context in their prompts,
@@ -1950,11 +2143,20 @@ pub(crate) fn spawn_agent_inner_authorized(
     let effective_api_key: Option<String> =
         endpoint_config.and_then(|ep| ep.resolve_api_key(Some(dir)).ok().flatten());
 
-    let effective_working_dir = worktree_info
-        .as_ref()
-        .map(|wt| wt.path.as_path())
-        .or_else(|| nongit_workspace.as_deref())
-        .or_else(|| settings.working_dir.as_deref().map(Path::new));
+    let assigned_shell_working_dir =
+        opaque_assignment.and_then(|assignment| match &assignment.execution {
+            worksgood::execution_assignment::RuntimeExecution::Shell {
+                working_directory, ..
+            } => Some(working_directory.as_path()),
+            worksgood::execution_assignment::RuntimeExecution::Pi { .. } => None,
+        });
+    let effective_working_dir = assigned_shell_working_dir.or_else(|| {
+        worktree_info
+            .as_ref()
+            .map(|wt| wt.path.as_path())
+            .or(nongit_workspace.as_deref())
+            .or_else(|| settings.working_dir.as_deref().map(Path::new))
+    });
     preflight_executor_command(&settings, resolved_executor_name, effective_working_dir)?;
 
     // Validate endpoint resolution for registry-resolved models — but only
@@ -1985,7 +2187,13 @@ pub(crate) fn spawn_agent_inner_authorized(
     }
 
     // Build the inner command string first (with optional fallback for session resume)
-    let (inner_command, fallback_command) = build_inner_command_with_reasoning(
+    let opaque_pi_route = opaque_assignment.and_then(|assignment| match &assignment.execution {
+        worksgood::execution_assignment::RuntimeExecution::Pi { opaque_route, .. } => {
+            Some(opaque_route.as_str())
+        }
+        worksgood::execution_assignment::RuntimeExecution::Shell { .. } => None,
+    });
+    let (inner_command, fallback_command) = build_inner_command_with_reasoning_opaque(
         &settings,
         exec_mode,
         &output_dir,
@@ -1998,6 +2206,7 @@ pub(crate) fn spawn_agent_inner_authorized(
         &vars,
         &task_exec,
         resume_session_id.as_deref(),
+        opaque_pi_route,
     )?;
 
     // Resolve effective timeout: CLI param > task.timeout > executor config > coordinator config.
@@ -2126,7 +2335,9 @@ pub(crate) fn spawn_agent_inner_authorized(
     if let Some(reasoning) = resolved_reasoning {
         cmd.env("WG_REASONING", reasoning.as_str());
     }
-    {
+    if opaque_assignment.is_some() {
+        cmd.env("WG_TIER", "immutable-assignment");
+    } else {
         let tier_str =
             task_tier.as_deref().unwrap_or_else(
                 || match worksgood::config::DispatchRole::TaskAgent.default_tier() {
@@ -2232,7 +2443,14 @@ pub(crate) fn spawn_agent_inner_authorized(
     // Claim under the graph lock only after all fallible command/workspace
     // preparation. The closure re-checks status and assignment, closing the
     // stale-read race between concurrent dispatchers.
-    let claim_snapshot = claim_task_for_spawn(&graph_path, task_id, &temp_agent_id)?;
+    let opaque_authoring = opaque_assignment.map(|assignment| {
+        (
+            assignment.authoring_fingerprint.as_str(),
+            assignment.config_revision.as_str(),
+        )
+    });
+    let claim_snapshot =
+        claim_task_for_spawn_bound(&graph_path, task_id, &temp_agent_id, opaque_authoring)?;
     let runtime_key = worksgood::attempt_runtime::AttemptRuntimeKey::new(
         task_id,
         claim_snapshot.generation,
@@ -2269,6 +2487,19 @@ pub(crate) fn spawn_agent_inner_authorized(
         if let Some(config_revision) = source_binding.config_revision.as_deref() {
             cmd.env("WG_CONFIG_REVISION", config_revision);
         }
+        if let Some(assignment) = opaque_assignment {
+            let bound = worksgood::execution_assignment::bind(
+                assignment.clone(),
+                &temp_agent_id,
+                claim_snapshot.generation,
+                &claim_snapshot.attempt_id,
+                claim_snapshot.attempt_fence,
+            );
+            let assignment_path = worksgood::execution_assignment::persist(dir, &bound)
+                .context("persist immutable execution assignment")?;
+            cmd.env("WG_EXECUTION_ASSIGNMENT", &assignment_path);
+            cmd.env("WG_EXECUTION_ASSIGNMENT_SCHEMA", "1");
+        }
 
         let control_mode =
             worksgood::worker_control::effective_control_mode(config.worker_control.mode, task);
@@ -2299,7 +2530,7 @@ pub(crate) fn spawn_agent_inner_authorized(
                     worktree_info
                         .as_ref()
                         .map(|worktree| worktree.path.as_path())
-                        .or_else(|| nongit_workspace.as_deref()),
+                        .or(nongit_workspace.as_deref()),
                     control_mode,
                 )?;
             // Persist the attempt binding for attribution/reconciliation, but
@@ -2339,7 +2570,7 @@ pub(crate) fn spawn_agent_inner_authorized(
                     worktree_info
                         .as_ref()
                         .map(|worktree| worktree.path.as_path())
-                        .or_else(|| nongit_workspace.as_deref()),
+                        .or(nongit_workspace.as_deref()),
                     control_mode,
                 )?;
             worker_capability_digest = Some(worker_binding.token_sha256.clone());
@@ -3145,6 +3376,86 @@ fn attest_selected_prior_pi_leaf(
     Ok(())
 }
 
+/// Build Pi argv from the immutable experiment assignment.  The opaque route
+/// is one argument after `--model`; no provider/model parsing or normalization
+/// occurs here.  Session ownership remains the existing Pi worker mechanism.
+fn opaque_pi_prompt_command(
+    settings: &worksgood::service::executor::ExecutorSettings,
+    output_dir: &Path,
+    opaque_route: &str,
+    reasoning: ReasoningLevel,
+    resume_session_id: Option<&str>,
+) -> Result<String> {
+    if std::env::var_os("WG_PI_PROCESS_WAKE_EXTENSION").is_some() {
+        anyhow::bail!(
+            "WG-OPAQUE-OPTIONAL-CAPABILITY-UNISOLATED: managed-process wake requires the stable split-route adapter; this must be diagnosed before attempt admission"
+        );
+    }
+    let prompt_file = write_executor_prompt_file(output_dir, settings)?;
+    let mut parts = vec![shell_escape(&settings.command)];
+    for arg in &settings.args {
+        parts.push(shell_escape(arg));
+    }
+    if !args_have_flag(&settings.args, &["--model", "-m"]) {
+        parts.push("--model".to_string());
+        parts.push(shell_escape(opaque_route));
+    }
+    append_external_cli_reasoning_args(&mut parts, &settings.args, "pi", Some(reasoning));
+
+    let (session_id, session_dir, session_file, header_json) =
+        if let Some(exact_id) = resume_session_id {
+            let (session_dir, session_file, header_json) =
+                find_exact_prior_pi_session(output_dir, exact_id)?;
+            (exact_id.to_string(), session_dir, session_file, header_json)
+        } else {
+            let session_dir = output_dir.join("pi-session");
+            fs::create_dir_all(&session_dir)
+                .with_context(|| format!("failed to create {}", session_dir.display()))?;
+            let session_id = uuid::Uuid::now_v7().to_string();
+            let session_file = session_dir.join(format!("wg_{session_id}.jsonl"));
+            let header = serde_json::json!({
+                "type": "session", "version": 3, "id": session_id,
+                "timestamp": Utc::now().to_rfc3339(),
+                "cwd": settings.working_dir.as_deref().unwrap_or(".")
+            });
+            let header_json = serde_json::to_string(&header)?;
+            fs::write(&session_file, format!("{header_json}\n"))?;
+            (session_id, session_dir, session_file, header_json)
+        };
+    fs::write(
+        output_dir.join("pi-session-plan.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "session_id": session_id,
+            "session_dir": &session_dir,
+            "session_file": &session_file,
+            "resumed": resume_session_id.is_some(),
+            "header_digest": format!("b3:{}", blake3::hash(header_json.as_bytes()).to_hex()),
+            "canonical_leaf": format!("b3:{}", blake3::hash(&fs::read(&session_file)?).to_hex()),
+            "canonical_prefix_len": fs::metadata(&session_file)?.len(),
+            "opaque_assignment": true,
+            "opaque_route": opaque_route,
+        }))?,
+    )?;
+    if !args_have_flag(&settings.args, &["--session-dir"]) {
+        parts.push("--session-dir".to_string());
+        parts.push(shell_escape(&session_dir.to_string_lossy()));
+    }
+    if !args_have_flag(&settings.args, &["--session-id"]) {
+        parts.push("--session-id".to_string());
+        parts.push(shell_escape(&session_id));
+    }
+    if !args_have_flag(&settings.args, &["--prompt", "-p"]) {
+        parts.push("--prompt".to_string());
+        parts.push(shell_escape(
+            "Complete the WG task prompt supplied on stdin.",
+        ));
+    }
+    Ok(prompt_file_command(
+        &prompt_file.to_string_lossy(),
+        &parts.join(" "),
+    ))
+}
+
 fn external_prompt_command(
     settings: &worksgood::service::executor::ExecutorSettings,
     output_dir: &Path,
@@ -3584,6 +3895,39 @@ fn build_inner_command_with_reasoning(
     task_exec: &Option<String>,
     resume_session_id: Option<&str>,
 ) -> Result<(String, Option<String>)> {
+    build_inner_command_with_reasoning_opaque(
+        settings,
+        exec_mode,
+        output_dir,
+        effective_model,
+        effective_provider,
+        resolved_reasoning,
+        effective_endpoint,
+        effective_endpoint_url,
+        effective_api_key,
+        vars,
+        task_exec,
+        resume_session_id,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_inner_command_with_reasoning_opaque(
+    settings: &worksgood::service::executor::ExecutorSettings,
+    exec_mode: &str,
+    output_dir: &Path,
+    effective_model: &Option<String>,
+    effective_provider: &Option<String>,
+    resolved_reasoning: Option<ReasoningLevel>,
+    effective_endpoint: &Option<String>,
+    effective_endpoint_url: &Option<String>,
+    effective_api_key: &Option<String>,
+    vars: &TemplateVars,
+    task_exec: &Option<String>,
+    resume_session_id: Option<&str>,
+    opaque_pi_route: Option<&str>,
+) -> Result<(String, Option<String>)> {
     let inner_command = match settings.executor_type.as_str() {
         "claude" if resume_session_id.is_some() && exec_mode != "bare" => {
             // Resume mode: use --resume <session_id> with checkpoint as follow-up message
@@ -3854,15 +4198,28 @@ fn build_inner_command_with_reasoning(
             None,
             ExternalPromptDelivery::Stdin,
         )?,
-        "pi" => external_prompt_command(
-            settings,
-            output_dir,
-            effective_model,
-            effective_provider,
-            resolved_reasoning,
-            resume_session_id,
-            ExternalPromptDelivery::QwenPromptAndStdin,
-        )?,
+        "pi" => {
+            if let Some(opaque_route) = opaque_pi_route {
+                opaque_pi_prompt_command(
+                    settings,
+                    output_dir,
+                    opaque_route,
+                    resolved_reasoning
+                        .context("immutable Pi assignment requires pinned reasoning")?,
+                    resume_session_id,
+                )?
+            } else {
+                external_prompt_command(
+                    settings,
+                    output_dir,
+                    effective_model,
+                    effective_provider,
+                    resolved_reasoning,
+                    resume_session_id,
+                    ExternalPromptDelivery::QwenPromptAndStdin,
+                )?
+            }
+        }
         "amplifier" => external_prompt_command(
             settings,
             output_dir,
@@ -6217,6 +6574,87 @@ mod tests {
     }
 
     #[test]
+    fn opaque_assignment_launch_passes_one_unsplit_model_argument() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let settings = external_test_settings("pi", "/candidate/pi", &["--mode", "json"]);
+        let vars = test_template_vars();
+        let route = "future+wire:model/with:odd:bytes";
+        let (command, fallback) = build_inner_command_with_reasoning_opaque(
+            &settings,
+            "full",
+            temp_dir.path(),
+            &Some(route.to_string()),
+            &None,
+            Some(ReasoningLevel::Xhigh),
+            &None,
+            &None,
+            &None,
+            &vars,
+            &None,
+            None,
+            Some(route),
+        )
+        .unwrap();
+        assert!(fallback.is_none());
+        assert!(
+            command.contains("'/candidate/pi' '--mode' 'json'"),
+            "{command}"
+        );
+        assert!(
+            command.contains("--model 'future+wire:model/with:odd:bytes'"),
+            "{command}"
+        );
+        assert!(command.contains("--thinking 'xhigh'"), "{command}");
+        assert!(!command.contains("--provider"), "{command}");
+        assert_eq!(command.matches(route).count(), 1, "{command}");
+    }
+
+    #[test]
+    fn opaque_runtime_source_boundary_has_no_registry_or_provider_reentry() {
+        let source = include_str!("execution.rs");
+        let settings_start = source
+            .find("let executor_config = if let Some(assignment) = opaque_assignment")
+            .unwrap();
+        let settings_end = source[settings_start..]
+            .find("ExecutorRegistry::new(dir).load_config")
+            .map(|offset| settings_start + offset)
+            .unwrap();
+        let assigned_settings = &source[settings_start..settings_end];
+        for forbidden in [
+            "parse_model_spec",
+            "resolve_model",
+            "resolve_execution_route",
+            "effective_config_owned",
+            "endpoint",
+            "fallback",
+        ] {
+            assert!(
+                !assigned_settings.contains(forbidden),
+                "opaque settings branch regained forbidden runtime dependency {forbidden}"
+            );
+        }
+
+        let command_start = source.find("fn opaque_pi_prompt_command(").unwrap();
+        let command_end = source[command_start..]
+            .find("fn external_prompt_command(")
+            .map(|offset| command_start + offset)
+            .unwrap();
+        let assigned_command = &source[command_start..command_end];
+        for forbidden in [
+            "parse_model_spec",
+            "resolve_model",
+            "ExecutorRegistry",
+            "--provider",
+            "fallback",
+        ] {
+            assert!(
+                !assigned_command.contains(forbidden),
+                "opaque argv boundary regained forbidden runtime dependency {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn test_build_inner_command_opencode_default_uses_run_json_prompt_file_and_openrouter_model() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let output_dir = temp_dir.path();
@@ -7896,6 +8334,44 @@ esac
             "{error_text}"
         );
         assert!(!output_dir.join(LAUNCH_GATE_FILE).exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn opaque_authoring_fingerprint_is_rechecked_inside_atomic_claim() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["opaque-claim"], false);
+        let graph_path = project.path().join(".wg/graph.jsonl");
+        let original = load_graph(&graph_path)
+            .unwrap()
+            .get_task("opaque-claim")
+            .unwrap()
+            .clone();
+        let revision = "b3:authoring";
+        let expected =
+            worksgood::execution_assignment::task_authoring_fingerprint(&original, revision);
+        modify_graph(&graph_path, |graph| {
+            graph.get_task_mut("opaque-claim").unwrap().model = Some("pi:mutated".into());
+            true
+        })
+        .unwrap();
+        let error = match claim_task_for_spawn_bound(
+            &graph_path,
+            "opaque-claim",
+            "agent-1",
+            Some((&expected, revision)),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("mutated task passed opaque atomic claim"),
+        };
+        assert!(format!("{error:#}").contains("WG-OPAQUE-AUTHORING-DRIFT"));
+        let task = load_graph(&graph_path)
+            .unwrap()
+            .get_task("opaque-claim")
+            .unwrap()
+            .clone();
+        assert_eq!(task.status, Status::Open);
+        assert!(task.lifecycle.current_attempt.is_none());
     }
 
     #[test]

@@ -53,6 +53,12 @@ impl HealthRouteKey {
                         .map(|key| key.provider)
                 })
                 .unwrap_or_else(|| "oai-compat".to_string()),
+            // Only an explicit assignment provenance marker selects the opaque
+            // health domain. Stable Pi plans with provider=None retain their
+            // historical pi-cli key when the experiment is off.
+            "pi" if plan.provenance.executor_source == "immutable execution assignment" => {
+                "opaque-pi".to_string()
+            }
             "pi" => pi_provider(&plan.model.raw),
             _ => parse_model_spec(&plan.model.raw)
                 .provider
@@ -940,6 +946,22 @@ mod tests {
             Some(endpoint_b),
         ));
         let pi = HealthRouteKey::from_spawn_plan(&plan("pi:openrouter:anthropic/claude", None));
+        let stable_bare_pi = HealthRouteKey::from_spawn_plan(&plan("pi:bare", None));
+        assert_eq!(stable_bare_pi.system.provider, "pi-cli");
+        let opaque_assignment = crate::execution_assignment::resolved_pi_assignment(
+            "t",
+            "direct",
+            crate::config::DispatchRole::TaskAgent,
+            "b3:r",
+            "pi:bare",
+            crate::config::ReasoningLevel::High,
+            "pi",
+        )
+        .unwrap();
+        let opaque_pi = HealthRouteKey::from_spawn_plan(
+            &crate::execution_assignment::as_spawn_plan(&opaque_assignment),
+        );
+        assert_eq!(opaque_pi.system.provider, "opaque-pi");
         assert_ne!(nex_a, nex_b, "Nex endpoints must have separate breakers");
         assert_ne!(nex_a.system.handler, pi.system.handler);
         assert_eq!(nex_a.system.provider, "openrouter");

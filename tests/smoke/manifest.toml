@@ -3264,6 +3264,13 @@ description = "Credential-free candidate-binary proof through the production dae
 timeout_seconds = 150
 
 [[scenario]]
+name = "pi_opaque_execution_assignment"
+script = "scenarios/pi_opaque_execution_assignment.sh"
+owners = ["pi-opaque-execution-assignment"]
+description = "Opt-in candidate daemon with a controlled Pi fixture: project role authoring resolves once into a create-once attempt assignment; an unusual Pi-addressable suffix is passed unchanged as one --model argv through preflight and worker launch; config mutation plus daemon restart cannot rewrite the running attempt; cancellation retains assignment evidence; Pi exit 2 versus transient nonzero is surfaced before claim without consuming retries; and explicit Shell remains available without becoming a fallback for rejected Pi or remote dispatch. Controlled fixture evidence is labelled separately from the accepted real Pi process-wakeup proof."
+timeout_seconds = 90
+
+[[scenario]]
 name = "build_baseline_admission_refresh"
 script = "scenarios/build_baseline_admission_refresh.sh"
 owners = ["refresh-build-baseline-admission"]

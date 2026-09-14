@@ -1,0 +1,1070 @@
+//! Opt-in immutable execution assignment experiment.
+//!
+//! The stable dispatcher still uses `SpawnPlan`.  When
+//! `WG_EXPERIMENTAL_OPAQUE_ASSIGNMENT=1`, the service resolves authoring policy
+//! once into this type and the runtime consumes these bytes.  The Pi envelope
+//! is recognized exactly once; the suffix is opaque and is never split into a
+//! WG provider/model pair.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+
+use crate::config::{Config, DispatchRole, ReasoningLevel};
+use crate::graph::Task;
+
+pub const EXPERIMENT_ENV: &str = "WG_EXPERIMENTAL_OPAQUE_ASSIGNMENT";
+pub const ASSIGNMENT_COMPONENT: &str = "execution-assignment";
+pub const ASSIGNMENT_FILE: &str = "assignment.json";
+const PREFLIGHT_BACKOFF_FILE: &str = "opaque-preflight-backoff.json";
+const TRANSIENT_BACKOFF_BASE_SECS: u64 = 5;
+const PREFLIGHT_BACKOFF_CAP_SECS: u64 = 60;
+
+pub fn experiment_enabled() -> bool {
+    std::env::var(EXPERIMENT_ENV)
+        .ok()
+        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+}
+
+/// Runtime selection.  There are deliberately no provider, endpoint, registry,
+/// handler, tier, or fallback fields in the Pi variant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeExecution {
+    Pi {
+        /// Exact configured Pi executable used by both preflight and launch.
+        program: PathBuf,
+        /// Every byte after the single outer `pi:` envelope.
+        opaque_route: String,
+        reasoning: ReasoningLevel,
+        /// `None` is an explicitly fresh session; `Some` pins exact resume id.
+        session_id: Option<String>,
+    },
+    Shell {
+        /// Exact argv, including argv[0]. No shell parsing occurs after assignment.
+        argv: Vec<String>,
+        /// Exact explicit environment overlay. Ambient worker-control variables are
+        /// added by the wrapper, but execution policy cannot add or rewrite entries.
+        environment: std::collections::BTreeMap<String, String>,
+        /// Exact directory in which the shell process is launched.
+        working_directory: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionAssignment {
+    pub schema: u32,
+    pub task_id: String,
+    /// Agency identity selected during authoring, or an explicit direct marker.
+    pub agent_identity: String,
+    pub role: DispatchRole,
+    pub config_revision: String,
+    /// Digest of every mutable task field consumed while authoring execution.
+    pub authoring_fingerprint: String,
+    pub authored_route: String,
+    pub execution: RuntimeExecution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundExecutionAssignment {
+    #[serde(flatten)]
+    pub assignment: ExecutionAssignment,
+    pub runtime_agent_id: String,
+    pub generation: u64,
+    pub attempt_id: String,
+    pub attempt_fence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum PiPreflightOutcome {
+    Ready,
+    MissingRequiredCapability {
+        exit_code: Option<i32>,
+        diagnostic: String,
+    },
+    TransientFailure {
+        exit_code: Option<i32>,
+        diagnostic: String,
+    },
+}
+
+impl PiPreflightOutcome {
+    pub fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
+
+    pub fn diagnostic(&self) -> Option<&str> {
+        match self {
+            Self::Ready => None,
+            Self::MissingRequiredCapability { diagnostic, .. }
+            | Self::TransientFailure { diagnostic, .. } => Some(diagnostic),
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PreflightBackoffState {
+    schema: u32,
+    entries: BTreeMap<String, PreflightBackoffEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PreflightBackoffEntry {
+    failures: u32,
+    next_probe_unix_ms: u64,
+}
+
+fn assignment_preflight_key(assignment: &ExecutionAssignment) -> String {
+    let bytes = serde_json::to_vec(assignment).expect("assignment serializes");
+    blake3::hash(&bytes).to_hex().to_string()
+}
+
+fn unix_ms(now: SystemTime) -> u64 {
+    now.duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn backoff_path(dir: &Path) -> PathBuf {
+    dir.join("service").join(PREFLIGHT_BACKOFF_FILE)
+}
+
+fn load_backoff(dir: &Path) -> PreflightBackoffState {
+    std::fs::read(backoff_path(dir))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| PreflightBackoffState {
+            schema: 1,
+            entries: BTreeMap::new(),
+        })
+}
+
+fn save_backoff(dir: &Path, state: &PreflightBackoffState) -> Result<()> {
+    let path = backoff_path(dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    crate::atomic_file::write_atomic(&path, &serde_json::to_vec_pretty(state)?)
+        .with_context(|| format!("persist opaque preflight backoff at {}", path.display()))
+}
+
+/// Return the remaining persisted admission delay for this exact assignment.
+pub fn preflight_backoff_remaining(
+    dir: &Path,
+    assignment: &ExecutionAssignment,
+) -> Option<Duration> {
+    preflight_backoff_remaining_at(dir, assignment, SystemTime::now())
+}
+
+fn preflight_backoff_remaining_at(
+    dir: &Path,
+    assignment: &ExecutionAssignment,
+    now: SystemTime,
+) -> Option<Duration> {
+    let state = load_backoff(dir);
+    let entry = state.entries.get(&assignment_preflight_key(assignment))?;
+    let now = unix_ms(now);
+    (entry.next_probe_unix_ms > now).then(|| Duration::from_millis(entry.next_probe_unix_ms - now))
+}
+
+/// Persist bounded exponential retry authority for a failed Pi probe. Success
+/// clears the exact assignment key. Configuration or task changes produce a
+/// different key and are therefore immediately eligible.
+pub fn record_preflight_outcome(
+    dir: &Path,
+    assignment: &ExecutionAssignment,
+    outcome: &PiPreflightOutcome,
+) -> Result<()> {
+    record_preflight_outcome_at(dir, assignment, outcome, SystemTime::now())
+}
+
+fn record_preflight_outcome_at(
+    dir: &Path,
+    assignment: &ExecutionAssignment,
+    outcome: &PiPreflightOutcome,
+    now: SystemTime,
+) -> Result<()> {
+    let mut state = load_backoff(dir);
+    state.schema = 1;
+    let key = assignment_preflight_key(assignment);
+    if outcome.is_ready() {
+        if state.entries.remove(&key).is_some() {
+            save_backoff(dir, &state)?;
+        }
+        return Ok(());
+    }
+    let prior = state
+        .entries
+        .get(&key)
+        .map(|entry| entry.failures)
+        .unwrap_or(0);
+    let failures = prior.saturating_add(1);
+    let delay = match outcome {
+        PiPreflightOutcome::TransientFailure { .. } => TRANSIENT_BACKOFF_BASE_SECS
+            .saturating_mul(1_u64.checked_shl(prior.min(16)).unwrap_or(u64::MAX))
+            .min(PREFLIGHT_BACKOFF_CAP_SECS),
+        PiPreflightOutcome::MissingRequiredCapability { .. } => PREFLIGHT_BACKOFF_CAP_SECS,
+        PiPreflightOutcome::Ready => 0,
+    };
+    state.entries.insert(
+        key,
+        PreflightBackoffEntry {
+            failures,
+            next_probe_unix_ms: unix_ms(now).saturating_add(delay.saturating_mul(1000)),
+        },
+    );
+    save_backoff(dir, &state)
+}
+
+/// Resolve authoring policy once.  This is the only experiment function which
+/// may consult role/tier/profile policy.  Runtime code receives the result.
+pub fn resolve(
+    task: &Task,
+    config: &Config,
+    role: DispatchRole,
+    agent_identity: Option<&str>,
+    pi_program: impl AsRef<Path>,
+    shell_working_directory: impl AsRef<Path>,
+) -> Result<ExecutionAssignment> {
+    if task
+        .remote_provider
+        .as_deref()
+        .is_some_and(|p| !p.trim().is_empty())
+    {
+        bail!(
+            "error[WG-OPAQUE-REMOTE-UNSUPPORTED]: remote provider dispatch is outside the immutable Pi-or-shell experiment; use the WG-Exec provider plane explicitly"
+        );
+    }
+
+    if task
+        .exec
+        .as_deref()
+        .is_some_and(|command| !command.trim().is_empty())
+        || task.exec_mode.as_deref() == Some("shell")
+    {
+        let command = task.exec.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "error[WG-OPAQUE-SHELL-ARGV-MISSING]: shell assignment requires task.exec"
+            )
+        })?;
+        return Ok(ExecutionAssignment {
+            schema: 1,
+            task_id: task.id.clone(),
+            agent_identity: agent_identity.unwrap_or("direct").to_string(),
+            role,
+            config_revision: config
+                .authority_revision
+                .clone()
+                .unwrap_or_else(|| "unversioned".to_string()),
+            authoring_fingerprint: task_authoring_fingerprint(
+                task,
+                config
+                    .authority_revision
+                    .as_deref()
+                    .unwrap_or("unversioned"),
+            ),
+            authored_route: "shell".to_string(),
+            execution: RuntimeExecution::Shell {
+                argv: vec!["bash".to_string(), "-c".to_string(), command.to_string()],
+                environment: std::collections::BTreeMap::from([
+                    ("TASK_ID".to_string(), task.id.clone()),
+                    ("TASK_TITLE".to_string(), task.title.clone()),
+                ]),
+                working_directory: shell_working_directory.as_ref().to_path_buf(),
+            },
+        });
+    }
+
+    let resolved = if let Some(route) = task
+        .model
+        .as_deref()
+        .filter(|route| !route.trim().is_empty())
+    {
+        let reasoning = task
+            .reasoning
+            .or_else(|| config.resolve_reasoning_for_role(role))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "error[WG-EXEC-REASONING-MISSING]: task route {route:?} has no pinned reasoning"
+                )
+            })?;
+        (route.to_string(), reasoning)
+    } else if let Some(tier) = task.tier.as_deref().filter(|tier| !tier.trim().is_empty()) {
+        let tier = tier.parse::<crate::config::Tier>()?;
+        let route = config.resolve_tier_route(tier)?;
+        let reasoning = task
+            .reasoning
+            .or_else(|| config.resolve_reasoning_for_tier(tier))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "error[WG-EXEC-REASONING-MISSING]: tier={tier} route={:?} has no pinned reasoning",
+                    route.route
+                )
+            })?;
+        (route.route, reasoning)
+    } else {
+        let route = config.resolve_execution_route_for_role(role)?;
+        let reasoning = task.reasoning.or(route.reasoning).ok_or_else(|| {
+            anyhow::anyhow!(
+                "error[WG-EXEC-REASONING-MISSING]: role={role} route={:?} has no pinned reasoning",
+                route.route
+            )
+        })?;
+        (route.route, reasoning)
+    };
+
+    let mut assignment = resolved_pi_assignment(
+        &task.id,
+        agent_identity.unwrap_or("direct"),
+        role,
+        config
+            .authority_revision
+            .as_deref()
+            .unwrap_or("unversioned"),
+        &resolved.0,
+        resolved.1,
+        pi_program,
+    )?;
+    if let RuntimeExecution::Pi { session_id, .. } = &mut assignment.execution {
+        *session_id = task.session_id.clone();
+    }
+    assignment.authoring_fingerprint = task_authoring_fingerprint(
+        task,
+        config
+            .authority_revision
+            .as_deref()
+            .unwrap_or("unversioned"),
+    );
+    Ok(assignment)
+}
+
+/// Convert an already-resolved role policy into the same immutable Pi type used
+/// by workers. This is the reviewer/evaluator/preflight authoring seam: policy
+/// resolves before entry, and the runtime receives only this value.
+pub fn resolved_pi_assignment(
+    task_id: &str,
+    agent_identity: &str,
+    role: DispatchRole,
+    config_revision: &str,
+    authored_route: &str,
+    reasoning: ReasoningLevel,
+    pi_program: impl AsRef<Path>,
+) -> Result<ExecutionAssignment> {
+    let opaque_route = authored_route.strip_prefix("pi:").ok_or_else(|| {
+        anyhow::anyhow!(
+            "error[WG-OPAQUE-LEGACY-ACTIVE]: experimental execution accepts only an exact outer `pi:` envelope; active route {authored_route:?} needs an explicit loss-aware migration and was not translated"
+        )
+    })?;
+    if opaque_route.trim().is_empty() {
+        bail!("error[WG-OPAQUE-PI-ROUTE-MISSING]: `pi:` must carry a non-empty opaque route");
+    }
+    Ok(ExecutionAssignment {
+        schema: 1,
+        task_id: task_id.to_string(),
+        agent_identity: agent_identity.to_string(),
+        role,
+        config_revision: config_revision.to_string(),
+        authoring_fingerprint: direct_authoring_fingerprint(
+            task_id,
+            agent_identity,
+            role,
+            config_revision,
+            authored_route,
+            reasoning,
+        ),
+        authored_route: authored_route.to_string(),
+        execution: RuntimeExecution::Pi {
+            program: pin_executable(pi_program.as_ref()),
+            opaque_route: opaque_route.to_string(),
+            reasoning,
+            session_id: None,
+        },
+    })
+}
+
+/// Resolve a configured executable to an absolute path when it is available.
+/// A missing path is retained verbatim so preflight can classify it without
+/// consuming attempt authority.
+fn direct_authoring_fingerprint(
+    task_id: &str,
+    agent_identity: &str,
+    role: DispatchRole,
+    config_revision: &str,
+    route: &str,
+    reasoning: ReasoningLevel,
+) -> String {
+    let value = serde_json::json!({
+        "task_id": task_id,
+        "agent_identity": agent_identity,
+        "role": role,
+        "config_revision": config_revision,
+        "route": route,
+        "reasoning": reasoning,
+    });
+    format!(
+        "b3:{}",
+        blake3::hash(&serde_json::to_vec(&value).expect("fingerprint serializes")).to_hex()
+    )
+}
+
+pub fn task_authoring_fingerprint(task: &Task, config_revision: &str) -> String {
+    let value = serde_json::json!({
+        "task_id": task.id,
+        "title": task.title,
+        "agent": task.agent,
+        "model": task.model,
+        "tier": task.tier,
+        "reasoning": task.reasoning,
+        "profile": task.profile,
+        "exec": task.exec,
+        "exec_mode": task.exec_mode,
+        "remote_provider": task.remote_provider,
+        "session_id": task.session_id,
+        "config_revision": config_revision,
+    });
+    format!(
+        "b3:{}",
+        blake3::hash(&serde_json::to_vec(&value).expect("fingerprint serializes")).to_hex()
+    )
+}
+
+pub fn pin_executable(program: &Path) -> PathBuf {
+    if program.components().count() > 1 {
+        return std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
+    }
+    std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join(program))
+                .find(|candidate| candidate.is_file())
+        })
+        .and_then(|candidate| std::fs::canonicalize(&candidate).ok().or(Some(candidate)))
+        .unwrap_or_else(|| program.to_path_buf())
+}
+
+/// Ask the exact configured Pi executable with the exact opaque route.  Pi's
+/// exit status supplies the classification; WG does not inspect names or a
+/// model registry.  Exit 2 is Pi's deterministic configuration/capability
+/// rejection contract. Other failures are transient/indeterminate.
+pub fn preflight(assignment: &ExecutionAssignment) -> PiPreflightOutcome {
+    preflight_in_context(assignment, false)
+}
+
+pub fn preflight_hermetic(assignment: &ExecutionAssignment) -> PiPreflightOutcome {
+    preflight_in_context(assignment, true)
+}
+
+fn preflight_in_context(assignment: &ExecutionAssignment, hermetic: bool) -> PiPreflightOutcome {
+    let RuntimeExecution::Pi {
+        program,
+        opaque_route,
+        ..
+    } = &assignment.execution
+    else {
+        return PiPreflightOutcome::Ready;
+    };
+
+    if std::env::var_os("WG_PI_PROCESS_WAKE_EXTENSION").is_some() {
+        return PiPreflightOutcome::MissingRequiredCapability {
+            exit_code: None,
+            diagnostic: "WG-OPAQUE-OPTIONAL-CAPABILITY-UNISOLATED: managed-process wake currently requires provider/model splitting; disable that optional extension or use the stable runtime. No task attempt was admitted.".to_string(),
+        };
+    }
+
+    let mut command = Command::new(program);
+    command.arg("--offline");
+    if hermetic {
+        command.arg("-ne");
+    }
+    let output = command
+        .arg("--list-models")
+        .arg(opaque_route)
+        .stdin(Stdio::null())
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            // Pi's list command exits successfully even when the exact query
+            // matched nothing. Treat only a returned data row as capability;
+            // the opaque query is never split or interpreted by WG.
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let matches = stdout
+                .lines()
+                .skip(1)
+                .filter(|line| !line.trim().is_empty())
+                .count();
+            if matches == 1 {
+                PiPreflightOutcome::Ready
+            } else {
+                PiPreflightOutcome::MissingRequiredCapability {
+                    exit_code: output.status.code(),
+                    diagnostic: format!(
+                        "Pi capability query returned {matches} rows for opaque route {opaque_route:?}; exactly one Pi-resolved selection is required"
+                    ),
+                }
+            }
+        }
+        Ok(output) => {
+            let diagnostic = bounded_diagnostic(&output.stderr, &output.stdout);
+            if output.status.code() == Some(2) {
+                PiPreflightOutcome::MissingRequiredCapability {
+                    exit_code: output.status.code(),
+                    diagnostic,
+                }
+            } else {
+                PiPreflightOutcome::TransientFailure {
+                    exit_code: output.status.code(),
+                    diagnostic,
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            PiPreflightOutcome::MissingRequiredCapability {
+                exit_code: None,
+                diagnostic: format!(
+                    "Pi executable {} is unavailable: {error}",
+                    program.display()
+                ),
+            }
+        }
+        Err(error) => PiPreflightOutcome::TransientFailure {
+            exit_code: None,
+            diagnostic: format!(
+                "Pi preflight could not start {}: {error}",
+                program.display()
+            ),
+        },
+    }
+}
+
+fn bounded_diagnostic(stderr: &[u8], stdout: &[u8]) -> String {
+    let bytes = if stderr.is_empty() { stdout } else { stderr };
+    String::from_utf8_lossy(bytes).chars().take(1000).collect()
+}
+
+pub fn as_spawn_plan(assignment: &ExecutionAssignment) -> crate::dispatch::SpawnPlan {
+    let (executor, model, reasoning, executor_source, model_source, endpoint_source) =
+        match &assignment.execution {
+            RuntimeExecution::Pi {
+                opaque_route,
+                reasoning,
+                ..
+            } => (
+                crate::dispatch::ExecutorKind::Pi,
+                crate::dispatch::ResolvedModelSpec {
+                    raw: assignment.authored_route.clone(),
+                    provider: None,
+                    model_id: opaque_route.clone(),
+                },
+                Some(*reasoning),
+                "immutable execution assignment".to_string(),
+                "immutable opaque Pi route".to_string(),
+                "absent by Pi assignment contract".to_string(),
+            ),
+            RuntimeExecution::Shell { .. } => (
+                crate::dispatch::ExecutorKind::Shell,
+                crate::dispatch::ResolvedModelSpec {
+                    raw: String::new(),
+                    provider: None,
+                    model_id: String::new(),
+                },
+                None,
+                "immutable shell assignment".to_string(),
+                "shell assignment (no model)".to_string(),
+                "shell assignment (no endpoint)".to_string(),
+            ),
+        };
+    crate::dispatch::SpawnPlan {
+        executor,
+        model,
+        reasoning,
+        config_revision: Some(assignment.config_revision.clone()),
+        endpoint: None,
+        env: std::collections::HashMap::new(),
+        argv: Vec::new(),
+        placement: crate::dispatch::Placement::Local,
+        provenance: crate::dispatch::SpawnProvenance {
+            executor_source,
+            model_source,
+            endpoint_source,
+        },
+    }
+}
+
+pub fn bind(
+    assignment: ExecutionAssignment,
+    runtime_agent_id: impl Into<String>,
+    generation: u64,
+    attempt_id: impl Into<String>,
+    attempt_fence: u64,
+) -> BoundExecutionAssignment {
+    BoundExecutionAssignment {
+        assignment,
+        runtime_agent_id: runtime_agent_id.into(),
+        generation,
+        attempt_id: attempt_id.into(),
+        attempt_fence,
+    }
+}
+
+pub fn persist(dir: &Path, bound: &BoundExecutionAssignment) -> Result<PathBuf> {
+    let key = crate::attempt_runtime::AttemptRuntimeKey::new(
+        &bound.assignment.task_id,
+        bound.generation,
+        &bound.attempt_id,
+        bound.attempt_fence,
+        bound.attempt_fence,
+    );
+    let component = crate::attempt_runtime::component_for_write(dir, &key, ASSIGNMENT_COMPONENT)?;
+    std::fs::create_dir_all(&component)?;
+    let path = component.join(ASSIGNMENT_FILE);
+    let bytes = serde_json::to_vec_pretty(bound)?;
+    match crate::atomic_file::write_atomic_create_new(&path, &bytes) {
+        Ok(()) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = std::fs::read(&path)?;
+            if existing != bytes {
+                bail!(
+                    "immutable execution assignment changed for attempt at {}; explicit new attempt authority is required",
+                    path.display()
+                );
+            }
+            Ok(path)
+        }
+        Err(error) => Err(error).with_context(|| format!("persist {}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ConfigSource, Tier};
+
+    fn config(route: &str, revision: &str) -> Config {
+        let mut config = Config::default();
+        config.agent.model = route.to_string();
+        config.tiers.standard = None;
+        config.tiers.fast = None;
+        config.tiers.premium = None;
+        config.tiers.standard_reasoning = Some(ReasoningLevel::High);
+        config.tiers.fast_reasoning = None;
+        config.authority_revision = Some(revision.to_string());
+        config.authority_source = Some(ConfigSource::ProjectFile.to_string());
+        config
+    }
+
+    #[test]
+    fn authoring_keeps_opaque_route_default_equal_tiers_and_revision() {
+        let config = config("pi:future+wire:model/with:odd:bytes", "b3:project-a");
+        assert_eq!(
+            config.resolve_tier_route(Tier::Fast).unwrap().route,
+            config.resolve_tier_route(Tier::Standard).unwrap().route
+        );
+        let task = Task {
+            id: "t".into(),
+            ..Task::default()
+        };
+        let assignment = resolve(
+            &task,
+            &config,
+            DispatchRole::TaskAgent,
+            Some("agent-key"),
+            "/x/pi",
+            "/project-a",
+        )
+        .unwrap();
+        assert_eq!(assignment.config_revision, "b3:project-a");
+        assert_eq!(assignment.agent_identity, "agent-key");
+        assert_eq!(
+            assignment.authored_route,
+            "pi:future+wire:model/with:odd:bytes"
+        );
+        assert_eq!(
+            assignment.execution,
+            RuntimeExecution::Pi {
+                program: PathBuf::from("/x/pi"),
+                opaque_route: "future+wire:model/with:odd:bytes".into(),
+                reasoning: ReasoningLevel::High,
+                session_id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_role_and_task_overrides_are_pinned_without_cross_project_authority() {
+        let mut a = config("pi:a:default", "b3:a");
+        a.models.reviewer = Some(crate::config::RoleModelConfig {
+            provider: None,
+            model: Some("pi:a:review".into()),
+            tier: None,
+            endpoint: None,
+            reasoning: Some(ReasoningLevel::Low),
+        });
+        let b = config("pi:b:default", "b3:b");
+        let task = Task {
+            id: "same".into(),
+            ..Task::default()
+        };
+        let review = resolve(&task, &a, DispatchRole::Reviewer, None, "pi", "/a").unwrap();
+        let worker_b = resolve(&task, &b, DispatchRole::TaskAgent, None, "pi", "/b").unwrap();
+        assert_eq!(review.authored_route, "pi:a:review");
+        assert_eq!(review.config_revision, "b3:a");
+        assert_eq!(worker_b.authored_route, "pi:b:default");
+        assert_eq!(worker_b.config_revision, "b3:b");
+
+        a.tiers.fast = Some("pi:a:fast-distinct".into());
+        a.tiers.fast_reasoning = Some(ReasoningLevel::Minimal);
+        let tier_task = Task {
+            id: "tiered".into(),
+            tier: Some("fast".into()),
+            ..Task::default()
+        };
+        let tiered = resolve(&tier_task, &a, DispatchRole::TaskAgent, None, "pi", "/a").unwrap();
+        assert_eq!(tiered.authored_route, "pi:a:fast-distinct");
+        assert!(matches!(
+            tiered.execution,
+            RuntimeExecution::Pi {
+                reasoning: ReasoningLevel::Minimal,
+                ..
+            }
+        ));
+
+        let mut task_override = task;
+        task_override.model = Some("pi:a:task-specific".into());
+        task_override.reasoning = Some(ReasoningLevel::Xhigh);
+        let pinned = resolve(
+            &task_override,
+            &a,
+            DispatchRole::TaskAgent,
+            None,
+            "pi",
+            "/a",
+        )
+        .unwrap();
+        assert_eq!(pinned.authored_route, "pi:a:task-specific");
+        assert!(matches!(
+            pinned.execution,
+            RuntimeExecution::Pi {
+                reasoning: ReasoningLevel::Xhigh,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn pi_assignment_pins_fresh_or_exact_resume_session() {
+        let mut task = Task {
+            id: "resume".into(),
+            session_id: Some("0199-exact-session".into()),
+            ..Task::default()
+        };
+        let assignment = resolve(
+            &task,
+            &config("pi:test:resume", "b3:resume"),
+            DispatchRole::TaskAgent,
+            None,
+            "pi",
+            "/project",
+        )
+        .unwrap();
+        assert!(matches!(
+            &assignment.execution,
+            RuntimeExecution::Pi {
+                session_id: Some(id),
+                ..
+            } if id == "0199-exact-session"
+        ));
+        task.session_id = None;
+        assert_ne!(
+            assignment.authoring_fingerprint,
+            task_authoring_fingerprint(&task, &assignment.config_revision)
+        );
+    }
+
+    #[test]
+    fn active_legacy_route_is_refused_not_guessed_into_pi() {
+        let legacy_config = config("codex:gpt-historic", "b3:legacy");
+        let task = Task {
+            id: "t".into(),
+            ..Task::default()
+        };
+        let error = resolve(
+            &task,
+            &legacy_config,
+            DispatchRole::TaskAgent,
+            None,
+            "pi",
+            "/project",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("WG-OPAQUE-LEGACY-ACTIVE"));
+
+        let remote = Task {
+            id: "remote".into(),
+            remote_provider: Some("wgid:provider".into()),
+            ..Task::default()
+        };
+        let error = resolve(
+            &remote,
+            &config("pi:test:valid", "b3:remote"),
+            DispatchRole::TaskAgent,
+            None,
+            "pi",
+            "/project",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("WG-OPAQUE-REMOTE-UNSUPPORTED"));
+    }
+
+    #[test]
+    fn shell_assignment_pins_argv_environment_working_directory_and_task_inputs() {
+        let config = config("pi:test:unused", "b3:shell");
+        let task = Task {
+            id: "shell".into(),
+            title: "Exact shell".into(),
+            exec: Some("printf exact".into()),
+            exec_mode: Some("shell".into()),
+            ..Task::default()
+        };
+        let assignment = resolve(
+            &task,
+            &config,
+            DispatchRole::TaskAgent,
+            None,
+            "pi",
+            "/exact/project",
+        )
+        .unwrap();
+        assert!(matches!(
+            &assignment.execution,
+            RuntimeExecution::Shell {
+                argv,
+                environment,
+                working_directory,
+            } if argv == &vec!["bash".to_string(), "-c".to_string(), "printf exact".to_string()]
+                && environment.get("TASK_ID").map(String::as_str) == Some("shell")
+                && working_directory == Path::new("/exact/project")
+        ));
+        let mut changed = task.clone();
+        changed.exec = Some("printf mutated".into());
+        assert_ne!(
+            assignment.authoring_fingerprint,
+            task_authoring_fingerprint(&changed, &assignment.config_revision)
+        );
+    }
+
+    #[test]
+    fn bound_attempt_assignment_is_create_once_and_stably_pinned() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_config = config("pi:test:stable", "b3:revision-1");
+        let task = Task {
+            id: "stable-task".into(),
+            ..Task::default()
+        };
+        let assignment = resolve(
+            &task,
+            &base_config,
+            DispatchRole::TaskAgent,
+            None,
+            "pi",
+            temp.path(),
+        )
+        .unwrap();
+        let bound = bind(assignment, "agent-7", 2, "attempt-2-3", 9);
+        let first = persist(temp.path(), &bound).unwrap();
+        let second = persist(temp.path(), &bound).unwrap();
+        assert_eq!(first, second);
+        let recorded: BoundExecutionAssignment =
+            serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
+        assert_eq!(recorded.attempt_id, "attempt-2-3");
+        assert_eq!(recorded.attempt_fence, 9);
+        assert_eq!(recorded.assignment.config_revision, "b3:revision-1");
+        assert_eq!(recorded.assignment.authored_route, "pi:test:stable");
+
+        let mut changed_same_attempt = bound.clone();
+        changed_same_attempt.assignment.config_revision = "b3:illegal-rewrite".into();
+        assert!(persist(temp.path(), &changed_same_attempt).is_err());
+
+        let next_config = config("pi:test:new-attempt", "b3:revision-2");
+        let next_assignment = resolve(
+            &task,
+            &next_config,
+            DispatchRole::TaskAgent,
+            None,
+            "pi",
+            temp.path(),
+        )
+        .unwrap();
+        let next = bind(next_assignment, "agent-8", 3, "attempt-3-1", 10);
+        let next_path = persist(temp.path(), &next).unwrap();
+        assert_ne!(first, next_path);
+        assert_eq!(
+            serde_json::from_slice::<BoundExecutionAssignment>(&std::fs::read(next_path).unwrap())
+                .unwrap()
+                .assignment
+                .authored_route,
+            "pi:test:new-attempt"
+        );
+    }
+
+    #[test]
+    fn transient_preflight_backoff_is_persisted_bounded_and_assignment_keyed() {
+        let temp = tempfile::tempdir().unwrap();
+        let task = Task {
+            id: "backoff".into(),
+            ..Task::default()
+        };
+        let first = resolve(
+            &task,
+            &config("pi:test:one", "b3:one"),
+            DispatchRole::TaskAgent,
+            None,
+            "pi",
+            temp.path(),
+        )
+        .unwrap();
+        let transient = PiPreflightOutcome::TransientFailure {
+            exit_code: Some(75),
+            diagnostic: "busy".into(),
+        };
+        let t0 = UNIX_EPOCH + Duration::from_secs(100);
+        record_preflight_outcome_at(temp.path(), &first, &transient, t0).unwrap();
+        assert_eq!(
+            preflight_backoff_remaining_at(temp.path(), &first, t0),
+            Some(Duration::from_secs(TRANSIENT_BACKOFF_BASE_SECS))
+        );
+        assert!(
+            preflight_backoff_remaining_at(
+                temp.path(),
+                &first,
+                t0 + Duration::from_secs(TRANSIENT_BACKOFF_BASE_SECS + 1)
+            )
+            .is_none()
+        );
+        record_preflight_outcome_at(temp.path(), &first, &transient, t0 + Duration::from_secs(6))
+            .unwrap();
+        assert_eq!(
+            preflight_backoff_remaining_at(temp.path(), &first, t0 + Duration::from_secs(6)),
+            Some(Duration::from_secs(10))
+        );
+
+        let changed = resolve(
+            &task,
+            &config("pi:test:two", "b3:two"),
+            DispatchRole::TaskAgent,
+            None,
+            "pi",
+            temp.path(),
+        )
+        .unwrap();
+        assert!(preflight_backoff_remaining_at(temp.path(), &changed, t0).is_none());
+        record_preflight_outcome_at(temp.path(), &first, &PiPreflightOutcome::Ready, t0).unwrap();
+        assert!(preflight_backoff_remaining_at(temp.path(), &first, t0).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_pi_preflight_preserves_route_and_classifies_pi_status() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("argv.json");
+        let fake = temp.path().join("pi");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf 'Provider Model\\nfixture exact\\n'\nexit \"${{PI_EXIT:-0}}\"\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&fake).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake, permissions).unwrap();
+        let base_config = config("pi:odd+provider:model:alpha/beta", "b3:a");
+        let task = Task {
+            id: "t".into(),
+            ..Task::default()
+        };
+        let assignment = resolve(
+            &task,
+            &base_config,
+            DispatchRole::TaskAgent,
+            None,
+            &fake,
+            temp.path(),
+        )
+        .unwrap();
+        assert_eq!(preflight(&assignment), PiPreflightOutcome::Ready);
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "--offline\n--list-models\nodd+provider:model:alpha/beta\n"
+        );
+
+        std::fs::write(&fake, "#!/bin/sh\nprintf 'Provider Model\\n'\n").unwrap();
+        assert!(matches!(
+            preflight(&assignment),
+            PiPreflightOutcome::MissingRequiredCapability {
+                exit_code: Some(0),
+                ..
+            }
+        ));
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf 'Provider Model\\nfixture one\\nfixture two\\n'\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            preflight(&assignment),
+            PiPreflightOutcome::MissingRequiredCapability {
+                exit_code: Some(0),
+                ..
+            }
+        ));
+
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\ncase \"$3\" in missing:*) echo pi-rejected >&2; exit 2;; transient:*) echo pi-busy >&2; exit 75;; esac\n",
+        )
+        .unwrap();
+        let missing_config = config("pi:missing:exact", "b3:m");
+        let missing = resolve(
+            &task,
+            &missing_config,
+            DispatchRole::TaskAgent,
+            None,
+            &fake,
+            temp.path(),
+        )
+        .unwrap();
+        assert!(matches!(
+            preflight(&missing),
+            PiPreflightOutcome::MissingRequiredCapability {
+                exit_code: Some(2),
+                ..
+            }
+        ));
+        let transient_config = config("pi:transient:exact", "b3:t");
+        let transient = resolve(
+            &task,
+            &transient_config,
+            DispatchRole::TaskAgent,
+            None,
+            &fake,
+            temp.path(),
+        )
+        .unwrap();
+        assert!(matches!(
+            preflight(&transient),
+            PiPreflightOutcome::TransientFailure {
+                exit_code: Some(75),
+                ..
+            }
+        ));
+    }
+}
