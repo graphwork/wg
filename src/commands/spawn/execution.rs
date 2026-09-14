@@ -3391,15 +3391,18 @@ fn opaque_pi_prompt_command(
             "WG-OPAQUE-OPTIONAL-CAPABILITY-UNISOLATED: managed-process wake requires the stable split-route adapter; this must be diagnosed before attempt admission"
         );
     }
+    if args_have_flag(&settings.args, &["--model", "-m"]) {
+        anyhow::bail!(
+            "WG-OPAQUE-ASSIGNMENT-ARGV-CONFLICT: immutable Pi assignment settings must not contain a second model selector"
+        );
+    }
     let prompt_file = write_executor_prompt_file(output_dir, settings)?;
     let mut parts = vec![shell_escape(&settings.command)];
     for arg in &settings.args {
         parts.push(shell_escape(arg));
     }
-    if !args_have_flag(&settings.args, &["--model", "-m"]) {
-        parts.push("--model".to_string());
-        parts.push(shell_escape(opaque_route));
-    }
+    parts.push("--model".to_string());
+    parts.push(shell_escape(opaque_route));
     append_external_cli_reasoning_args(&mut parts, &settings.args, "pi", Some(reasoning));
 
     let (session_id, session_dir, session_file, header_json) =
@@ -6607,6 +6610,29 @@ mod tests {
         assert!(command.contains("--thinking 'xhigh'"), "{command}");
         assert!(!command.contains("--provider"), "{command}");
         assert_eq!(command.matches(route).count(), 1, "{command}");
+    }
+
+    #[test]
+    fn opaque_assignment_refuses_a_second_model_selector() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let settings = external_test_settings(
+            "pi",
+            "/candidate/pi",
+            &["--mode", "json", "--model=mutable-route"],
+        );
+        let error = opaque_pi_prompt_command(
+            &settings,
+            temp_dir.path(),
+            "pinned:opaque/route",
+            ReasoningLevel::High,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("WG-OPAQUE-ASSIGNMENT-ARGV-CONFLICT"),
+            "{error}"
+        );
     }
 
     #[test]
