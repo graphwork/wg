@@ -57,6 +57,25 @@ fn fixture(now: i64) -> PiWatchdog {
 }
 
 #[test]
+fn pinned_pi_process_fixture_records_compatible_exact_artifact() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi-process-wakeup");
+    let lock: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("package-lock.json")).unwrap()).unwrap();
+    let package = &lock["packages"]["node_modules/@mjakl/pi-processes"];
+    assert_eq!(package["version"], "2.0.0");
+    assert_eq!(
+        package["peerDependencies"]["@earendil-works/pi-coding-agent"],
+        ">=0.84.2"
+    );
+    assert_eq!(
+        package["integrity"],
+        "sha512-LAt8fKvGuVManprlSsiJ0V6cDb5hlL9DlZrGpIW5dpgHVJKozgtBOiCKNovBZR4JYqlFIzbrBvJd9VEfvM0Gmg=="
+    );
+    assert!(root.join("long-command.mjs").is_file());
+}
+
+#[test]
 fn native_live_projection_is_numeric_deduplicated_and_text_free() {
     let mut w = fixture(0);
     let reasoning_canary = "RAW_REASONING_CANARY_7f3b";
@@ -87,6 +106,63 @@ fn native_live_projection_is_numeric_deduplicated_and_text_free() {
     let serialized = serde_json::to_string(w.state()).unwrap();
     assert!(!serialized.contains(reasoning_canary));
     assert!(!serialized.contains("hostile output"));
+}
+
+#[test]
+fn pi_process_yield_wake_is_owned_deduplicated_and_not_terminal() {
+    let mut w = fixture(0);
+    let start = serde_json::json!({
+        "type":"tool_execution_end", "toolCallId":"start-1", "toolName":"process",
+        "result":{"details":{"action":"start","success":true,"process":{
+            "id":"proc_1", "pid":421, "command":"node neutral-fixture.js"
+        }}}, "isError":false
+    });
+    w.ingest_native_value(&start, 1).unwrap();
+    assert_eq!(w.state().native_activity.managed_process_active, 1);
+
+    // Model-idle/settled while the registered command is alive is a yield,
+    // never a completion or synthetic-progress event.
+    let actions = w
+        .ingest_native_value(&serde_json::json!({"type":"agent_settled"}), 2)
+        .unwrap();
+    assert!(actions.is_empty());
+    assert!(!w.state().terminal);
+    assert_eq!(w.state().classification, Classification::LongTool);
+    assert_eq!(
+        w.state().reason_code.as_deref(),
+        Some("managed_process_waiting_for_wake")
+    );
+    // Advance beyond the deliberately short logical model-idle proof bound
+    // (and beyond production's 300s soft threshold). The owned process wait is
+    // still not a provider stall, heartbeat, continuation, or terminal event.
+    assert!(w.tick(603).unwrap().is_empty());
+    assert_eq!(w.state().classification, Classification::LongTool);
+
+    let foreign_wake = serde_json::json!({
+        "type":"message_start", "message":{
+            "role":"custom", "customType":"pi-processes:update",
+            "details":{"processId":"not-owned","status":"exited","exitCode":0,"success":true}
+        }
+    });
+    w.ingest_native_value(&foreign_wake, 604).unwrap();
+    assert_eq!(w.state().native_activity.managed_process_active, 1);
+    assert_eq!(w.state().native_activity.managed_process_wakes, 0);
+
+    let wake = serde_json::json!({
+        "type":"message_start", "message":{
+            "role":"custom", "customType":"pi-processes:update", "content":"untrusted output",
+            "details":{"processId":"proc_1","status":"exited","exitCode":7,"success":false}
+        }
+    });
+    w.ingest_native_value(&wake, 605).unwrap();
+    w.ingest_native_value(&wake, 606).unwrap();
+    assert_eq!(w.state().native_activity.managed_process_active, 0);
+    assert_eq!(w.state().native_activity.managed_process_completed, 1);
+    assert_eq!(w.state().native_activity.managed_process_wakes, 1);
+    assert!(!w.state().terminal);
+    let serialized = serde_json::to_string(w.state()).unwrap();
+    assert!(!serialized.contains("proc_1"));
+    assert!(!serialized.contains("untrusted output"));
 }
 
 #[test]

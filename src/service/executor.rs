@@ -1744,10 +1744,12 @@ impl ExecutorRegistry {
                 executor: ExecutorSettings {
                     executor_type: "pi".to_string(),
                     command: "pi".to_string(),
-                    // Pi's non-interactive worker surface (`--mode json`, piped
-                    // stdio avoids terminal takeover). Long-lived chat sessions
-                    // use `wg pi-handler --mode rpc`; task workers use this
-                    // one-shot argv through the spawn adapter.
+                    // Pi's default non-interactive worker surface (`--mode json`,
+                    // piped stdio avoids terminal takeover). Long-lived chat uses
+                    // `wg pi-handler --mode rpc`. The narrow, explicit
+                    // WG_PI_PROCESS_WAKE_EXTENSION compatibility path substitutes
+                    // `wg pi-process-worker` at spawn time; it does not change
+                    // these production defaults.
                     args: vec![
                         "--mode".to_string(),
                         "json".to_string(),

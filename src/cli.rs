@@ -2976,6 +2976,31 @@ pub enum Commands {
         reasoning: Option<String>,
     },
 
+    /// Internal opt-in retained Pi RPC worker for @mjakl/pi-processes.
+    #[command(name = "pi-process-worker", hide = true)]
+    PiProcessWorker {
+        #[arg(long)]
+        task_id: String,
+        #[arg(long)]
+        prompt_file: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        session_dir: String,
+        #[arg(long)]
+        evidence_file: String,
+        #[arg(long)]
+        process_extension: String,
+        #[arg(long)]
+        pi_command: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        reasoning: String,
+    },
+
     /// Print the WG directory that `wg` would use from here,
     /// and show which resolver step won (CLI flag / env / walk-up /
     /// home / default). Useful when you're confused about which graph
@@ -7357,6 +7382,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::CodexHandler { .. } => "codex-handler",
         Commands::OpenCodeHandler { .. } => "opencode-handler",
         Commands::PiHandler { .. } => "pi-handler",
+        Commands::PiProcessWorker { .. } => "pi-process-worker",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Which { .. } => "which",
         Commands::Executors { .. } => "executors",

@@ -68,6 +68,15 @@ pub struct NativeActivityProjection {
     pub tool_progress: Option<u64>,
     pub tool_child_state: Option<String>,
     pub tool_receipt_state: Option<String>,
+    /// Bounded projection of opt-in @mjakl/pi-processes ownership. Handles are
+    /// retained only as digests; command/log content is never projected here.
+    pub managed_process_active: u64,
+    pub managed_process_completed: u64,
+    pub managed_process_wakes: u64,
+    #[serde(default)]
+    managed_process_ids: BTreeSet<String>,
+    #[serde(default)]
+    managed_process_receipts: BTreeSet<String>,
     pub usage_input: Option<u64>,
     pub usage_output: Option<u64>,
     pub usage_cache_read: Option<u64>,
@@ -629,6 +638,13 @@ pub enum Observation {
         tool_call_id: String,
         receipt: String,
     },
+    ManagedProcessStarted {
+        process_id_digest: String,
+    },
+    ManagedProcessCompleted {
+        process_id_digest: String,
+        receipt: String,
+    },
     WaitAccepted {
         correlation: String,
     },
@@ -1004,6 +1020,37 @@ impl PiWatchdog {
                         .to_string(),
                 })
             }
+            "message_start"
+                if value
+                    .get("message")
+                    .and_then(|v| v.get("role"))
+                    .and_then(|v| v.as_str())
+                    == Some("custom")
+                    && value
+                        .get("message")
+                        .and_then(|v| v.get("customType"))
+                        .and_then(|v| v.as_str())
+                        == Some("pi-processes:update") =>
+            {
+                let details = value.get("message").and_then(|v| v.get("details"));
+                let process_id = details
+                    .and_then(|v| v.get("processId"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                Some(Observation::ManagedProcessCompleted {
+                    process_id_digest: digest_bytes(process_id.as_bytes()),
+                    receipt: digest_bytes(
+                        serde_json::json!({
+                            "process": process_id,
+                            "status": details.and_then(|v| v.get("status")),
+                            "exit_code": details.and_then(|v| v.get("exitCode")),
+                            "success": details.and_then(|v| v.get("success")),
+                        })
+                        .to_string()
+                        .as_bytes(),
+                    ),
+                })
+            }
             "message_start" | "provider_response_start" | "model_response_start" => {
                 Some(Observation::ProviderResponseStarted)
             }
@@ -1045,6 +1092,32 @@ impl PiWatchdog {
                     .to_string(),
                 progress: self.state.progress_seq + 1,
             }),
+            "tool_execution_end"
+                if value.get("toolName").and_then(|v| v.as_str()) == Some("process")
+                    && value
+                        .get("result")
+                        .and_then(|v| v.get("details"))
+                        .and_then(|v| v.get("action"))
+                        .and_then(|v| v.as_str())
+                        == Some("start")
+                    && value
+                        .get("result")
+                        .and_then(|v| v.get("details"))
+                        .and_then(|v| v.get("success"))
+                        .and_then(|v| v.as_bool())
+                        == Some(true) =>
+            {
+                let process_id = value
+                    .get("result")
+                    .and_then(|v| v.get("details"))
+                    .and_then(|v| v.get("process"))
+                    .and_then(|v| v.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                Some(Observation::ManagedProcessStarted {
+                    process_id_digest: digest_bytes(process_id.as_bytes()),
+                })
+            }
             "tool_execution_end" => Some(Observation::ToolCompleted {
                 tool_call_id: value
                     .get("toolCallId")
@@ -1361,6 +1434,16 @@ impl PiWatchdog {
             }
             Observation::AgentSettled => {
                 self.state.phase = Phase::Settled;
+                if self.state.native_activity.managed_process_active > 0 {
+                    // A Pi model turn may settle while an extension-owned
+                    // process continues. Turn-idle is not task completion: the
+                    // retained RPC session will emit its registered wake event.
+                    self.state.classification = Classification::LongTool;
+                    self.state.reason_code = Some("managed_process_waiting_for_wake".into());
+                    self.cancel_pending();
+                    self.persist("managed-process-yield", now)?;
+                    return Ok(Vec::new());
+                }
                 if self.state.completion_handoff.is_none() {
                     self.state.completion_handoff = Some(CompletionHandoff {
                         source: self.state.source.clone(),
@@ -1427,6 +1510,42 @@ impl PiWatchdog {
                 self.state.phase = Phase::Unknown;
                 self.meaningful("tool-complete", tool_call_id.as_bytes(), now);
             }
+            Observation::ManagedProcessStarted { process_id_digest } => {
+                self.state.tool = None;
+                self.state.exact_guards.effect = true;
+                let native = &mut self.state.native_activity;
+                let inserted = native.managed_process_ids.insert(process_id_digest.clone());
+                if inserted {
+                    native.managed_process_active = native.managed_process_active.saturating_add(1);
+                    native.event_seq = native.event_seq.saturating_add(1);
+                    native.last_activity_at = Some(now);
+                }
+                self.state.phase = Phase::Tool;
+                self.state.classification = Classification::LongTool;
+                if inserted {
+                    self.meaningful("managed-process-start", process_id_digest.as_bytes(), now);
+                }
+            }
+            Observation::ManagedProcessCompleted {
+                process_id_digest,
+                receipt,
+            } => {
+                let native = &mut self.state.native_activity;
+                if native.managed_process_ids.contains(&process_id_digest)
+                    && native.managed_process_receipts.insert(receipt.clone())
+                {
+                    native.managed_process_ids.remove(&process_id_digest);
+                    native.managed_process_active = native.managed_process_active.saturating_sub(1);
+                    native.managed_process_completed =
+                        native.managed_process_completed.saturating_add(1);
+                    native.managed_process_wakes = native.managed_process_wakes.saturating_add(1);
+                    native.event_seq = native.event_seq.saturating_add(1);
+                    native.last_activity_at = Some(now);
+                    self.state.phase = Phase::Unknown;
+                    self.state.classification = Classification::Active;
+                    self.meaningful("managed-process-wake", receipt.as_bytes(), now);
+                }
+            }
             Observation::WaitAccepted { correlation } => {
                 self.state.classification = Classification::WaitingUser;
                 self.state.wait_correlation = Some(correlation);
@@ -1476,6 +1595,16 @@ impl PiWatchdog {
 
     pub fn tick(&mut self, now: i64) -> Result<Vec<ActionKind>, WatchdogError> {
         if self.state.terminal || self.state.classification == Classification::WaitingUser {
+            return Ok(Vec::new());
+        }
+        if self.state.native_activity.managed_process_active > 0 {
+            // The model is intentionally idle while the separately-bounded,
+            // extension-owned command runs. Its registered exit event—not a
+            // token heartbeat—will resume the session. Outer command/task
+            // deadlines remain authoritative.
+            self.state.classification = Classification::LongTool;
+            self.state.reason_code = Some("managed_process_waiting_for_wake".into());
+            self.persist("managed-process-bounded-wait", now)?;
             return Ok(Vec::new());
         }
         if self
