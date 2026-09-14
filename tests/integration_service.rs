@@ -1040,18 +1040,74 @@ fn test_service_start_readiness_timeout_is_nonzero_and_loud() {
 
 #[test]
 #[serial]
-fn test_service_start_rejects_implicit_coordinator_config() {
+fn test_service_start_does_not_admit_implicit_coordinator_config() {
     let tmp = tempfile::tempdir().unwrap();
-    let wg_dir = setup_workgraph(tmp.path());
+    let wg_dir = tmp.path().join(".wg");
+    // setup_workgraph intentionally runs `init --route pi`; this negative
+    // fixture needs the real graph-only entry point instead.
+    wg_ok(&wg_dir, &["init"]);
     fs::write(
         wg_dir.join("config.toml"),
         "[agency]\nauto_assign = false\nauto_evaluate = false\n",
     )
     .unwrap();
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Must remain unlaunched without a route",
+            "--id",
+            "unconfigured-task",
+            add_publish::PUBLISH_MARKER,
+        ],
+    );
 
-    let output = wg_cmd(&wg_dir, &["service", "start"]);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("WG-EXEC-UNSELECTED"), "{stderr}");
-    assert!(!wg_dir.join("service/state.json").exists());
+    // The graph service is useful without an LLM route, so startup itself is
+    // allowed. Admission must still fail closed before reserving an attempt or
+    // launching a model process.
+    let _guard = ServiceGuard::new(&wg_dir);
+    let output = wg_cmd(
+        &wg_dir,
+        &[
+            "service",
+            "start",
+            "--no-coordinator-agent",
+            "--no-supervise",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "graph-only service failed to start: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let deferred = wait_for(Duration::from_secs(5), 100, || {
+        let output = wg_cmd(&wg_dir, &["show", "unconfigured-task", "--json"]);
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .ok()
+            .and_then(|task| task["lifecycle"]["audit"].as_array().cloned())
+            .is_some_and(|audit| {
+                audit
+                    .iter()
+                    .any(|event| event["event_kind"] == "admission-deferred")
+            })
+    });
+    assert!(deferred, "route-less task never reached admission control");
+
+    let task_output = wg_cmd(&wg_dir, &["show", "unconfigured-task", "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task_output.stdout).unwrap();
+    assert_eq!(task["status"], "open");
+    assert_eq!(task["lifecycle"]["attempt_sequence"], 0);
+    assert!(task["assigned"].is_null());
+    assert!(
+        task["route_pin"]["current_inheritance"]["unavailable_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("WG-EXEC-ROUTE-MISSING")),
+        "missing route was not surfaced: {task}"
+    );
+    let registry = read_registry(&wg_dir).expect("service registry should exist");
+    assert_eq!(
+        registry["agents"].as_object().map(|agents| agents.len()),
+        Some(0)
+    );
 }
