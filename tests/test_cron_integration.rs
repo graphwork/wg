@@ -310,6 +310,7 @@ fn create_test_task() -> Task {
         context_scope: None,
         exec_mode: None,
         token_usage: None,
+        prior_source_attempt_usage: Vec::new(),
         actual_executor: None,
         actual_model: None,
         completion_review_activity: Vec::new(),

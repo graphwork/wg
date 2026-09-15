@@ -90,6 +90,7 @@ fn create_task_with_timeout(id: &str, verify_timeout: Option<String>) -> Task {
         context_scope: None,
         exec_mode: None,
         token_usage: None,
+        prior_source_attempt_usage: Vec::new(),
         actual_executor: None,
         actual_model: None,
         completion_review_activity: Vec::new(),
