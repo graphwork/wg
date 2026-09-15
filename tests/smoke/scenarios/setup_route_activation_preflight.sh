@@ -73,10 +73,44 @@ fi
 models=$(cd "$scratch/project" && env -i HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/home/.wg" USER=test PATH="/usr/bin:/bin" \
     WG_SMOKE_RUN_ID="$WG_SMOKE_RUN_ID" WG_SMOKE_SCENARIO="$WG_SMOKE_SCENARIO" \
     "$W" --dir "$scratch/project/.wg" config --models)
-default_line=$(grep -E '^  default ' <<<"$models")
-task_line=$(grep -E '^  task_agent ' <<<"$models")
-grep -qF "$route" <<<"$default_line" || loud_fail "effective default route drifted: $default_line"
-grep -qF "$route" <<<"$task_line" || loud_fail "effective task-agent route drifted: $task_line"
+for tier_label in 'project default' 'effective strong' 'effective weak'; do
+    tier_line=$(grep -E "^  ${tier_label}[[:space:]]" <<<"$models")
+    grep -qF "$route" <<<"$tier_line" \
+        || loud_fail "${tier_label} crossed away from the one approved route: $tier_line"
+done
+for role_name in default task_agent evaluator flip_inference flip_comparison assigner evolver verification triage creator compactor coordinator_eval placer chat_compactor reviewer merger; do
+    role_line=$(grep -E "^  ${role_name}[[:space:]]" <<<"$models")
+    grep -qF "$route" <<<"$role_line" \
+        || loud_fail "first-task/review role ${role_name} crossed away from the one approved route: $role_line"
+done
+if grep -E '^  (project default|effective strong|effective weak|default|task_agent|evaluator|flip_inference|flip_comparison|assigner|evolver|verification|triage|creator|compactor|coordinator_eval|placer|chat_compactor|reviewer|merger)[[:space:]]' <<<"$models" | grep -vF "$route"; then
+    loud_fail "setup projected at least one first-task/review role onto a second provider: $models"
+fi
+
+# A real terminal invocation must refuse a split-brain project target before
+# it can write usage/config bytes to either project. This is the human typo:
+# the shell is in project A while --dir names project B.
+mkdir -p "$scratch/project-a" "$scratch/project-b"
+"${base_env[@]}" "$W" --dir "$scratch/project-a/.wg" init --no-agency >/dev/null
+"${base_env[@]}" "$W" --dir "$scratch/project-b/.wg" init --no-agency >/dev/null
+before_b=$(find "$scratch/project-b" -type f -print0 | sort -z | xargs -0 sha256sum)
+mismatch_cmd="cd '$scratch/project-a' && env -i HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/home/.wg' XDG_CACHE_HOME='$scratch/home/.cache' USER=test TERM=xterm PATH='$scratch/fake-bin:/usr/bin:/bin' WG_SMOKE_RUN_ID='$WG_SMOKE_RUN_ID' WG_SMOKE_SCENARIO='$WG_SMOKE_SCENARIO' '$W' --dir '$scratch/project-b/.wg' setup --route pi --yes --model '$route'"
+if script -qec "$mismatch_cmd" "$scratch/mismatch.typescript" >/dev/null; then
+    loud_fail "setup accepted disagreeing --dir/CWD project targets"
+fi
+grep -q 'WG-SETUP-PROJECT-TARGET-MISMATCH' "$scratch/mismatch.typescript" \
+    || loud_fail "setup mismatch did not fail with the stable actionable diagnostic: $(cat "$scratch/mismatch.typescript")"
+grep -qF "$scratch/project-a" "$scratch/mismatch.typescript" \
+    || loud_fail "setup mismatch omitted the CWD project"
+grep -qF "$scratch/project-b" "$scratch/mismatch.typescript" \
+    || loud_fail "setup mismatch omitted the --dir project"
+[[ ! -e "$scratch/project-a/worksgood.toml" ]] \
+    || loud_fail "setup mismatch wrote the CWD project's config"
+[[ ! -e "$scratch/project-b/worksgood.toml" ]] \
+    || loud_fail "setup mismatch wrote the --dir project's config"
+after_b=$(find "$scratch/project-b" -type f -print0 | sort -z | xargs -0 sha256sum)
+[[ "$after_b" == "$before_b" ]] \
+    || loud_fail "setup mismatch mutated the wrong --dir project before refusing"
 
 # Exercise checked reload against a real running daemon (max-agents=0 keeps
 # this phase deterministic), then drive the first LLM-backed command manually.
@@ -121,4 +155,4 @@ grep -q 'Pi auth/model: NOT VERIFIED' "$scratch/missing.typescript" \
 grep -q 'no fallback was chosen' "$scratch/missing.typescript" \
     || loud_fail "unavailable Pi output omitted no-fallback guarantee"
 
-echo "PASS: setup terminal flow activates pi + exact routes and reports bounded available/unavailable/auth/model readiness without provider access or fallback"
+echo "PASS: setup terminal flow keeps every first-task/review role on one exact Pi route, rejects --dir/CWD project disagreement before writes, and reports bounded readiness without provider access or fallback"
