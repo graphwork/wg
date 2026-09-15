@@ -1173,8 +1173,8 @@ fn assemble_turn(
 
 // --- opt-in task-worker process wake adapter ---------------------------------
 
-const PI_PROCESSES_PACKAGE: &str = "@mjakl/pi-processes";
-const PI_PROCESSES_VERSION: &str = "2.0.0";
+const PI_PROCESSES_PACKAGE: &str = worksgood::execution_assignment::PI_PROCESSES_PACKAGE;
+const PI_PROCESSES_VERSION: &str = worksgood::execution_assignment::PI_PROCESSES_VERSION;
 const MAX_PROCESS_EVIDENCE_TEXT: usize = 512;
 
 #[derive(Debug, serde::Serialize, Default)]
@@ -1295,37 +1295,7 @@ fn process_log_reference(details: Option<&serde_json::Value>) -> Option<String> 
 }
 
 fn verify_process_extension(entry: &Path) -> Result<()> {
-    let entry = entry
-        .canonicalize()
-        .with_context(|| format!("canonicalize process extension {}", entry.display()))?;
-    let package_json = entry
-        .ancestors()
-        .take(5)
-        .map(|dir| dir.join("package.json"))
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "WG-PI-PROCESS-EXTENSION-INVALID: {} has no enclosing package.json",
-                entry.display()
-            )
-        })?;
-    let package: serde_json::Value = serde_json::from_slice(&std::fs::read(&package_json)?)?;
-    let name = package.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let version = package
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if name != PI_PROCESSES_PACKAGE || version != PI_PROCESSES_VERSION {
-        anyhow::bail!(
-            "WG-PI-PROCESS-EXTENSION-MISMATCH: expected {}@{}, found {:?}@{:?} at {}",
-            PI_PROCESSES_PACKAGE,
-            PI_PROCESSES_VERSION,
-            name,
-            version,
-            package_json.display()
-        );
-    }
-    Ok(())
+    worksgood::execution_assignment::verify_managed_process_extension(entry)
 }
 
 fn persist_process_evidence(path: &Path, evidence: &ProcessWakeEvidence) -> Result<()> {

@@ -2689,6 +2689,13 @@ const REGISTRY_REFRESH_FAILURE_THRESHOLD: u64 = 5;
 /// How long the breaker stays open once tripped.
 const REGISTRY_REFRESH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
+fn registry_refresh_has_selected_route(config: &worksgood::config::Config) -> bool {
+    match config.project_default_route() {
+        Ok(_) => true,
+        Err(error) => !format!("{error:#}").contains("WG-EXEC-ROUTE-MISSING"),
+    }
+}
+
 /// Run model registry refresh directly from the daemon without graph control tasks.
 ///
 /// Time-gated: only fires when at least `registry_refresh_interval` seconds
@@ -2704,8 +2711,8 @@ const REGISTRY_REFRESH_COOLDOWN: std::time::Duration = std::time::Duration::from
 fn run_registry_refresh(dir: &Path, state: &mut RegistryRefreshState, logger: &DaemonLogger) {
     let config = worksgood::config::Config::load_or_default(dir);
     let interval = config.coordinator.registry_refresh_interval;
-    if interval == 0 {
-        return; // Disabled
+    if interval == 0 || !registry_refresh_has_selected_route(&config) {
+        return; // Disabled or no execution route has been selected.
     }
 
     // Circuit breaker: after a recent burst of failures, hold off and
@@ -6470,6 +6477,15 @@ mod tests {
         assert!(warn_bare_provider_model_arg(Some("claude:opus"), "x").is_none());
         assert!(warn_bare_provider_model_arg(Some("opus"), "x").is_none());
         assert!(warn_bare_provider_model_arg(None, "x").is_none());
+    }
+
+    #[test]
+    fn registry_refresh_is_irrelevant_until_a_project_route_is_selected() {
+        let mut config = worksgood::config::Config::default();
+        assert!(!registry_refresh_has_selected_route(&config));
+
+        config.agent.model = "pi:openai-codex/gpt-5.6-sol".into();
+        assert!(registry_refresh_has_selected_route(&config));
     }
 
     /// 5 consecutive failures must trip the circuit breaker (sets

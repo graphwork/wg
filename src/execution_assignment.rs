@@ -23,6 +23,8 @@ pub const ASSIGNMENT_FILE: &str = "assignment.json";
 const PREFLIGHT_BACKOFF_FILE: &str = "opaque-preflight-backoff.json";
 const TRANSIENT_BACKOFF_BASE_SECS: u64 = 5;
 const PREFLIGHT_BACKOFF_CAP_SECS: u64 = 60;
+pub const PI_PROCESSES_PACKAGE: &str = "@mjakl/pi-processes";
+pub const PI_PROCESSES_VERSION: &str = "2.0.0";
 
 pub fn experiment_enabled() -> bool {
     std::env::var(EXPERIMENT_ENV)
@@ -315,6 +317,47 @@ fn pinned_path(path: impl AsRef<Path>) -> PinnedPathIdentity {
     PinnedPathIdentity { path, digest }
 }
 
+/// Validate the optional managed-process extension at the selection boundary.
+///
+/// This check intentionally happens while authoring and again during pinned-plan
+/// verification, before any attempt or Pi invocation receives authority.
+pub fn verify_managed_process_extension(entry: &Path) -> Result<()> {
+    let entry = entry
+        .canonicalize()
+        .with_context(|| format!("canonicalize process extension {}", entry.display()))?;
+    let package_json = entry
+        .ancestors()
+        .take(5)
+        .map(|dir| dir.join("package.json"))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "WG-PI-PROCESS-EXTENSION-INVALID: {} has no enclosing package.json",
+                entry.display()
+            )
+        })?;
+    let package: serde_json::Value = serde_json::from_slice(&std::fs::read(&package_json)?)?;
+    let name = package
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let version = package
+        .get("version")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if name != PI_PROCESSES_PACKAGE || version != PI_PROCESSES_VERSION {
+        bail!(
+            "WG-PI-PROCESS-EXTENSION-MISMATCH: expected {}@{}, found {:?}@{:?} at {}",
+            PI_PROCESSES_PACKAGE,
+            PI_PROCESSES_VERSION,
+            name,
+            version,
+            package_json.display()
+        );
+    }
+    Ok(())
+}
+
 fn pi_config_root() -> PathBuf {
     let root = std::env::var_os("PI_CODING_AGENT_DIR")
         .map(PathBuf::from)
@@ -476,6 +519,7 @@ fn worker_launch_plan(
             if !path.is_absolute() {
                 bail!("error[WG-OPAQUE-ASSIGNMENT-CONFIG]: WG_PI_PROCESS_WAKE_EXTENSION must be an absolute path");
             }
+            verify_managed_process_extension(&path)?;
             let identity = pinned_path(path);
             if identity.digest == "missing" {
                 bail!("error[WG-OPAQUE-ASSIGNMENT-CONFIG]: managed process extension is unavailable at {}", identity.path.display());
@@ -711,9 +755,14 @@ pub fn resolve(
         (route.route, reasoning)
     } else {
         let route = config.resolve_opaque_pi_route_for_role(role).map_err(|error| {
-            anyhow::anyhow!(
-                "error[WG-OPAQUE-LEGACY-ACTIVE]: role selection is not a safe outer Pi envelope and was not migrated: {error:#}"
-            )
+            let diagnostic = format!("{error:#}");
+            if diagnostic.contains("WG-EXEC-ROUTE-MISSING") {
+                anyhow::anyhow!(diagnostic)
+            } else {
+                anyhow::anyhow!(
+                    "error[WG-OPAQUE-LEGACY-ACTIVE]: role selection is not a safe outer Pi envelope and was not migrated: {diagnostic}"
+                )
+            }
         })?;
         let reasoning = task.reasoning.unwrap_or(route.reasoning);
         (route.route, reasoning)
@@ -1019,6 +1068,9 @@ pub fn verify_launch_plan(plan: &PiLaunchPlan) -> Result<()> {
         if &observed != expected {
             bail!("pinned Pi extension changed at {}", expected.path.display());
         }
+    }
+    if let Some(extension) = plan.managed_process_extension.as_ref() {
+        verify_managed_process_extension(&extension.path)?;
     }
     Ok(())
 }
@@ -1338,6 +1390,66 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("WG-OPAQUE-REMOTE-UNSUPPORTED"));
+    }
+
+    #[test]
+    fn missing_route_preserves_actionable_route_code_without_legacy_wrapper() {
+        let missing_config = config("", "b3:missing");
+        let task = Task {
+            id: "missing".into(),
+            ..Task::default()
+        };
+        let diagnostic = format!(
+            "{:#}",
+            resolve(
+                &task,
+                &missing_config,
+                DispatchRole::TaskAgent,
+                None,
+                "pi",
+                "/project",
+            )
+            .unwrap_err()
+        );
+        assert!(diagnostic.contains("WG-EXEC-ROUTE-MISSING"), "{diagnostic}");
+        assert!(
+            !diagnostic.contains("WG-OPAQUE-LEGACY-ACTIVE"),
+            "{diagnostic}"
+        );
+    }
+
+    #[test]
+    fn managed_process_extension_requires_exact_package_name_and_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("package");
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        let entry = package.join("src/index.js");
+        std::fs::write(&entry, "export default {};").unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            format!(
+                r#"{{"name":"{}","version":"{}"}}"#,
+                PI_PROCESSES_PACKAGE, PI_PROCESSES_VERSION
+            ),
+        )
+        .unwrap();
+        verify_managed_process_extension(&entry).unwrap();
+
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"wrong-package","version":"9.9.9"}"#,
+        )
+        .unwrap();
+        let diagnostic = verify_managed_process_extension(&entry)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            diagnostic.contains("WG-PI-PROCESS-EXTENSION-MISMATCH"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("@mjakl/pi-processes@2.0.0"));
+        assert!(diagnostic.contains("wrong-package"));
+        assert!(diagnostic.contains("9.9.9"));
     }
 
     #[test]

@@ -171,5 +171,82 @@ assert e['argv'][0:2]==['bash','-c'] and 'printf shell-ok' in e['argv'][2],x
 assert e['environment']=={'TASK_ID':'shell-ok','TASK_TITLE':'Explicit shell assignment'},x
 assert e['working_directory']==sys.argv[2],x
 PY
+wgrun service stop --force --kill-agents >/dev/null 2>&1 || true
 
-echo 'PASS: controlled Pi fixture preserved opaque assignment through preflight, launch, restart, cancellation and fail-closed admission'
+# An explicitly selected, but invalid, optional process package is an
+# admission error. It must retain the actionable package mismatch, remain one
+# coalesced episode, and never reserve an attempt or invoke Pi.
+(
+  root="$scratch/invalid-package"; project="$root/project"; home="$root/home"
+  invalid_calls="$root/pi-calls"; extension="$root/wrong-package/src/index.js"
+  mkdir -p "$project" "$home" "$invalid_calls" "$(dirname "$extension")"
+  printf 'export default {};\n' >"$extension"
+  printf '{"name":"wrong-package","version":"9.9.9"}\n' >"$root/wrong-package/package.json"
+  export HOME="$home" WG_GLOBAL_DIR="$home/.wg" OPAQUE_PI_CALLS="$invalid_calls"
+  export WG_PI_PROCESS_WAKE_EXTENSION="$extension"
+  unset OPENAI_API_KEY OPENROUTER_API_KEY
+  cd "$project"
+  git init -q -b main; git config user.email invalid@test.invalid; git config user.name Invalid
+  printf 'base\n' >base.txt; git add base.txt; git commit -qm base
+  "$WG_BIN" init --no-agency >/dev/null
+  G="$project/.wg"; nwgrun(){ (cd "$project" && "$WG_BIN" --dir "$G" "$@"); }
+  trap 'nwgrun service stop --force --kill-agents >/dev/null 2>&1 || true' EXIT
+  nwgrun config --local --model 'pi:openai-codex/gpt-5.6-sol' --reasoning high \
+    --auto-assign false --auto-evaluate false --no-reload >/dev/null
+  nwgrun config set dispatcher.worktree_isolation false >/dev/null
+  nwgrun config set dispatcher.settling_delay_ms 0 >/dev/null
+  nwgrun add 'Invalid selected optional package' --id invalid-package >/dev/null
+  nwgrun publish invalid-package --only >/dev/null
+  nwgrun service start --max-agents 1 --no-coordinator-agent --no-supervise >/dev/null
+  for _ in $(seq 1 200); do
+    grep -q 'WG-PI-PROCESS-EXTENSION-MISMATCH' "$G/service/daemon.log" 2>/dev/null && break
+    sleep .05
+  done
+  details=$(nwgrun show invalid-package --json)
+  python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["status"]=="open",x; assert x.get("retry_count",0)==0,x; assert x.get("assigned") is None,x; assert x.get("lifecycle",{}).get("current_attempt") is None,x' <<<"$details"
+  [[ $(grep -c 'WG-PI-PROCESS-EXTENSION-MISMATCH' "$G/service/daemon.log" || true) == 1 ]] \
+    || loud_fail "invalid optional package mismatch was not surfaced once per episode: $(tail -80 "$G/service/daemon.log")"
+  grep -q 'expected @mjakl/pi-processes@2.0.0, found "wrong-package"@"9.9.9"' "$G/service/daemon.log" \
+    || loud_fail "invalid optional package lost its actionable expected/found diagnostic"
+  [[ -z $(find "$invalid_calls" -type f -print -quit) ]] \
+    || loud_fail "invalid optional package invoked Pi before admission"
+)
+
+# A graph with no selected execution route keeps the native missing-route code,
+# does not masquerade as an active legacy route, and does not make an unrelated
+# OpenRouter registry credential request.
+(
+  root="$scratch/missing-route"; project="$root/project"; home="$root/home"
+  missing_calls="$root/pi-calls"
+  mkdir -p "$project" "$home" "$missing_calls"
+  export HOME="$home" WG_GLOBAL_DIR="$home/.wg" OPAQUE_PI_CALLS="$missing_calls"
+  unset WG_PI_PROCESS_WAKE_EXTENSION OPENAI_API_KEY OPENROUTER_API_KEY
+  cd "$project"
+  git init -q -b main; git config user.email missing@test.invalid; git config user.name Missing
+  printf 'base\n' >base.txt; git add base.txt; git commit -qm base
+  "$WG_BIN" init --no-agency >/dev/null
+  G="$project/.wg"; nwgrun(){ (cd "$project" && "$WG_BIN" --dir "$G" "$@"); }
+  trap 'nwgrun service stop --force --kill-agents >/dev/null 2>&1 || true' EXIT
+  nwgrun config set dispatcher.worktree_isolation false >/dev/null
+  nwgrun config set dispatcher.settling_delay_ms 0 >/dev/null
+  nwgrun add 'Missing route fidelity' --id missing-route >/dev/null
+  nwgrun publish missing-route --only >/dev/null
+  nwgrun service start --max-agents 1 --no-coordinator-agent --no-supervise >/dev/null
+  for _ in $(seq 1 200); do
+    grep -q 'WG-EXEC-ROUTE-MISSING' "$G/service/daemon.log" 2>/dev/null && break
+    sleep .05
+  done
+  sleep .5
+  details=$(nwgrun show missing-route --json)
+  python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["status"]=="open",x; assert x.get("retry_count",0)==0,x; assert x.get("assigned") is None,x; assert x.get("lifecycle",{}).get("current_attempt") is None,x' <<<"$details"
+  [[ $(grep -c 'WG-EXEC-ROUTE-MISSING' "$G/service/daemon.log" || true) == 1 ]] \
+    || loud_fail "missing route was not surfaced once per episode: $(tail -80 "$G/service/daemon.log")"
+  ! grep -q 'WG-OPAQUE-LEGACY-ACTIVE' "$G/service/daemon.log" \
+    || loud_fail "missing route was incorrectly wrapped as legacy active"
+  ! grep -Eq 'Registry refresh error|OpenRouter API key|OPENROUTER_API_KEY' "$G/service/daemon.log" \
+    || loud_fail "unselected route triggered unrelated provider-registry credential noise"
+  [[ -z $(find "$missing_calls" -type f -print -quit) ]] \
+    || loud_fail "missing route invoked Pi before admission"
+)
+
+echo 'PASS: controlled Pi fixture preserved opaque assignment and rejected invalid optional packages and missing routes before attempt/model authority'
