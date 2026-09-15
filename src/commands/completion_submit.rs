@@ -8,10 +8,10 @@ use worksgood::completion_manifest::{
     EvidenceRef, GitOutput, OutputRef, ResolvedReviewBundle, ReviewResolver,
 };
 use worksgood::completion_review::{
-    CompletionReviewBinding, ManifestReviewer, ReviewFailureClass, ReviewValveOutcome,
-    ReviewValveStatus, ReviewerKind, ReviewerUnavailable, SemanticReview, StoredReviewReceipt,
-    load_stored_review_receipt, load_stored_review_receipt_by_digest,
-    run_review_valve_bound_reusing_observed,
+    CompletionReviewBinding, ManifestReviewer, ReviewCandidateState, ReviewFailureClass,
+    ReviewValveOutcome, ReviewValveStatus, ReviewerKind, ReviewerUnavailable, SemanticReview,
+    StoredReviewReceipt, is_authoritative_runtime_evidence_gap, load_stored_review_receipt,
+    load_stored_review_receipt_by_digest, run_review_valve_bound_reusing_observed,
 };
 use worksgood::completion_review_model::ExactModelReviewer;
 use worksgood::completion_task::{
@@ -244,6 +244,25 @@ pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> R
         Err(error) => return Err(error),
     };
     print_review_findings(dir, &outcome);
+    if config.agency.completion_review_strict
+        && current_rejection_is_authoritative_runtime_evidence_gap(dir, id, &outcome)?
+    {
+        let parked = super::fail::preserve_completion_repair(
+            dir,
+            id,
+            Some("semantic review requested one missing authoritative runtime check"),
+            Some("request-contract-correction"),
+        )?;
+        if !parked {
+            bail!(
+                "semantic evidence-gap review could not establish a current bounded completion-help hold"
+            );
+        }
+        println!(
+            "Completion candidate remains retained; publication and Done are paused for the one operator contract correction above."
+        );
+        return Ok(());
+    }
     match outcome.status {
         ReviewValveStatus::Accepted => {
             println!(
@@ -285,6 +304,34 @@ pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> R
             outcome.flip.receipt.manifest_digest
         ),
     }
+}
+
+fn current_rejection_is_authoritative_runtime_evidence_gap(
+    dir: &Path,
+    id: &str,
+    outcome: &ReviewValveOutcome,
+) -> Result<bool> {
+    let rejected = match outcome.status {
+        ReviewValveStatus::FlipRejected => &outcome.flip,
+        ReviewValveStatus::EvalRejected => outcome
+            .eval
+            .as_ref()
+            .context("Eval rejection has no immutable Eval receipt")?,
+        ReviewValveStatus::Accepted
+        | ReviewValveStatus::ReviewUnavailable
+        | ReviewValveStatus::IncompleteEvidence => return Ok(false),
+    };
+    let graph = load_graph(dir.join("graph.jsonl"))?;
+    let task = graph
+        .get_task(id)
+        .with_context(|| format!("task '{id}' disappeared after semantic review"))?;
+    let projection = worksgood::completion_review::verified_review_activities(dir, task);
+    Ok(projection.activities.iter().any(|activity| {
+        activity.candidate_state == ReviewCandidateState::Current
+            && activity.activity_id == rejected.receipt_object.content_digest.as_str()
+            && activity.failure_class == Some(ReviewFailureClass::SemanticRejection)
+            && is_authoritative_runtime_evidence_gap(&activity.findings)
+    }))
 }
 
 fn task_is_waiting_for_review(dir: &Path, id: &str) -> bool {

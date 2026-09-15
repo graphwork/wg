@@ -694,7 +694,7 @@ pub fn request_repair_attention(
     let state = task
         .completion_repair
         .as_mut()
-        .ok_or_else(|| "no evidence-backed deterministic repair is active".to_string())?;
+        .ok_or_else(|| "no evidence-backed completion repair/help state is active".to_string())?;
     let semantic_current = state.semantic_review.as_ref().is_none_or(|semantic| {
         task.completion_candidate.as_ref().is_some_and(|candidate| {
             let selected = match semantic.reviewer_kind {

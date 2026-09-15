@@ -543,7 +543,7 @@ pub fn run_with_intent(
     Ok(())
 }
 
-fn preserve_completion_repair(
+pub(crate) fn preserve_completion_repair(
     dir: &Path,
     id: &str,
     reason: Option<&str>,
@@ -567,7 +567,7 @@ fn preserve_completion_repair(
         Some("request-contract-correction") => (
             "contract-correction-required",
             format!(
-                "operator: inspect the worker proposal, then add one approved exact check with `wg contract {id} --add-validation-command '<COMMAND>'`; existing checks are preserved and stale candidate binding is invalidated"
+                "operator: approve the one exact missing runtime check with `wg contract {id} --add-validation-command '<COMMAND>'`; existing checks and the retained implementation/worktree are preserved while only the stale candidate binding is invalidated"
             ),
         ),
         None => (
@@ -594,7 +594,10 @@ fn preserve_completion_repair(
     // Semantic help is admitted only from a receipt-verified *current*
     // rejection. Superseded, forged, cross-task, and stale-attempt projections
     // never become an attention request.
-    let semantic_rejection = if task.completion_repair.is_none() && intent.is_some() {
+    let semantic_rejection = if intent.is_some()
+        && task.completion_repair.as_ref().is_none_or(|repair| {
+            repair.disposition == worksgood::graph::CompletionRepairDisposition::Resolved
+        }) {
         let verified = worksgood::completion_review::verified_review_activities(dir, task);
         verified.activities.into_iter().rev().find_map(|activity| {
             if activity.candidate_state
@@ -669,19 +672,11 @@ fn preserve_completion_repair(
                     return false;
                 }
             }
-        } else if task.completion_repair.is_some() {
-            match worksgood::completion_validation::request_repair_attention(
-                task,
-                reason_code,
-                requested_next.clone(),
-            ) {
-                Ok(was_changed) => changed = was_changed,
-                Err(error) => {
-                    refusal = Some(error);
-                    return false;
-                }
-            }
         } else if let Some((activity, receipt)) = semantic_rejection.as_ref() {
+            // A passing deterministic repair is resolved before semantic
+            // review. Replace that historical repair projection with the
+            // exact current semantic receipt rather than mislabeling the old
+            // failed command as the live blocker.
             match worksgood::completion_validation::record_semantic_repair_attention(
                 task,
                 activity,
@@ -690,6 +685,18 @@ fn preserve_completion_repair(
                 requested_next.clone(),
             ) {
                 Ok(_) => changed = true,
+                Err(error) => {
+                    refusal = Some(error);
+                    return false;
+                }
+            }
+        } else if task.completion_repair.is_some() {
+            match worksgood::completion_validation::request_repair_attention(
+                task,
+                reason_code,
+                requested_next.clone(),
+            ) {
+                Ok(was_changed) => changed = was_changed,
                 Err(error) => {
                     refusal = Some(error);
                     return false;

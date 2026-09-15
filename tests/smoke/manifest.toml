@@ -3141,8 +3141,8 @@ timeout_seconds = 120
 [[scenario]]
 name = "completion_semantic_help"
 script = "scenarios/completion_semantic_help.sh"
-owners = ["fix-completion-help-after-review"]
-description = "Credential-free candidate-binary terminal regression for explicit help after a controlled receipt-backed semantic rejection (not live semantic proof): exact current source/candidate/review identity, redacted idempotent attention across source exit and daemon restart, no reviewer retry at request time, explicit operator contract correction invalidating stale binding, ordinary new validation/review, timeout-visible pending decision, and deliberate separation from acceptance."
+owners = ["fix-completion-help-after-review", "fix-semantic-completion-help"]
+description = "Credential-free candidate-binary CLI plus live tmux/TUI regression for automatic bounded help after a controlled receipt-backed authoritative-runtime-evidence-only semantic rejection (not live semantic proof): exact current source/candidate/review identity, retained worker/worktree/candidate, one operator contract correction, idempotent attention across repeat/source exit/daemon restart, bounded worker scope, visible downstream waits, stale-binding invalidation, and ordinary retained revalidation/review without reimplementation."
 timeout_seconds = 180
 
 [[scenario]]
