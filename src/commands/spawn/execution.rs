@@ -4584,15 +4584,18 @@ if [ "$EXIT_CODE" -ne 0 ] && {{ [ "$TERMINAL_STATE" = "provider-failure" ] || [ 
 fi
 
 # Check authoritative graph state before and after process-exit reconciliation.
-# Completion commands own typed Waiting/NeedsReview/LandingPending projection;
-# the wrapper only suppresses generic failure when that projection already won.
+# Completion commands own typed Waiting/NeedsReview/LandingPending and bounded
+# NeedsAttention projection; the wrapper only suppresses generic failure when
+# one of those projections already won.
 TASK_JSON=$(wg show "$TASK_ID" --json 2>/dev/null || true)
 TASK_STATUS=$(printf '%s' "$TASK_JSON" | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
 {pi_exit_reconcile}
 TASK_JSON=$(wg show "$TASK_ID" --json 2>/dev/null || true)
 TASK_STATUS=$(printf '%s' "$TASK_JSON" | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
 COMPLETION_BLOCKED=false
-if [ "$TASK_STATUS" = "waiting" ] && printf '%s' "$TASK_JSON" | grep -q '"completion_blocker"'; then
+if {{ [ "$TASK_STATUS" = "waiting" ] && printf '%s' "$TASK_JSON" | grep -q '"completion_blocker"'; }} \
+    || {{ [ "$TASK_STATUS" = "in-progress" ] \
+        && printf '%s' "$TASK_JSON" | grep -q '"disposition": *"needs-attention"'; }}; then
     COMPLETION_BLOCKED=true
 fi
 
@@ -7867,6 +7870,7 @@ esac
         assert!(script.contains("classify-failure --terminal"));
         assert!(script.contains("TERMINAL_STATE=\"unknown\""));
         assert!(script.contains("COMPLETION_BLOCKED=true"));
+        assert!(script.contains("\"disposition\": *\"needs-attention\""));
         assert!(script.contains("Wrapper preserved terminal candidate"));
         assert!(script.contains("wg record-telemetry --task \"$TASK_ID\""));
         #[cfg(unix)]

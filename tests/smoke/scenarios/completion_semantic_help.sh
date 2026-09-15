@@ -16,6 +16,7 @@ fi
 
 . "$HERE/_helpers.sh"
 command -v git >/dev/null 2>&1 || loud_skip "MISSING GIT" "git is required"
+command -v tmux >/dev/null 2>&1 || loud_skip "MISSING TMUX" "tmux is required for the live TUI flow"
 
 scratch=$(make_scratch)
 repo="$scratch/project"; home="$scratch/home"; fakebin="$scratch/fakebin"
@@ -42,14 +43,14 @@ printf '%s\n' "$n" >"$FAKE_REVIEW_STATE.count"
 mode=$(cat "$FAKE_REVIEW_STATE.mode" 2>/dev/null || echo reject)
 if [[ "$prompt" == *"FLIP PHASE II"* ]]; then
   if [[ "$mode" == reject ]]; then
-    response='{"verdict":"reject","findings":[{"code":"fixture.missing-authority","message":"candidate lacks the operator-approved exact validation evidence"}]}'
+    response='{"verdict":"reject","findings":[{"code":"completion.missing_authoritative_runtime_evidence","message":"candidate lacks the operator-approved exact validation evidence","evidence":"test -s proof.txt"}]}'
   else
     response='{"verdict":"pass","findings":[]}'
   fi
 elif [[ "$prompt" == *"FLIP PHASE I"* ]]; then
   response='{"goal":"controlled reconstructed intent","constraints":[],"invariants":[],"failure_modes":[]}'
 elif [[ "$mode" == reject ]]; then
-  response='{"verdict":"reject","findings":[{"code":"fixture.missing-authority","message":"candidate lacks the operator-approved exact validation evidence"}]}'
+  response='{"verdict":"reject","findings":[{"code":"completion.missing_authoritative_runtime_evidence","message":"candidate lacks the operator-approved exact validation evidence","evidence":"test -s proof.txt"}]}'
 else
   response='{"verdict":"pass","findings":[]}'
 fi
@@ -121,17 +122,20 @@ TOML
 wgrun add "Semantic contract correction" --id semantic-correction \
   --validation-command "test -s result.txt" \
   -d $'Produce result.txt.\n\n## Validation\n- [ ] exact operator-approved evidence is required' >/dev/null
+wgrun add "Blocked semantic child" --id semantic-child --after semantic-correction >/dev/null
+wgrun add "Blocked semantic grandchild" --id semantic-grandchild --after semantic-child >/dev/null
 wgrun publish semantic-correction --only >/dev/null
 wgrun claim semantic-correction --actor semantic-worker >/dev/null
 git switch -qc worker/semantic-correction
 echo result > result.txt
 git add result.txt && git commit -qm semantic-candidate
 
-if worker semantic-correction semantic-worker done semantic-correction >"$scratch/reject.out" 2>"$scratch/reject.err"; then
-  loud_fail "strict FLIP rejection accepted the candidate"
-fi
-grep -q 'FLIP semantically rejected' "$scratch/reject.err" \
-  || loud_fail "semantic rejection was not visible: $(cat "$scratch/reject.err")"
+worker semantic-correction semantic-worker done semantic-correction >"$scratch/reject.out" 2>"$scratch/reject.err" \
+  || loud_fail "evidence-only semantic rejection escaped bounded help: $(cat "$scratch/reject.err")"
+grep -q 'retained as NeedsAttention' "$scratch/reject.out" \
+  || loud_fail "semantic evidence gap did not visibly retain completion help: $(cat "$scratch/reject.out")"
+grep -q 'wg contract semantic-correction --add-validation-command' "$scratch/reject.out" \
+  || loud_fail "semantic evidence gap omitted the one operator correction: $(cat "$scratch/reject.out")"
 [[ "$(cat "$scratch/review.count")" == 2 ]] || loud_fail "controlled two-phase FLIP fixture call count mismatch"
 wgrun show semantic-correction --json >"$scratch/rejected.json"
 
@@ -144,17 +148,25 @@ if env WG_TASK_ID=some-other-task WG_AGENT_ID=semantic-worker WG_WORKTREE_PATH="
   loud_fail "wrong-task worker wrote semantic attention"
 fi
 
+# Automatic help already retained the source worktree. Lost-response replay and
+# wrapper exit retain one event and do not call validation or a reviewer.
+if worker semantic-correction semantic-worker done semantic-correction >"$scratch/repeat.out" 2>"$scratch/repeat.err"; then
+  loud_fail "repeated semantic evidence-gap completion escaped bounded attention"
+fi
+grep -q 'NeedsAttention: bounded completion help is stopped' "$scratch/repeat.err" \
+  || loud_fail "repeat did not expose bounded help: $(cat "$scratch/repeat.err")"
 worker semantic-correction semantic-worker fail semantic-correction \
-  --intent request-contract-correction \
-  --reason 'approve proof.txt; api_key=must-not-leak' >"$scratch/help.out"
+  --reason 'worker exited after automatic evidence-gap help' >"$scratch/help.out"
 grep -q "Saved work: $repo" "$scratch/help.out" || loud_fail "help output omitted saved-work location"
-# Lost-response replay and wrapper exit retain one event and do not call a reviewer.
-worker semantic-correction semantic-worker fail semantic-correction \
-  --intent request-contract-correction \
-  --reason 'approve proof.txt; api_key=must-not-leak' >/dev/null
-worker semantic-correction semantic-worker fail semantic-correction \
-  --reason 'worker exited after explicit request' >/dev/null
-[[ "$(cat "$scratch/review.count")" == 2 ]] || loud_fail "help request reran unchanged reviewer"
+[[ "$(cat "$scratch/review.count")" == 2 ]] || loud_fail "help/replay reran unchanged reviewer"
+
+# A worker cannot widen its own repair scope or mutate contract authority.
+if worker semantic-correction semantic-worker contract semantic-correction \
+  --repair-boundary repository >"$scratch/scope.out" 2>"$scratch/scope.err"; then
+  loud_fail "worker widened semantic repair scope"
+fi
+grep -q 'operator decision' "$scratch/scope.err" \
+  || loud_fail "out-of-scope repair refusal was not explicit: $(cat "$scratch/scope.err")"
 
 wgrun show semantic-correction --json >"$scratch/help.json"
 wgrun status --json >"$scratch/status.json"
@@ -162,7 +174,7 @@ python3 - "$scratch/rejected.json" "$scratch/help.json" "$scratch/status.json" "
 import json,sys
 before=json.load(open(sys.argv[1])); x=json.load(open(sys.argv[2])); status=json.load(open(sys.argv[3])); repo=sys.argv[4]
 r=x['completion_repair']; c=x['completion_candidate']; rows=x['completion_review_activity']
-assert x['status']=='in-progress' and x.get('completion_receipt') is None,x
+assert x['status']=='in-progress' and x['assigned']=='semantic-worker' and x.get('completion_receipt') is None,x
 assert c==before['completion_candidate'],(before,c)
 assert len(rows)==1 and rows[0]['candidate_state']=='current' and rows[0]['verdict']=='reject',rows
 b=c['review_binding']; s=r['semantic_review']
@@ -175,15 +187,58 @@ assert s['reviewer_kind']=='flip' and s['candidate_sequence']==b['candidate_sequ
 assert s['review_receipt']==rows[0]['activity_id']==r['evidence']['content_digest'],(s,rows,r)
 assert sum('NeedsAttention event=' in row['message'] for row in x['log'])==1,x['log']
 assert any('saved_work='+repo in row['message'] for row in x['log']),x['log']
-assert 'must-not-leak' not in json.dumps(x),x
 chains=[row for row in status['stalled_chains'] if row['root_task_id']=='semantic-correction']
 assert len(chains)==1 and chains[0]['root_blocker']=='flip-semantic-rejection: semantic-rejection',chains
 assert chains[0]['saved_work']==repo,chains
-assert 'wg contract semantic-correction --add-validation-command' in chains[0]['safe_operator_action'],chains
+assert chains[0]['affected_downstream']==['semantic-child','semantic-grandchild'],chains
+next_action=chains[0]['safe_operator_action']
+assert next_action.count('wg contract semantic-correction --add-validation-command')==1,next_action
+assert all(x not in next_action for x in ['wg retry','request-help','deliberate-stop']),next_action
 open(sys.argv[2]+'.event','w').write(r['attention_event_id'])
 open(sys.argv[2]+'.requirements','w').write(r['requirements_digest'])
 open(sys.argv[2]+'.receipt','w').write(s['review_receipt'])
 PY
+
+# Drive the real TUI through tmux and its keyboard dispatcher. The inspector
+# must expose the semantic root, affected waits, and the same single operator
+# correction before any contract mutation occurs.
+tui_session="wg-semantic-help-tui-$$"
+# Downstream visibility was asserted from the live graph above. Reduce this
+# disposable TUI fixture to one row so keyboard focus cannot depend on graph
+# presentation ordering.
+python3 - "$repo/.wg/graph.jsonl" <<'PY'
+import json,sys
+path=sys.argv[1]
+rows=[line for line in open(path) if json.loads(line).get('id') not in {'semantic-child','semantic-grandchild'}]
+open(path,'w').writelines(rows)
+PY
+printf '%s\n' semantic-correction >"$repo/.wg/.new_task_focus"
+cleanup_semhelp_tui(){ tmux kill-session -t "$tui_session" >/dev/null 2>&1 || true; }
+add_cleanup_hook cleanup_semhelp_tui
+tmux new-session -d -s "$tui_session" -x 180 -y 44 \
+  "cd '$repo' && HOME='$home' XDG_CONFIG_HOME='$home/.config' WG_TUI_APPEARANCE=none '$WG_BIN' --dir '$repo/.wg' tui; sleep 30"
+capture_semhelp_tui(){ tmux capture-pane -p -t "$tui_session" 2>/dev/null || true; }
+for _ in $(seq 1 300); do
+  capture_semhelp_tui | grep -Fq semantic-correction && break
+  sleep 0.025
+done
+tmux send-keys -t "$tui_session" Home
+tmux send-keys -t "$tui_session" Enter
+found_semantic_help=0
+for _ in $(seq 1 12); do
+  sleep 0.1
+  frame=$(capture_semhelp_tui)
+  if grep -Fq 'ROOT BLOCKER: semantic-correction' <<<"$frame" \
+      && grep -Fq 'one safe action:' <<<"$frame"; then
+    found_semantic_help=1
+    printf '%s\n' "$frame" >"$scratch/tui-semantic-help.txt"
+    break
+  fi
+  tmux send-keys -t "$tui_session" PageDown
+done
+[[ "$found_semantic_help" == 1 ]] \
+  || loud_fail "real TUI omitted semantic completion help: $(capture_semhelp_tui | tr '\n' '|')"
+cleanup_semhelp_tui
 
 # A real daemon stop/start must not duplicate or lose the primary attention.
 # Keep the Unix socket below sun_path's small fixed limit even when the smoke
@@ -258,15 +313,15 @@ wgrun claim semantic-timeout --actor timeout-worker >/dev/null
 git switch -qc worker/semantic-timeout refs/heads/main
 echo timeout > timeout.txt
 git add timeout.txt && git commit -qm timeout-candidate
-worker semantic-timeout timeout-worker done semantic-timeout >/dev/null 2>"$scratch/timeout-reject.err" && loud_fail "timeout fixture rejection accepted"
-worker semantic-timeout timeout-worker fail semantic-timeout --intent request-help --reason 'operator decision pending' >/dev/null
+worker semantic-timeout timeout-worker done semantic-timeout >/dev/null 2>"$scratch/timeout-reject.err" \
+  || loud_fail "timeout fixture evidence gap escaped automatic help: $(cat "$scratch/timeout-reject.err")"
 worker semantic-timeout timeout-worker fail semantic-timeout --class agent-hard-timeout --reason 'later wrapper timeout' >/dev/null
 wgrun status --json >"$scratch/timeout-status.json"
 python3 - "$scratch/timeout-status.json" <<'PY'
 import json,sys
 x=json.load(open(sys.argv[1])); rows=[r for r in x['stalled_chains'] if r['root_task_id']=='semantic-timeout']
 assert len(rows)==1 and rows[0]['root_blocker']=='flip-semantic-rejection: semantic-rejection',rows
-assert 'repair-boundary' in rows[0]['safe_operator_action'],rows
+assert 'wg contract semantic-timeout --add-validation-command' in rows[0]['safe_operator_action'],rows
 PY
 
-echo "PASS: controlled semantic rejection -> explicit attention -> approved contract correction -> ordinary revalidation/review (fixture, not live semantic proof)"
+echo "PASS: controlled evidence-gap rejection -> automatic bounded help -> approved contract correction -> retained revalidation/review + live TUI visibility"

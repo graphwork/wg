@@ -122,7 +122,7 @@ pub(crate) fn run_at_with_checks(
         && repair.requirements_digest == worksgood::completion_task::requirements_digest(&task)?
     {
         bail!(
-            "NeedsAttention: deterministic completion repair is stopped ({}, feedback={}). No check or model call was made. Root blocker: {}. Next: {}",
+            "NeedsAttention: bounded completion help is stopped ({}, feedback={}). No check or model call was made. Root blocker: {}. Next: {}",
             repair.reason_code,
             repair.feedback_id,
             repair.exit_category,
@@ -444,7 +444,11 @@ pub(crate) fn run_at_with_checks(
     if load_graph(dir.join("graph.jsonl"))?
         .get_task(id)
         .is_some_and(|task| {
-            task.status == worksgood::graph::Status::Waiting && task.completion_blocker.is_some()
+            (task.status == worksgood::graph::Status::Waiting && task.completion_blocker.is_some())
+                || task.completion_repair.as_ref().is_some_and(|repair| {
+                    repair.disposition
+                        == worksgood::graph::CompletionRepairDisposition::NeedsAttention
+                })
         })
     {
         return Ok(());
