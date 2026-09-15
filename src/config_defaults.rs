@@ -612,7 +612,7 @@ fn ensure_provider_prefix(model: &str, provider: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{Config, DispatchRole};
 
     fn round_trip(config: &Config) -> Config {
         let toml_str = toml::to_string_pretty(config).expect("serialize");
@@ -673,6 +673,38 @@ mod tests {
                     .disk_sentinel_enabled
             );
         }
+    }
+
+    #[test]
+    fn exact_pi_setup_uses_one_approved_route_for_every_role() {
+        let approved = "pi:openai-codex:gpt-5.6-sol";
+        let config = config_for_route(
+            SetupRoute::Pi,
+            RouteParams {
+                model: Some(approved.to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.tiers.fast.is_none());
+        assert!(config.tiers.standard.is_none());
+        assert!(config.tiers.premium.is_none());
+        for role in std::iter::once(DispatchRole::Default).chain(DispatchRole::ALL.iter().copied())
+        {
+            let resolved = config
+                .resolve_pi_route_for_role(role)
+                .unwrap_or_else(|error| {
+                    panic!("{role} did not resolve through the approved route: {error:#}")
+                });
+            assert_eq!(resolved.route, approved, "{role} crossed providers");
+        }
+
+        let encoded = toml::to_string_pretty(&config).unwrap();
+        assert_eq!(
+            encoded.matches(approved).count(),
+            1,
+            "the route should be materialized once and inherited, not copied into hidden role splits: {encoded}"
+        );
     }
 
     // ── openrouter ───────────────────────────────────────────────────

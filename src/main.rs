@@ -848,6 +848,13 @@ fn main() -> Result<()> {
         None => return Ok(()),
     };
 
+    // Setup writes project-owned `worksgood.toml`. Reject a shell in project A
+    // combined with `--dir` for project B before even usage logging can mutate
+    // the selected graph. Other commands retain ordinary --dir precedence.
+    if cli.dir.is_some() && matches!(&command, Commands::Setup { .. }) {
+        commands::setup::validate_explicit_project_target(&workgraph_dir)?;
+    }
+
     // Trusted local workers use the ordinary graph CLI directly so daemon IPC
     // availability is not a prerequisite for coordination. Mutating commands
     // still validate the exact ambient task/generation/attempt/fence here.
@@ -4060,7 +4067,16 @@ fn main() -> Result<()> {
                 from_stdin,
                 backend,
             };
-            commands::setup::run_with_args(&args)
+            let setup_graph_dir = if cli.dir.is_some() {
+                workgraph_dir.clone()
+            } else {
+                // Setup without --dir remains a declaration about the current
+                // project even when resolver fallback can see a global ~/.wg.
+                std::env::current_dir()
+                    .context("cannot resolve current directory for wg setup")?
+                    .join(".wg")
+            };
+            commands::setup::run_with_args(&args, &setup_graph_dir)
         }
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::DevCheck => commands::dev_check::run(cli.json),

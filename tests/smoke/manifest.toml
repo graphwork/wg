@@ -3092,8 +3092,8 @@ timeout_seconds = 180
 [[scenario]]
 name = "setup_route_activation_preflight"
 script = "scenarios/setup_route_activation_preflight.sh"
-owners = ["setup-route-activation-ux"]
-description = "Candidate-binary real PTY terminal regression for setup-route-activation-ux: from clean isolated HOME/project fixtures, one `wg setup --route pi --yes --model <exact>` command writes the exact effective project-local default/task-agent route without changing legacy global routing; a fake Pi proves bounded executable discovery makes no provider/model call, reports auth/model NOT VERIFIED with `/login` action and no fallback, while an absent-Pi fixture is called UNAVAILABLE rather than ready."
+owners = ["setup-route-activation-ux", "fix-first-user-exact-route"]
+description = "Candidate-binary real PTY terminal regression: from clean isolated HOME/project fixtures, one `wg setup --route pi --yes --model <exact>` command leaves every first-task/review role on that one approved route without changing legacy global routing; a split-brain terminal invocation from project A with `--dir` for project B fails before either project is written; fake/absent Pi fixtures prove bounded executable discovery makes no provider/model call, reports auth/model NOT VERIFIED with `/login` action, and never selects a fallback."
 timeout_seconds = 60
 
 [[scenario]]

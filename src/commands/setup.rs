@@ -1157,10 +1157,38 @@ fn resolve_endpoint_key(ep: &EndpointChoices) -> Option<String> {
     None
 }
 
-fn setup_graph_dir() -> PathBuf {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".wg")
+/// Refuse an explicit setup target that does not contain the invoking shell's
+/// current directory. Setup writes project-owned configuration, so silently
+/// combining `--dir` from one project with a CWD in another is unsafe even
+/// when the graph resolver could otherwise choose a deterministic winner.
+pub fn validate_explicit_project_target(workgraph_dir: &Path) -> Result<()> {
+    let cwd = std::env::current_dir().context("cannot resolve CWD for setup target check")?;
+    validate_explicit_project_target_at(workgraph_dir, &cwd)
+}
+
+fn validate_explicit_project_target_at(workgraph_dir: &Path, cwd: &Path) -> Result<()> {
+    let project_path = worksgood::project_config::path_for_graph(workgraph_dir).ok_or_else(|| {
+        anyhow::anyhow!(
+            "error[WG-PROJECT-ROOT-REQUIRED]: --dir must select an ordinary project .wg directory for setup"
+        )
+    })?;
+    let project_root = project_path
+        .parent()
+        .expect("project config path always has a parent");
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let project_root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+
+    if cwd != project_root && !cwd.starts_with(&project_root) {
+        bail!(
+            "error[WG-SETUP-PROJECT-TARGET-MISMATCH]: --dir selects project {} but CWD is {}; no project config was written. Run setup from the selected project (for example: `cd '{}'`) or remove the disagreeing --dir.",
+            project_root.display(),
+            cwd.display(),
+            project_root.display()
+        );
+    }
+    Ok(())
 }
 
 fn setup_openrouter_login_scopes(scope: SetupScope) -> Vec<LoginConfigScope> {
@@ -1199,7 +1227,9 @@ fn maybe_complete_openrouter_login(
     api_key_file: Option<&str>,
     scope: SetupScope,
 ) -> Result<bool> {
-    let graph_dir = setup_graph_dir();
+    let graph_dir = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".wg");
     let login_scopes = setup_openrouter_login_scopes(scope);
 
     if let Some(path) = api_key_file
@@ -1374,7 +1404,7 @@ fn prompt_secret_backend(default_backend: &Backend) -> Result<Option<String>> {
 }
 
 /// Run the setup wizard, dispatching to interactive or non-interactive mode.
-pub fn run_with_args(args: &SetupArgs) -> Result<()> {
+pub fn run_with_args(args: &SetupArgs, graph_dir: &Path) -> Result<()> {
     if args.repair_guides {
         repair_agent_guides()?;
         return Ok(());
@@ -1388,7 +1418,7 @@ pub fn run_with_args(args: &SetupArgs) -> Result<()> {
             let route = "pi";
             let mut routed = args.clone();
             routed.route = Some(route.to_string());
-            return run_route(&routed);
+            return run_route(&routed, graph_dir);
         }
         bail!(
             "non-interactive setup requires Pi. Use `wg setup --route pi --yes --model pi:<provider>:<model>`; Pi owns login and model discovery."
@@ -1396,19 +1426,19 @@ pub fn run_with_args(args: &SetupArgs) -> Result<()> {
     }
 
     if args.route.is_some() || (args.yes && args.resolved_route().is_some()) || args.dry_run {
-        return run_route(args);
+        return run_route(args, graph_dir);
     }
     if args.provider.is_some() {
         return run_non_interactive(args);
     }
-    run()
+    run(graph_dir)
 }
 
 /// Non-interactive route-driven setup: writes complete Pi defaults. Used by:
 ///
 /// - `wg setup --route <name> --yes`
 /// - `wg setup --route <name> --dry-run` (prints, does not write)
-fn run_route(args: &SetupArgs) -> Result<()> {
+fn run_route(args: &SetupArgs, graph_dir: &Path) -> Result<()> {
     let route = args.resolved_route().ok_or_else(|| {
         anyhow::anyhow!("--route is required for non-interactive setup. The supported route is: pi")
     })?;
@@ -1492,8 +1522,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     let new_config = config_for_route(route, params);
     new_config.validate_pi_model_plane()?;
 
-    let graph_dir = setup_graph_dir();
-    let project_path = worksgood::project_config::path_for_graph(&graph_dir).ok_or_else(|| {
+    let project_path = worksgood::project_config::path_for_graph(graph_dir).ok_or_else(|| {
         anyhow::anyhow!(
             "error[WG-PROJECT-ROOT-REQUIRED]: setup needs an ordinary project .wg directory"
         )
@@ -1506,7 +1535,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
             scope.as_name()
         );
         let report =
-            worksgood::project_config::materialize_for_graph(&graph_dir, &new_config, None, true)?;
+            worksgood::project_config::materialize_for_graph(graph_dir, &new_config, None, true)?;
         println!("# Authoritative project config: {}", report.path.display());
         println!("# Winning source after apply: project-file (manual)");
         println!("# Changed: {}", report.changed);
@@ -1529,7 +1558,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     }
 
     let report =
-        worksgood::project_config::materialize_for_graph(&graph_dir, &new_config, None, false)?;
+        worksgood::project_config::materialize_for_graph(graph_dir, &new_config, None, false)?;
     println!(
         "Wrote {}: route={}, scope={}, executor={}, tiers={}/{}/{}",
         project_path.display(),
@@ -1549,7 +1578,7 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         "  Global config, active-profile, credentials, and Pi console settings changed: false"
     );
 
-    crate::commands::profile_cmd::trigger_daemon_reload_checked(&graph_dir, None)?;
+    crate::commands::profile_cmd::trigger_daemon_reload_checked(graph_dir, None)?;
 
     println!();
     println!("{}", format_delta_summary(&new_config));
@@ -1914,20 +1943,19 @@ fn backup_global_config(global_path: &Path) -> Result<PathBuf> {
 }
 
 /// Run the interactive setup wizard.
-pub fn run() -> Result<()> {
+pub fn run(graph_dir: &Path) -> Result<()> {
     if !std::io::stdin().is_terminal() {
         bail!(
             "wg setup requires an interactive terminal. Use --provider for non-interactive mode."
         );
     }
 
-    let graph_dir = setup_graph_dir();
-    let local_path = worksgood::project_config::path_for_graph(&graph_dir).ok_or_else(|| {
+    let local_path = worksgood::project_config::path_for_graph(graph_dir).ok_or_else(|| {
         anyhow::anyhow!(
             "error[WG-PROJECT-ROOT-REQUIRED]: setup needs an ordinary project .wg directory"
         )
     })?;
-    let existing_local = Config::load_merged(&graph_dir).unwrap_or_default();
+    let existing_local = Config::load_merged(graph_dir).unwrap_or_default();
 
     println!("Hey! Welcome to WG setup.");
     println!("WG configures orchestration; Pi owns the complete LLM model plane.");
@@ -2147,15 +2175,14 @@ pub fn run() -> Result<()> {
     println!();
     let skill_status = guide_skill_bundle_install(&choices.executor)?;
 
-    let report =
-        worksgood::project_config::materialize_for_graph(&graph_dir, &config, None, false)?;
+    let report = worksgood::project_config::materialize_for_graph(graph_dir, &config, None, false)?;
     println!("  Authoritative config: {}", report.path.display());
     println!("  Winning source: project-file (manual)");
     println!(
         "  Global config, active-profile, credentials, and Pi console settings changed: false"
     );
 
-    crate::commands::profile_cmd::trigger_daemon_reload_checked(&graph_dir, None)?;
+    crate::commands::profile_cmd::trigger_daemon_reload_checked(graph_dir, None)?;
     record_setup_history(&choices, "cli");
 
     // Configure ~/.claude/CLAUDE.md for Claude Code executor
@@ -3240,6 +3267,26 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
     use worksgood::config::{CLAUDE_SONNET_MODEL_ID, Config};
+
+    #[test]
+    fn explicit_setup_target_must_contain_cwd() {
+        let tmp = TempDir::new().unwrap();
+        let selected = tmp.path().join("selected");
+        let other = tmp.path().join("other");
+        fs::create_dir_all(selected.join(".wg")).unwrap();
+        fs::create_dir_all(&other).unwrap();
+
+        validate_explicit_project_target_at(&selected.join(".wg"), &selected).unwrap();
+        validate_explicit_project_target_at(&selected.join(".wg"), &selected.join("nested"))
+            .unwrap();
+        let error = validate_explicit_project_target_at(&selected.join(".wg"), &other).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("WG-SETUP-PROJECT-TARGET-MISMATCH"),
+            "{error:#}"
+        );
+    }
 
     fn with_history_env<F: FnOnce(&Path)>(f: F) {
         let tmp = TempDir::new().unwrap();
@@ -4749,7 +4796,7 @@ mod tests {
             yes: true,
             ..Default::default()
         };
-        let result = run_route(&args);
+        let result = run_route(&args, &work_dir.join(".wg"));
 
         let global_path = fake_home.join(".wg").join("config.toml");
         let local_path = work_dir.join(".wg").join("config.toml");
@@ -4794,7 +4841,7 @@ mod tests {
             yes: true,
             ..Default::default()
         };
-        let result = run_route(&args);
+        let result = run_route(&args, &work_dir.join(".wg"));
 
         let global_path = fake_home.join(".wg").join("config.toml");
         let local_path = work_dir.join(".wg").join("config.toml");
@@ -4834,7 +4881,7 @@ mod tests {
             yes: true,
             ..Default::default()
         };
-        let result = run_route(&args);
+        let result = run_route(&args, &work_dir.join(".wg"));
 
         let global_path = fake_home.join(".wg").join("config.toml");
         let local_path = work_dir.join(".wg").join("config.toml");
