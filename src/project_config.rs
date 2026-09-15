@@ -118,34 +118,77 @@ fn materialize_for_graph_checked(
     );
     root.remove("profile_origin");
 
-    let task_route = exact_route_for(config, DispatchRole::TaskAgent)?;
-    set_nested_string(root, &["agent", "model"], &task_route);
-    set_nested_string(root, &["dispatcher", "model"], &task_route);
+    // Replace only the routing projection. The project document stores intent,
+    // not a flattened answer for every role: one default, optional explicit
+    // tiers, and optional explicit role overrides.
+    for section in ["agent", "dispatcher"] {
+        if let Some(table) = root.get_mut(section).and_then(toml::Value::as_table_mut) {
+            table.remove("model");
+        }
+    }
+    root.remove("models");
+    root.remove("tiers");
 
+    let default = config.project_default_route()?;
+    crate::config::parse_supported_execution_route(&default.route).with_context(|| {
+        format!(
+            "error[WG-EXEC-ROUTE-UNSUPPORTED]: project default resolved to {:?}",
+            default.route
+        )
+    })?;
     let models = root
         .entry("models".to_string())
         .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
         .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("models in {} must be a table", path.display()))?;
-    for role in std::iter::once(DispatchRole::Default).chain(DispatchRole::ALL.iter().copied()) {
-        let route = exact_route_for(config, role)?;
-        let mut entry = toml::map::Map::new();
-        entry.insert("model".to_string(), toml::Value::String(route));
-        match config.resolve_reasoning_detail(role).level {
-            Some(level) => {
-                entry.insert(
-                    "reasoning".to_string(),
-                    toml::Value::String(level.as_str().to_string()),
-                );
-            }
-            None => {
-                entry.insert(
-                    "reasoning_mode".to_string(),
-                    toml::Value::String("provider-default".to_string()),
-                );
-            }
+        .expect("inserted models table");
+    let mut default_entry = toml::map::Map::new();
+    default_entry.insert("model".to_string(), toml::Value::String(default.route));
+    match config.resolve_reasoning_detail(DispatchRole::Default).level {
+        Some(level) => {
+            default_entry.insert(
+                "reasoning".to_string(),
+                toml::Value::String(level.as_str().to_string()),
+            );
         }
-        models.insert(role.to_string(), toml::Value::Table(entry));
+        None => {
+            default_entry.insert(
+                "reasoning_mode".to_string(),
+                toml::Value::String("provider-default".to_string()),
+            );
+        }
+    }
+    models.insert("default".to_string(), toml::Value::Table(default_entry));
+
+    for role in DispatchRole::ALL {
+        let Some(role_config) = config.models.get_role(*role) else {
+            continue;
+        };
+        let mut entry = toml::map::Map::new();
+        if let Some(model) = role_config.model.as_deref() {
+            entry.insert("model".to_string(), toml::Value::String(model.to_string()));
+        }
+        if let Some(tier) = role_config.tier {
+            entry.insert("tier".to_string(), toml::Value::String(tier.to_string()));
+        }
+        if let Some(reasoning) = role_config.reasoning {
+            entry.insert(
+                "reasoning".to_string(),
+                toml::Value::String(reasoning.as_str().to_string()),
+            );
+        }
+        if !entry.is_empty() {
+            models.insert(role.to_string(), toml::Value::Table(entry));
+        }
+    }
+
+    if config.tiers.fast.is_some()
+        || config.tiers.standard.is_some()
+        || config.tiers.premium.is_some()
+        || config.tiers.fast_reasoning.is_some()
+        || config.tiers.standard_reasoning.is_some()
+        || config.tiers.premium_reasoning.is_some()
+    {
+        root.insert("tiers".to_string(), toml::Value::try_from(&config.tiers)?);
     }
 
     let _ = root;
@@ -232,6 +275,89 @@ fn materialize_for_graph_checked(
     })
 }
 
+/// Persist one explicit default route through the authoritative project path.
+/// Used by compatibility CLI surfaces such as `wg service start --model`;
+/// callers must never retain the argument as hidden runtime authority.
+pub fn select_default_route_for_graph(
+    workgraph_dir: &Path,
+    route: &str,
+) -> Result<(PathBuf, String)> {
+    let path = path_for_graph(workgraph_dir).ok_or_else(|| {
+        anyhow::anyhow!(
+            "error[WG-PROJECT-ROOT-REQUIRED]: route selection needs an ordinary project .wg directory"
+        )
+    })?;
+    let original = match std::fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to read {}", path.display()));
+        }
+    };
+    let mut document: toml::Value = original
+        .as_deref()
+        .map(|bytes| std::str::from_utf8(bytes).context("project config is not UTF-8"))
+        .transpose()?
+        .map(str::parse)
+        .transpose()
+        .with_context(|| format!("Failed to parse {}", path.display()))?
+        .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
+    rewrite_project_default(&mut document, route)?;
+    let root = document.as_table_mut().expect("rewrite checked table");
+    root.insert(
+        "schema_version".to_string(),
+        toml::Value::Integer(i64::from(PROJECT_CONFIG_SCHEMA_VERSION)),
+    );
+    root.remove("profile_origin");
+    let mut payload = document.clone();
+    payload
+        .as_table_mut()
+        .expect("checked table")
+        .remove("schema_version");
+    validate_project_payload(&payload, &path)?;
+    let rendered = toml::to_string_pretty(&document)?;
+    let current = std::fs::read(&path).ok();
+    if current != original {
+        bail!(
+            "error[WG-PROJECT-CONFIG-CONCURRENT-WRITE]: {} changed while route selection was planned; re-run the command",
+            path.display()
+        );
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    crate::atomic_file::write_atomic(&path, rendered.as_bytes())?;
+    Ok((path, digest_bytes(rendered.as_bytes())))
+}
+
+/// Rewrite the one project default inside a raw project document.
+///
+/// Explicit tier, role, and legacy agent/dispatcher selectors are never
+/// inferred to be generated merely because they currently equal the old
+/// default. Their declared values remain pinned across a default change. The
+/// explicitly supplied canonical route is the required migration decision;
+/// legacy selectors are therefore preserved rather than reinterpreted.
+pub fn rewrite_project_default(document: &mut toml::Value, route: &str) -> Result<()> {
+    crate::config::parse_supported_execution_route(route).with_context(|| {
+        format!("project default must be an exact Pi, Claude, or Codex route, got {route:?}")
+    })?;
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("project config must be a TOML table"))?;
+    let models = root
+        .entry("models".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("models must be a TOML table"))?;
+    let default = models
+        .entry("default".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("models.default must be a TOML table"))?;
+    default.insert("model".to_string(), toml::Value::String(route.to_string()));
+    Ok(())
+}
+
 /// Persist a typed configuration as the authoritative project document while
 /// removing machine-owned and legacy routing namespaces. This is used by
 /// ordinary `wg config` flag writes; direct route edits intentionally clear
@@ -254,7 +380,6 @@ pub fn write_config_for_graph(workgraph_dir: &Path, config: &Config) -> Result<P
         "openrouter",
         "model_registry",
         "tag_routing",
-        "tiers",
         "profile",
         "description",
     ] {
@@ -280,25 +405,6 @@ pub fn write_config_for_graph(workgraph_dir: &Path, config: &Config) -> Result<P
     crate::atomic_file::write_atomic(&path, rendered.as_bytes())
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(path)
-}
-
-fn exact_route_for(config: &Config, role: DispatchRole) -> Result<String> {
-    let route = config.resolve_model_for_role(role).spawn_model_spec();
-    crate::config::parse_exact_pi_route(&route).with_context(|| {
-        format!(
-            "error[WG-PI-ROUTE-REQUIRED]: profile role {role} resolved to {route:?}; project profiles require exact `pi:<provider>:<model>` routes"
-        )
-    })?;
-    Ok(route)
-}
-
-fn set_nested_string(root: &mut toml::map::Map<String, toml::Value>, path: &[&str], value: &str) {
-    let table = root
-        .entry(path[0].to_string())
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
-        .as_table_mut()
-        .expect("validated project section must be a table");
-    table.insert(path[1].to_string(), toml::Value::String(value.to_string()));
 }
 
 /// Resolve the source-owned config path for an ordinary WG graph layout.
@@ -409,41 +515,20 @@ fn validate_origin(origin: &ProfileOrigin, value: &toml::Value, path: &Path) -> 
         );
     }
 
-    let models = value
-        .get("models")
-        .and_then(toml::Value::as_table)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "error[WG-PROFILE-PROJECTION-INCOMPLETE]: materialized profile {} in {} must contain an exact entry for every dispatch role",
-                origin.name,
-                path.display()
-            )
-        })?;
-    for role in std::iter::once(crate::config::DispatchRole::Default)
-        .chain(crate::config::DispatchRole::ALL.iter().copied())
-    {
-        let role_name = role.to_string();
-        let entry = models
-            .get(&role_name)
-            .and_then(toml::Value::as_table)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "error[WG-PROFILE-PROJECTION-INCOMPLETE]: materialized profile {} in {} is missing models.{role_name}",
-                    origin.name,
-                    path.display()
-                )
-            })?;
-        if !entry.contains_key("model")
-            || (entry.contains_key("reasoning") == entry.contains_key("reasoning_mode"))
-        {
-            bail!(
-                "error[WG-PROFILE-PROJECTION-INCOMPLETE]: materialized profile {} in {} requires models.{role_name}.model plus exactly one of reasoning or reasoning_mode",
-                origin.name,
-                path.display()
-            );
-        }
-    }
-    Ok(())
+    let config: Config = value.clone().try_into().with_context(|| {
+        format!(
+            "error[WG-PROFILE-PROJECTION-INCOMPLETE]: materialized profile {} in {} is not a valid project projection",
+            origin.name,
+            path.display()
+        )
+    })?;
+    config.validate_execution_model_plane().with_context(|| {
+        format!(
+            "error[WG-PROFILE-PROJECTION-INCOMPLETE]: materialized profile {} in {} does not resolve every role",
+            origin.name,
+            path.display()
+        )
+    })
 }
 
 fn is_digest(value: &str) -> bool {
@@ -538,11 +623,18 @@ pub fn validate_project_payload(value: &toml::Value, path: &Path) -> Result<()> 
 
     check_route_at(root, &["agent", "model"], path)?;
     check_route_at(root, &["dispatcher", "model"], path)?;
-    if root.contains_key("tiers") {
-        bail!(
-            "error[WG-CONFIG-UPGRADE-REQUIRED]: [tiers] in {} is an unresolved routing alias; flatten every dispatch role to an exact [models.<role>] Pi route",
-            path.display()
-        );
+    if let Some(tiers) = root.get("tiers").and_then(toml::Value::as_table) {
+        for name in ["fast", "standard", "premium"] {
+            if let Some(route) = tiers.get(name) {
+                let route = route.as_str().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "error[WG-EXEC-ROUTE-UNSUPPORTED]: tiers.{name} in {} must be a string",
+                        path.display()
+                    )
+                })?;
+                require_supported_route(&format!("tiers.{name}"), route, path)?;
+            }
+        }
     }
     if let Some(models) = root.get("models").and_then(toml::Value::as_table) {
         for (role, entry) in models {
@@ -559,9 +651,12 @@ pub fn validate_project_payload(value: &toml::Value, path: &Path) -> Result<()> 
                 )
             })?;
             for field in entry.keys() {
-                if !matches!(field.as_str(), "model" | "reasoning" | "reasoning_mode") {
+                if !matches!(
+                    field.as_str(),
+                    "model" | "tier" | "reasoning" | "reasoning_mode"
+                ) {
                     bail!(
-                        "error[WG-CONFIG-UPGRADE-REQUIRED]: unsupported project field models.{role}.{field} in {}; exact model plus one reasoning instruction are the closed profile projection",
+                        "error[WG-CONFIG-UPGRADE-REQUIRED]: unsupported project field models.{role}.{field} in {}; project routing supports model/tier plus reasoning",
                         path.display()
                     );
                 }
@@ -569,11 +664,11 @@ pub fn validate_project_payload(value: &toml::Value, path: &Path) -> Result<()> 
             if let Some(route) = entry.get("model") {
                 let route = route.as_str().ok_or_else(|| {
                     anyhow::anyhow!(
-                        "error[WG-PI-ROUTE-REQUIRED]: models.{role}.model in {} must be a string",
+                        "error[WG-EXEC-ROUTE-REQUIRED]: models.{role}.model in {} must be a handler-qualified route string",
                         path.display()
                     )
                 })?;
-                require_exact_pi(&format!("models.{role}.model"), route, path)?;
+                require_supported_route(&format!("models.{role}.model"), route, path)?;
             }
             let reasoning_mode = entry.get("reasoning_mode");
             if reasoning_mode.is_some() && entry.contains_key("reasoning") {
@@ -629,7 +724,7 @@ pub fn validate_project_payload(value: &toml::Value, path: &Path) -> Result<()> 
                 continue;
             };
             if let Some(primary) = fallback.get("primary").and_then(toml::Value::as_str) {
-                require_exact_pi(
+                require_supported_route(
                     &format!("execution.fallbacks[{index}].primary"),
                     primary,
                     path,
@@ -639,7 +734,7 @@ pub fn validate_project_payload(value: &toml::Value, path: &Path) -> Result<()> 
                 for (model_index, route) in
                     models.iter().filter_map(toml::Value::as_str).enumerate()
                 {
-                    require_exact_pi(
+                    require_supported_route(
                         &format!("execution.fallbacks[{index}].models[{model_index}]"),
                         route,
                         path,
@@ -658,7 +753,7 @@ fn reject_legacy_route_key(
 ) -> Result<()> {
     if lookup(root, path).is_some() {
         bail!(
-            "error[WG-PI-ROUTE-REQUIRED]: legacy selector `{}` is not allowed in {}; exact Pi model routes are the only project routing authority",
+            "error[WG-EXEC-ROUTE-REQUIRED]: legacy selector `{}` is not allowed in {}; exact Pi, Claude, or Codex model routes are the only project routing authority",
             path.join("."),
             document.display()
         );
@@ -674,12 +769,12 @@ fn check_route_at(
     if let Some(value) = lookup(root, path) {
         let route = value.as_str().ok_or_else(|| {
             anyhow::anyhow!(
-                "error[WG-PI-ROUTE-REQUIRED]: `{}` in {} must be a string",
+                "error[WG-EXEC-ROUTE-REQUIRED]: `{}` in {} must be a handler-qualified route string",
                 path.join("."),
                 document.display()
             )
         })?;
-        require_exact_pi(&path.join("."), route, document)?;
+        require_supported_route(&path.join("."), route, document)?;
     }
     Ok(())
 }
@@ -695,13 +790,21 @@ fn lookup<'a>(
     Some(value)
 }
 
-fn require_exact_pi(key: &str, route: &str, path: &Path) -> Result<()> {
-    crate::config::parse_exact_pi_route(route).map(|_| ()).map_err(|error| {
+fn require_supported_route(key: &str, route: &str, path: &Path) -> Result<()> {
+    let parsed = crate::config::parse_supported_execution_route(route).map_err(|error| {
         anyhow::anyhow!(
-            "error[WG-PI-ROUTE-REQUIRED]: {key} in {} must be an exact `pi:<provider>:<model>` route: {error}",
+            "error[WG-EXEC-ROUTE-UNSUPPORTED]: {key} in {} must be an exact Pi, Claude, or Codex route: {error}",
             path.display()
         )
-    })
+    })?;
+    if !matches!(parsed.0.as_str(), "pi" | "claude" | "codex") {
+        bail!(
+            "error[WG-EXEC-ROUTE-UNSUPPORTED]: {key} in {} must be an exact Pi, Claude, or Codex route (found handler={})",
+            path.display(),
+            parsed.0
+        );
+    }
+    Ok(())
 }
 
 /// Return the stable digest used to bind `[profile_origin]` to the narrow
@@ -713,12 +816,17 @@ pub fn projection_fingerprint(value: &toml::Value) -> String {
     if let Some(root) = root {
         copy_projection_leaf(root, &["agent", "model"], &mut projection);
         copy_projection_leaf(root, &["dispatcher", "model"], &mut projection);
+        if let Some(tiers) = root.get("tiers").and_then(toml::Value::as_table) {
+            for (field, value) in tiers {
+                projection.insert(format!("tiers.{field}"), toml_to_json(value));
+            }
+        }
         if let Some(models) = root.get("models").and_then(toml::Value::as_table) {
             for (role, entry) in models {
                 let Some(entry) = entry.as_table() else {
                     continue;
                 };
-                for field in ["model", "reasoning", "reasoning_mode"] {
+                for field in ["model", "tier", "reasoning", "reasoning_mode"] {
                     if let Some(value) = entry.get(field) {
                         projection.insert(format!("models.{role}.{field}"), toml_to_json(value));
                     }
@@ -787,10 +895,11 @@ fn digest_bytes(bytes: &[u8]) -> String {
 /// Routing/reasoning leaves covered by a materialized profile origin.
 pub fn is_profile_projection_key(key: &str) -> bool {
     matches!(key, "agent.model" | "dispatcher.model")
+        || key.starts_with("tiers.")
         || (key.starts_with("models.")
             && matches!(
                 key.rsplit('.').next(),
-                Some("model" | "reasoning" | "reasoning_mode")
+                Some("model" | "tier" | "reasoning" | "reasoning_mode")
             ))
 }
 
@@ -811,7 +920,7 @@ mod tests {
     fn project_payload_rejects_machine_auth_and_native_routes() {
         let auth: toml::Value = toml::from_str("[auth]\nclaude_oauth_token = 'secret'").unwrap();
         assert!(validate_project_payload(&auth, Path::new("worksgood.toml")).is_err());
-        let native: toml::Value = toml::from_str("[agent]\nmodel = 'claude:opus'").unwrap();
+        let native: toml::Value = toml::from_str("[agent]\nmodel = 'nex:qwen3-coder'").unwrap();
         assert!(validate_project_payload(&native, Path::new("worksgood.toml")).is_err());
     }
 
@@ -869,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_origin_requires_a_closed_entry_for_every_role() {
+    fn profile_origin_accepts_sparse_default_projection() {
         let value: toml::Value =
             toml::from_str("[models.default]\nmodel='pi:test:worker'\nreasoning='high'").unwrap();
         let origin = ProfileOrigin {
@@ -877,11 +986,7 @@ mod tests {
             definition_fingerprint: format!("b3:{}", "1".repeat(64)),
             projection_fingerprint: projection_fingerprint(&value),
         };
-        let error = validate_origin(&origin, &value, Path::new("worksgood.toml"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("WG-PROFILE-PROJECTION-INCOMPLETE"));
-        assert!(error.contains("models.task_agent"));
+        validate_origin(&origin, &value, Path::new("worksgood.toml")).unwrap();
     }
 
     #[test]

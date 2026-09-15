@@ -2810,6 +2810,7 @@ pub(crate) fn settle_prepared_worker_done(
     let worksgood::worker_control::WorkerOperation::DoneHandoff {
         converged,
         full_smoke,
+        optional_checks: _,
     } = operation
     else {
         bail!("worker_control.prepared_done_operation_mismatch");

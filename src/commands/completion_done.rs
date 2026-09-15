@@ -134,31 +134,35 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         anyhow::anyhow!("deterministic validation evidence no longer resolves: {error}")
     })?;
     let config = worksgood::config::Config::load_merged(dir)?;
-    let review_policy = if config.agency.completion_review_strict {
+    let (review_policy, semantic_outcome) = if config.agency.completion_review_strict {
         load_exact_review_pair(&completion_store, &submission, &manifest, &resolved)?;
-        "strict"
+        ("strict", "approved")
     } else {
         let evidence = load_review_evidence(&completion_store, &submission, &manifest, &resolved)?;
-        if evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Reject
+        let rejected = evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Reject
             || evidence.eval.as_ref().is_some_and(|receipt| {
                 receipt.verdict == worksgood::simple_land::ReviewVerdict::Reject
-            })
-        {
-            bail!(
-                "semantic completion rejection is authoritative: Done is refused for manifest {} and the exact source attempt remains retained for repair",
-                manifest.digest().map_err(anyhow::Error::msg)?
-            );
-        }
-        if evidence.flip.verdict != worksgood::simple_land::ReviewVerdict::Pass
+            });
+        let unavailable = evidence.flip.verdict != worksgood::simple_land::ReviewVerdict::Pass
+            && !rejected
             || evidence.eval.as_ref().is_some_and(|receipt| {
                 receipt.verdict != worksgood::simple_land::ReviewVerdict::Pass
-            })
-        {
+                    && receipt.verdict != worksgood::simple_land::ReviewVerdict::Reject
+            });
+        if rejected {
+            eprintln!(
+                "WARNING: attributed semantic rejection remains visible for manifest {}, but configured advisory review policy permits deterministic completion. This is policy-authorized completion with advisory findings, not semantic approval.",
+                manifest.digest().map_err(anyhow::Error::msg)?
+            );
+            ("advisory", "advisory-findings")
+        } else if unavailable {
             eprintln!(
                 "WARNING: model review was unavailable (not semantically rejected). Advisory availability policy permits deterministic completion; inspect `wg show {id}` for the separate infrastructure finding."
             );
+            ("advisory", "unavailable")
+        } else {
+            ("advisory", "approved")
         }
-        "advisory"
     };
     let publication = verify_publication(
         project_root,
@@ -205,6 +209,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         flip_receipt_digest: flip_digest,
         eval_receipt_digest: eval_digest,
         review_policy: review_policy.to_string(),
+        semantic_outcome: Some(semantic_outcome.to_string()),
         contract: task.completion_contract.to_string(),
         publication,
         completed_at: completed_at.clone(),

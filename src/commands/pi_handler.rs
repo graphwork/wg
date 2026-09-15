@@ -508,6 +508,17 @@ fn rpc_spawn_args(
     session_dir: &Path,
     dist_entry: &Path,
 ) -> Vec<String> {
+    rpc_spawn_args_with_processes(marg, reasoning, session_id, session_dir, dist_entry, None)
+}
+
+fn rpc_spawn_args_with_processes(
+    marg: Option<&PiModelArg>,
+    reasoning: Option<ReasoningLevel>,
+    session_id: &str,
+    session_dir: &Path,
+    dist_entry: &Path,
+    process_extension: Option<&Path>,
+) -> Vec<String> {
     let mut args = vec!["--mode".to_string(), "rpc".to_string()];
     if let Some(marg) = marg {
         args.extend([
@@ -529,8 +540,14 @@ fn rpc_spawn_args(
         // Hermetic plugin load: exactly the embedded build, no discovery.
         "-e".to_string(),
         dist_entry.to_string_lossy().to_string(),
-        "-ne".to_string(),
     ]);
+    if let Some(process_extension) = process_extension {
+        args.extend([
+            "-e".to_string(),
+            process_extension.to_string_lossy().to_string(),
+        ]);
+    }
+    args.push("-ne".to_string());
     args
 }
 
@@ -1124,6 +1141,301 @@ fn assemble_turn(
     out
 }
 
+// --- opt-in task-worker process wake adapter ---------------------------------
+
+const PI_PROCESSES_PACKAGE: &str = "@mjakl/pi-processes";
+const PI_PROCESSES_VERSION: &str = "2.0.0";
+const MAX_PROCESS_EVIDENCE_TEXT: usize = 512;
+
+#[derive(Debug, serde::Serialize, Default)]
+struct ProcessWakeEvidence {
+    adapter: &'static str,
+    package: &'static str,
+    version: &'static str,
+    session_id: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    processes: Vec<ProcessWakeRecord>,
+    duplicate_events: u64,
+    completed: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ProcessWakeRecord {
+    id: String,
+    pid: Option<u64>,
+    command: String,
+    status: String,
+    exit_code: Option<i64>,
+    success: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_reference: Option<String>,
+}
+
+fn bounded_evidence_text(value: Option<&str>) -> String {
+    value
+        .unwrap_or_default()
+        .chars()
+        .take(MAX_PROCESS_EVIDENCE_TEXT)
+        .collect()
+}
+
+fn process_log_reference(details: Option<&serde_json::Value>) -> Option<String> {
+    details
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .and_then(|message| message.lines().find_map(|line| line.strip_prefix("Logs: ")))
+        .map(|path| bounded_evidence_text(Some(path)))
+}
+
+fn verify_process_extension(entry: &Path) -> Result<()> {
+    let entry = entry
+        .canonicalize()
+        .with_context(|| format!("canonicalize process extension {}", entry.display()))?;
+    let package_json = entry
+        .ancestors()
+        .take(5)
+        .map(|dir| dir.join("package.json"))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "WG-PI-PROCESS-EXTENSION-INVALID: {} has no enclosing package.json",
+                entry.display()
+            )
+        })?;
+    let package: serde_json::Value = serde_json::from_slice(&std::fs::read(&package_json)?)?;
+    let name = package.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let version = package
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if name != PI_PROCESSES_PACKAGE || version != PI_PROCESSES_VERSION {
+        anyhow::bail!(
+            "WG-PI-PROCESS-EXTENSION-MISMATCH: expected {}@{}, found {:?}@{:?} at {}",
+            PI_PROCESSES_PACKAGE,
+            PI_PROCESSES_VERSION,
+            name,
+            version,
+            package_json.display()
+        );
+    }
+    Ok(())
+}
+
+fn persist_process_evidence(path: &Path, evidence: &ProcessWakeEvidence) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(evidence)?)?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
+/// Run one task prompt in a retained Pi RPC process. This is deliberately an
+/// internal, opt-in adapter selected only by `WG_PI_PROCESS_WAKE_EXTENSION`.
+/// The Pi process, extension manager, and model session remain alive across an
+/// idle turn; no WG poll or token heartbeat manufactures progress.
+#[allow(clippy::too_many_arguments)]
+pub fn run_process_worker(
+    workgraph_dir: &Path,
+    task_id: &str,
+    prompt_file: &Path,
+    session_id: &str,
+    session_dir: &Path,
+    evidence_file: &Path,
+    process_extension: &Path,
+    pi_command: &Path,
+    provider: &str,
+    model: &str,
+    reasoning: &str,
+) -> Result<()> {
+    verify_process_extension(process_extension)?;
+    let reasoning = reasoning.parse::<ReasoningLevel>()?;
+    let plugin = pi_plugin::ensure_pi_plugin(EnsureMode::Hermetic)
+        .context("ensure the version-locked WG Pi plugin")?;
+    std::fs::create_dir_all(session_dir)?;
+    let marg = PiModelArg {
+        provider: provider.to_string(),
+        model: model.to_string(),
+    };
+    let args = rpc_spawn_args_with_processes(
+        Some(&marg),
+        Some(reasoning),
+        session_id,
+        session_dir,
+        &plugin.dist_entry,
+        Some(process_extension),
+    );
+    let child_env = plugin_child_env(&plugin.compat, &plugin.root, workgraph_dir, task_id);
+    let mut command = Command::new(pi_command);
+    command
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .env("PI_CODING_AGENT_SESSION_DIR", session_dir);
+    for (key, value) in child_env {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().context("spawn retained `pi --mode rpc`")?;
+    let mut stdin = child.stdin.take().context("retained Pi stdin")?;
+    let stdout = child.stdout.take().context("retained Pi stdout")?;
+    let prompt = std::fs::read_to_string(prompt_file)
+        .with_context(|| format!("read task prompt {}", prompt_file.display()))?;
+    serde_json::to_writer(
+        &mut stdin,
+        &serde_json::json!({"id":"wg-task-prompt","type":"prompt","message":prompt}),
+    )?;
+    stdin.write_all(b"\n")?;
+    stdin.flush()?;
+
+    let mut evidence = ProcessWakeEvidence {
+        adapter: "wg-pi-process-rpc-v1",
+        package: PI_PROCESSES_PACKAGE,
+        version: PI_PROCESSES_VERSION,
+        session_id: session_id.to_string(),
+        ..ProcessWakeEvidence::default()
+    };
+    persist_process_evidence(evidence_file, &evidence)?;
+    let mut active = std::collections::BTreeSet::<String>::new();
+    let mut completed = std::collections::BTreeSet::<String>::new();
+    let mut turn_end_count = 0_u64;
+    let mut completion_min_turn_end: Option<u64> = None;
+    let mut out = std::io::stdout().lock();
+    let mut reader = BufReader::new(stdout);
+    let mut bytes = Vec::new();
+
+    loop {
+        bytes.clear();
+        let read = reader.read_until(b'\n', &mut bytes)?;
+        if read == 0 {
+            anyhow::bail!(
+                "WG-PI-PROCESS-DISCONNECTED: retained Pi RPC session {} disappeared; evidence preserved at {}; refusing blind command replay",
+                session_id,
+                evidence_file.display()
+            );
+        }
+        out.write_all(&bytes)?;
+        out.flush()?;
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let ty = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if ty == "turn_end" {
+            turn_end_count = turn_end_count.saturating_add(1);
+        }
+        if ty == "tool_execution_end"
+            && value.get("toolName").and_then(|v| v.as_str()) == Some("process")
+        {
+            let details = value.get("result").and_then(|v| v.get("details"));
+            if details
+                .and_then(|v| v.get("action"))
+                .and_then(|v| v.as_str())
+                == Some("start")
+                && details
+                    .and_then(|v| v.get("success"))
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+                && let Some(process) = details.and_then(|v| v.get("process"))
+                && let Some(id) = process.get("id").and_then(|v| v.as_str())
+                && !completed.contains(id)
+            {
+                active.insert(id.to_string());
+                evidence.processes.push(ProcessWakeRecord {
+                    id: id.to_string(),
+                    pid: process.get("pid").and_then(|v| v.as_u64()),
+                    command: bounded_evidence_text(process.get("command").and_then(|v| v.as_str())),
+                    status: "running".to_string(),
+                    exit_code: None,
+                    success: None,
+                    log_reference: process_log_reference(details),
+                });
+                persist_process_evidence(evidence_file, &evidence)?;
+            }
+        }
+        if ty == "message_start"
+            && value
+                .get("message")
+                .and_then(|v| v.get("role"))
+                .and_then(|v| v.as_str())
+                == Some("custom")
+            && value
+                .get("message")
+                .and_then(|v| v.get("customType"))
+                .and_then(|v| v.as_str())
+                == Some("pi-processes:update")
+        {
+            let details = value.get("message").and_then(|v| v.get("details"));
+            if let Some(id) = details
+                .and_then(|v| v.get("processId"))
+                .and_then(|v| v.as_str())
+            {
+                if !completed.insert(id.to_string()) {
+                    evidence.duplicate_events = evidence.duplicate_events.saturating_add(1);
+                } else {
+                    active.remove(id);
+                    if let Some(record) = evidence.processes.iter_mut().find(|p| p.id == id) {
+                        record.status = bounded_evidence_text(
+                            details
+                                .and_then(|v| v.get("status"))
+                                .and_then(|v| v.as_str()),
+                        );
+                        record.exit_code = details
+                            .and_then(|v| v.get("exitCode"))
+                            .and_then(|v| v.as_i64());
+                        record.success = details
+                            .and_then(|v| v.get("success"))
+                            .and_then(|v| v.as_bool());
+                    } else {
+                        evidence.processes.push(ProcessWakeRecord {
+                            id: id.to_string(),
+                            pid: None,
+                            command: bounded_evidence_text(
+                                details
+                                    .and_then(|v| v.get("command"))
+                                    .and_then(|v| v.as_str()),
+                            ),
+                            status: bounded_evidence_text(
+                                details
+                                    .and_then(|v| v.get("status"))
+                                    .and_then(|v| v.as_str()),
+                            ),
+                            exit_code: details
+                                .and_then(|v| v.get("exitCode"))
+                                .and_then(|v| v.as_i64()),
+                            success: details
+                                .and_then(|v| v.get("success"))
+                                .and_then(|v| v.as_bool()),
+                            log_reference: None,
+                        });
+                    }
+                    // The custom completion message is input to a continuation
+                    // turn. Require that turn to finish before exiting. Pi may
+                    // keep one `agent_start` across background-blocked turns,
+                    // so turn boundaries—not agent-start count—close the race.
+                    completion_min_turn_end = Some(turn_end_count.saturating_add(1));
+                }
+                persist_process_evidence(evidence_file, &evidence)?;
+            }
+        }
+        if ty == "agent_end" && active.is_empty() {
+            if completion_min_turn_end.is_some_and(|minimum| turn_end_count < minimum) {
+                continue;
+            }
+            evidence.completed = true;
+            persist_process_evidence(evidence_file, &evidence)?;
+            let _ = stdin.write_all(b"{\"type\":\"shutdown\"}\n");
+            let _ = stdin.flush();
+            // Pi 0.84 accepts EOF/process termination as the headless RPC
+            // shutdown boundary; do not block indefinitely on an extension
+            // command response that this protocol version does not emit.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(());
+        }
+    }
+}
+
 // --- handler-local logger (peer of opencode_handler::HandlerLogger) -----------
 
 #[derive(Clone)]
@@ -1287,6 +1599,66 @@ mod tests {
                 .any(|a| a == "--api-key" || a.contains("api-key")),
             "credentials must never be passed via --api-key: {:?}",
             args
+        );
+    }
+
+    #[test]
+    fn process_worker_rpc_args_load_only_two_explicit_extensions() {
+        let marg = PiModelArg {
+            provider: "openrouter".into(),
+            model: "example/model".into(),
+        };
+        let wg = Path::new("/cache/wg/pi-worksgood/index.js");
+        let processes = Path::new("/isolated/node_modules/@mjakl/pi-processes/dist/index.js");
+        let args = rpc_spawn_args_with_processes(
+            Some(&marg),
+            Some(ReasoningLevel::High),
+            "task-session",
+            Path::new("/tmp/session"),
+            wg,
+            Some(processes),
+        );
+        let entries: Vec<_> = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-e")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![wg.to_str().unwrap(), processes.to_str().unwrap()]
+        );
+        assert_eq!(args.iter().filter(|arg| arg.as_str() == "-ne").count(), 1);
+        assert!(args.windows(2).any(|pair| pair == ["--mode", "rpc"]));
+        assert!(args.windows(2).any(|pair| pair == ["--thinking", "high"]));
+    }
+
+    #[test]
+    fn process_extension_pin_is_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let dist = dir.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let entry = dist.join("index.js");
+        std::fs::write(&entry, "export default () => {};").unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"@mjakl/pi-processes","version":"2.0.0"}"#,
+        )
+        .unwrap();
+        verify_process_extension(&entry).unwrap();
+        let details =
+            serde_json::json!({"message":"Started\nLogs: /tmp/owned/stdout.log\nignored"});
+        assert_eq!(
+            process_log_reference(Some(&details)).as_deref(),
+            Some("/tmp/owned/stdout.log")
+        );
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"@mjakl/pi-processes","version":"2.0.1"}"#,
+        )
+        .unwrap();
+        assert!(
+            format!("{:#}", verify_process_extension(&entry).unwrap_err())
+                .contains("WG-PI-PROCESS-EXTENSION-MISMATCH")
         );
     }
 

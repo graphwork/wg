@@ -53,7 +53,8 @@ fn test_pi_list_reports_configured_models_not_hardcoded() {
     assert_eq!(strong.as_deref(), Some("pi:openrouter:z-ai/glm-5.2"));
     assert_eq!(
         weak.as_deref(),
-        Some("pi:openrouter:deepseek/deepseek-chat")
+        Some("pi:openrouter:deepseek/deepseek-chat"),
+        "the reusable starter retains its intentional explicit weak split"
     );
 }
 
@@ -76,43 +77,55 @@ fn test_pi_select_and_apply_updates_both_tiers_and_persists() {
         Some("pi:openrouter:deepseek/deepseek-v3.1")
     );
 
-    // Every strong key followed the strong tier...
-    assert_eq!(reloaded.agent.model, "pi:openrouter:qwen/qwen3-max");
-    assert_eq!(
-        reloaded.coordinator.model.as_deref(),
-        Some("pi:openrouter:qwen/qwen3-max")
-    );
+    // Sparse selectors move inherited roles without manufacturing role copies.
+    assert!(reloaded.agent.model.is_empty());
+    assert!(reloaded.coordinator.model.is_none());
     assert_eq!(
         reloaded.tiers.standard.as_deref(),
         Some("pi:openrouter:qwen/qwen3-max")
     );
-    assert_eq!(
-        reloaded.tiers.premium.as_deref(),
-        Some("pi:openrouter:qwen/qwen3-max")
-    );
-    assert_eq!(
+    assert!(reloaded.tiers.premium.is_none());
+    assert!(
         reloaded
             .models
             .task_agent
             .as_ref()
-            .and_then(|m| m.model.as_deref()),
-        Some("pi:openrouter:qwen/qwen3-max")
+            .and_then(|m| m.model.as_deref())
+            .is_none()
+    );
+    assert_eq!(
+        reloaded
+            .resolve_execution_route_for_role(DispatchRole::TaskAgent)
+            .unwrap()
+            .route,
+        "pi:openrouter:qwen/qwen3-max"
     );
 
-    // ...and every weak agency one-shot followed the weak tier.
     assert_eq!(
         reloaded.tiers.fast.as_deref(),
         Some("pi:openrouter:deepseek/deepseek-v3.1")
     );
     for role in [
-        reloaded.models.evaluator.as_ref(),
-        reloaded.models.assigner.as_ref(),
-        reloaded.models.flip_inference.as_ref(),
-        reloaded.models.flip_comparison.as_ref(),
+        DispatchRole::Evaluator,
+        DispatchRole::Assigner,
+        DispatchRole::FlipInference,
+        DispatchRole::FlipComparison,
+        DispatchRole::Reviewer,
     ] {
         assert_eq!(
-            role.and_then(|m| m.model.as_deref()),
-            Some("pi:openrouter:deepseek/deepseek-v3.1")
+            reloaded
+                .resolve_execution_route_for_role(role)
+                .unwrap()
+                .route,
+            "pi:openrouter:deepseek/deepseek-chat",
+            "explicit starter {role} pin must survive a tier-only edit"
+        );
+        assert_eq!(
+            reloaded
+                .models
+                .get_role(role)
+                .and_then(|entry| entry.model.as_deref()),
+            Some("pi:openrouter:deepseek/deepseek-chat")
         );
     }
 }
@@ -193,9 +206,25 @@ fn test_pi_starter_premium_roles_ride_strong_tier() {
         cfg.models.verification.is_none(),
         "verification rides tiers.premium"
     );
-    // The four agency one-shots remain explicit (they ignore the tier cascade).
-    assert!(cfg.models.evaluator.is_some());
-    assert!(cfg.models.assigner.is_some());
-    assert!(cfg.models.flip_inference.is_some());
-    assert!(cfg.models.flip_comparison.is_some());
+    // The existing Pi starter split is intentional operator policy: weak and
+    // its agency one-shots remain explicitly pinned to DeepSeek.
+    assert_eq!(
+        cfg.tiers.fast.as_deref(),
+        Some("pi:openrouter:deepseek/deepseek-chat")
+    );
+    for role in [
+        DispatchRole::Evaluator,
+        DispatchRole::Assigner,
+        DispatchRole::FlipInference,
+        DispatchRole::FlipComparison,
+        DispatchRole::Reviewer,
+    ] {
+        assert_eq!(
+            cfg.models
+                .get_role(role)
+                .and_then(|entry| entry.model.as_deref()),
+            Some("pi:openrouter:deepseek/deepseek-chat"),
+            "starter must retain intentional explicit {role} split"
+        );
+    }
 }

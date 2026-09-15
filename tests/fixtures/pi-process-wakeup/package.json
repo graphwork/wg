@@ -1,0 +1,7 @@
+{
+  "name": "wg-pi-process-wakeup-proof",
+  "private": true,
+  "dependencies": {
+    "@mjakl/pi-processes": "2.0.0"
+  }
+}

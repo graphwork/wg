@@ -233,6 +233,7 @@ fn make_graph(dir: &Path, model: &str, applicability: EvaluationGateApplicabilit
             exact_route: exact_route.clone(),
             endpoint: None,
             reasoning: Some(ReasoningLevel::Low),
+            config_revision: Some("b3:test-revision".into()),
             handler,
             provider: "test".into(),
         }],

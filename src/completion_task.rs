@@ -96,6 +96,104 @@ pub fn requirements_digest(task: &Task) -> Result<ContentDigest, CompletionTaskE
     Ok(ContentDigest::of_bytes(&task_requirements_bytes(task)?))
 }
 
+/// Build the semantic-review view without changing the immutable requirements
+/// bytes or digest. Only explicitly headed Markdown coordination sections are
+/// separated; communication-like product prose remains acceptance. Ambiguous
+/// headings stay visible and ask the reviewer for a decision rather than being
+/// silently discarded.
+pub fn review_requirements_projection(requirements: &[u8]) -> serde_json::Value {
+    let Ok(mut acceptance) = serde_json::from_slice::<serde_json::Value>(requirements) else {
+        return serde_json::json!({
+            "schema": "worksgood-review-requirements-v1",
+            "acceptance": String::from_utf8_lossy(requirements),
+            "coordination_guidance": [],
+            "classification_ambiguities": ["requirements were not structured JSON; request a decision if coordination and acceptance cannot be distinguished"]
+        });
+    };
+    let Some(object) = acceptance.as_object_mut() else {
+        return serde_json::json!({
+            "schema": "worksgood-review-requirements-v1",
+            "acceptance": acceptance,
+            "coordination_guidance": [],
+            "classification_ambiguities": []
+        });
+    };
+    let Some(description) = object
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+    else {
+        return serde_json::json!({
+            "schema": "worksgood-review-requirements-v1",
+            "acceptance": acceptance,
+            "coordination_guidance": [],
+            "classification_ambiguities": []
+        });
+    };
+    let (reviewed_description, coordination, ambiguities) =
+        split_explicit_coordination_sections(&description);
+    object.insert(
+        "description".into(),
+        serde_json::Value::String(reviewed_description),
+    );
+    serde_json::json!({
+        "schema": "worksgood-review-requirements-v1",
+        "acceptance": acceptance,
+        "coordination_guidance": coordination,
+        "classification_ambiguities": ambiguities,
+        "review_rule": "coordination_guidance is visible context, not candidate acceptance; classification ambiguities require one precise decision and must not be silently enforced or erased"
+    })
+}
+
+fn split_explicit_coordination_sections(description: &str) -> (String, Vec<String>, Vec<String>) {
+    let mut acceptance = Vec::new();
+    let mut coordination = Vec::<Vec<String>>::new();
+    let mut ambiguities = Vec::new();
+    let mut in_coordination = false;
+    for line in description.lines() {
+        if let Some(raw_heading) = line.strip_prefix("## ") {
+            let heading = raw_heading.trim().trim_end_matches('#').trim();
+            let normalized = heading.to_ascii_lowercase();
+            let explicit = matches!(
+                normalized.as_str(),
+                "coordination"
+                    | "communication"
+                    | "coordination guidance"
+                    | "communication guidance"
+            );
+            let mentions_boundary = normalized
+                .split(|character: char| !character.is_alphanumeric())
+                .any(|word| matches!(word, "coordination" | "communication"));
+            if mentions_boundary && !explicit {
+                ambiguities.push(format!(
+                    "Markdown section `{heading}` mixes or ambiguously labels coordination; request a decision before treating it as acceptance"
+                ));
+            }
+            in_coordination = explicit;
+            if explicit {
+                coordination.push(vec![line.to_string()]);
+                continue;
+            }
+        }
+        if in_coordination {
+            coordination
+                .last_mut()
+                .expect("coordination section exists")
+                .push(line.to_string());
+        } else {
+            acceptance.push(line.to_string());
+        }
+    }
+    (
+        acceptance.join("\n").trim().to_string(),
+        coordination
+            .into_iter()
+            .map(|lines| lines.join("\n").trim().to_string())
+            .collect(),
+        ambiguities,
+    )
+}
+
 #[derive(Clone, Debug)]
 pub struct TaskSubmission {
     pub manifest_ref: CompletionManifestRef,
@@ -357,4 +455,69 @@ pub enum CompletionTaskError {
     Serialize(String),
     #[error(transparent)]
     Store(#[from] ArtifactStoreError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn review_projection_separates_only_explicit_coordination_sections() {
+        let mut task = Task {
+            id: "boundary".into(),
+            title: "Ship notification product".into(),
+            description: Some(
+                "Build the notifier.\n\n## Validation\n- [ ] Product sends an email to the configured recipient.\n\n## Coordination\nSend a progress message within five minutes.\n\n## Operating boundary\nKeep the product delivery requirement."
+                    .into(),
+            ),
+            completion_contract: GraphContract::Report,
+            ..Task::default()
+        };
+        task.lifecycle.generation = 3;
+        let projection = review_requirements_projection(&task_requirements_bytes(&task).unwrap());
+        let acceptance = projection["acceptance"]["description"].as_str().unwrap();
+        assert!(acceptance.contains("Product sends an email"));
+        assert!(acceptance.contains("Keep the product delivery requirement"));
+        assert!(!acceptance.contains("within five minutes"));
+        assert_eq!(
+            projection["coordination_guidance"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            projection["coordination_guidance"][0]
+                .as_str()
+                .unwrap()
+                .contains("within five minutes")
+        );
+    }
+
+    #[test]
+    fn ambiguous_heading_stays_visible_and_requests_a_decision() {
+        let task = Task {
+            id: "ambiguous".into(),
+            title: "Ambiguous boundary".into(),
+            description: Some(
+                "## Communication and deliverable\nProduce the customer announcement.".into(),
+            ),
+            completion_contract: GraphContract::Report,
+            ..Task::default()
+        };
+        let projection = review_requirements_projection(&task_requirements_bytes(&task).unwrap());
+        assert!(
+            projection["acceptance"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Produce the customer announcement")
+        );
+        assert_eq!(
+            projection["classification_ambiguities"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 }

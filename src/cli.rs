@@ -529,6 +529,11 @@ pub enum Commands {
         #[arg(value_name = "TASK")]
         id: String,
 
+        /// Run and attach a worker-selected check as trustworthy optional
+        /// evidence. Repeatable. This does not edit or waive mandatory gates.
+        #[arg(long = "check", value_name = "COMMAND")]
+        checks: Vec<String>,
+
         /// Signal that the task's iterative loop has converged (stops loop edges from firing)
         #[arg(long)]
         converged: bool,
@@ -671,10 +676,10 @@ pub enum Commands {
         #[arg(long, value_name = "CLASS")]
         class: Option<String>,
 
-        /// Source intent when deterministic completion repair evidence exists:
-        /// deliberate-stop, request-help, or request-contract-correction.
-        /// Without an intent, a repairable completion failure is preserved and
-        /// escalated rather than rewritten as terminal source failure.
+        /// Source intent after a current deterministic completion failure or
+        /// receipt-verified semantic rejection: deliberate-stop, request-help,
+        /// or request-contract-correction. Without an intent, an active repair
+        /// or pending explicit decision is preserved rather than overwritten.
         #[arg(long, value_name = "INTENT")]
         intent: Option<String>,
 
@@ -2976,6 +2981,31 @@ pub enum Commands {
         reasoning: Option<String>,
     },
 
+    /// Internal opt-in retained Pi RPC worker for @mjakl/pi-processes.
+    #[command(name = "pi-process-worker", hide = true)]
+    PiProcessWorker {
+        #[arg(long)]
+        task_id: String,
+        #[arg(long)]
+        prompt_file: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        session_dir: String,
+        #[arg(long)]
+        evidence_file: String,
+        #[arg(long)]
+        process_extension: String,
+        #[arg(long)]
+        pi_command: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        reasoning: String,
+    },
+
     /// Print the WG directory that `wg` would use from here,
     /// and show which resolver step won (CLI flag / env / walk-up /
     /// home / default). Useful when you're confused about which graph
@@ -5026,6 +5056,10 @@ pub enum ProfileCommands {
         /// Set the weak tier (agency one-shots). Partial-update friendly.
         #[arg(long)]
         weak: Option<String>,
+
+        /// Remove the explicit weak tier so it inherits strong dynamically.
+        #[arg(long, conflicts_with = "weak")]
+        reset_weak: bool,
 
         /// Set reasoning for strong-tier roles without changing their models.
         #[arg(long, value_name = "LEVEL")]
@@ -7353,6 +7387,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::CodexHandler { .. } => "codex-handler",
         Commands::OpenCodeHandler { .. } => "opencode-handler",
         Commands::PiHandler { .. } => "pi-handler",
+        Commands::PiProcessWorker { .. } => "pi-process-worker",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Which { .. } => "which",
         Commands::Executors { .. } => "executors",

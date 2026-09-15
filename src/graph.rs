@@ -457,9 +457,20 @@ pub enum CompletionRepairDisposition {
     Resolved,
 }
 
-/// Durable projection of immutable deterministic-validation failures. It is
-/// bound to source/candidate/check identity and carries no scheduling or
-/// completion authority.
+/// Exact semantic-review receipt bound to a completion attention request.
+/// This is observation-only: it neither accepts the candidate nor schedules a
+/// reviewer/source rerun.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletionSemanticRepairBinding {
+    pub reviewer_kind: crate::completion_review::ReviewerKind,
+    pub review_receipt: crate::completion_manifest::ContentDigest,
+    pub candidate_sequence: u64,
+}
+
+/// Durable projection of an immutable completion blocker. Deterministic
+/// failures and semantic rejections share this existing attention surface, but
+/// retain their distinct evidence kinds and identities. The projection carries
+/// no scheduling or completion authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletionRepairState {
     pub version: u32,
@@ -473,6 +484,10 @@ pub struct CompletionRepairState {
     pub validation_identity: crate::completion_manifest::ContentDigest,
     pub candidate_identity: crate::completion_manifest::ContentDigest,
     pub evidence: crate::completion_manifest::EvidenceRef,
+    /// Worker worktree retained for inspection/continuation. This is a display
+    /// locator only and grants no filesystem or completion authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_work: Option<String>,
     pub command: String,
     pub exit_category: String,
     /// Redacted, bounded, explicitly untrusted diagnostic text.
@@ -481,6 +496,15 @@ pub struct CompletionRepairState {
     pub opportunity_limit: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_candidates: Vec<crate::completion_manifest::ContentDigest>,
+    /// The underlying blocker remains stable when the explicit requested
+    /// operator decision changes. Legacy rows fall back to `reason_code`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker_reason_code: Option<String>,
+    /// Present only when the evidence is a verified current semantic rejection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_review: Option<CompletionSemanticRepairBinding>,
+    /// The current attention/repair disposition reason (for example, the
+    /// operator decision being requested).
     pub reason_code: String,
     pub safe_next: String,
     pub feedback_id: String,

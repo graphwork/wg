@@ -390,7 +390,14 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                 match config.resolve_execution_route_for_role(*role) {
                     Ok(resolved) => println!(
                         "  {:<14} = {} (handler: {}, reasoning: {}{})",
-                        role, resolved.route, resolved.handler, resolved.reasoning, auto_str
+                        role,
+                        resolved.route,
+                        resolved.handler,
+                        resolved
+                            .reasoning
+                            .map(|value| value.as_str())
+                            .unwrap_or("(omit)"),
+                        auto_str
                     ),
                     Err(error) => println!("  {:<14} = INVALID ({error}{auto_str})", role),
                 }
@@ -1049,11 +1056,18 @@ pub fn update_with_reasoning(
                 e
             );
         }
-        // A top-level route selection establishes a complete, explicit Pi
-        // plane. Strong and weak initially use the same exact identity; users
-        // can then tune them independently with `wg profile pi`.
-        config.set_pi_tiers(Some(m), Some(m));
-        println!("Set explicit worker strong/weak routes = \"{}\"", m);
+        // One project default is enough. Unset strong inherits it and unset
+        // weak inherits strong; existing explicit splits remain untouched.
+        config.pin_default_route_model(m);
+        if let Some(default) = config.models.default.as_mut()
+            && default.reasoning.is_none()
+        {
+            default.reasoning = Some(ReasoningLevel::High);
+        }
+        println!(
+            "Set project default route = \"{}\" (strong/weak inherit unless explicit)",
+            m
+        );
         if coordinator_model.is_none() {
             config.coordinator.provider = None;
             println!("Set dispatcher.model = \"{}\"", m);
@@ -1706,27 +1720,51 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
                         "handler": route.handler,
                         "provider": route.provider,
                         "model": route.model,
-                        "reasoning": route.reasoning.as_str(),
+                        "reasoning": route.reasoning.map(|value| value.as_str()),
                         "source": route.source,
+                        "provenance": route.provenance.to_string(),
+                        "config_source": route.config_source,
+                        "config_revision": route.config_revision,
                     }),
                 )
             })
             .collect::<serde_json::Map<_, _>>();
         println!("{}", serde_json::to_string_pretty(&values)?);
     } else {
-        println!("Explicit Worker Model Plane (Pi recommended)");
-        println!("============================================");
+        println!("Project Model Plane (Pi recommended)");
+        println!("====================================");
+        let default = config.resolve_execution_route_for_role(DispatchRole::Default)?;
+        let strong = config.resolve_tier_route(Tier::Standard)?;
+        let weak = config.resolve_tier_route(Tier::Fast)?;
         println!(
-            "  {:<18} {:<8} {:<48} {:<9} SOURCE",
-            "ROLE", "HANDLER", "EXACT ROUTE", "REASON"
+            "  project default = {} [source: {}]",
+            default.route, default.config_source
+        );
+        println!(
+            "  effective strong = {} [{}: {}]",
+            strong.route, strong.provenance, strong.source
+        );
+        println!(
+            "  effective weak   = {} [{}: {}]",
+            weak.route, weak.provenance, weak.source
+        );
+        println!("  active revision  = {}", default.config_revision);
+        println!();
+        println!(
+            "  {:<18} {:<8} {:<42} {:<9} {:<10} SOURCE",
+            "ROLE", "HANDLER", "EXACT ROUTE", "REASON", "PROVENANCE"
         );
         for (role, route) in roles {
             println!(
-                "  {:<18} {:<8} {:<48} {:<9} {}",
+                "  {:<18} {:<8} {:<42} {:<9} {:<10} {}",
                 role,
                 route.handler,
                 route.route,
-                route.reasoning.as_str(),
+                route
+                    .reasoning
+                    .map(|value| value.as_str())
+                    .unwrap_or("(omit)"),
+                route.provenance,
                 route.source
             );
         }
@@ -2637,9 +2675,13 @@ pub fn reset_to_route(
             (path, cfg)
         }
         ConfigScope::Local => {
-            let path = workgraph_dir.join("config.toml");
+            let path = worksgood::project_config::path_for_graph(workgraph_dir).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "error[WG-PROJECT-ROOT-REQUIRED]: config reset needs an ordinary project .wg directory"
+                )
+            })?;
             let cfg = if path.exists() {
-                Config::load(workgraph_dir)?
+                Config::load_merged(workgraph_dir)?
             } else {
                 Config::default()
             };
@@ -2730,7 +2772,9 @@ pub fn reset_to_route(
     // Write the new config.
     match scope {
         ConfigScope::Global => new_config.save_global()?,
-        ConfigScope::Local => new_config.save(workgraph_dir)?,
+        ConfigScope::Local => {
+            worksgood::project_config::write_config_for_graph(workgraph_dir, &new_config)?;
+        }
     }
 
     println!(
@@ -3090,7 +3134,7 @@ pub fn set_dotted(
     // dispatch on the old dispatcher/task_agent route. Update the complete
     // model projection atomically while retaining each role's reasoning.
     if scope == ConfigScope::Local && normalized_key == "agent.model" {
-        set_complete_project_model_projection(&mut doc, value);
+        worksgood::project_config::rewrite_project_default(&mut doc, value)?;
     } else {
         set_dotted_value(&mut doc, &normalized_key, typed_value.clone());
     }
@@ -3285,30 +3329,6 @@ fn is_project_routing_key(key: &str) -> bool {
         key.strip_prefix(namespace)
             .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
     })
-}
-
-/// Set the project-wide default model route everywhere a closed profile/setup
-/// projection may have pinned it. This makes `wg config set agent.model ...`
-/// change the route that execution selection actually uses.
-fn set_complete_project_model_projection(doc: &mut toml::Value, route: &str) {
-    set_dotted_value(doc, "agent.model", toml::Value::String(route.to_string()));
-    set_dotted_value(
-        doc,
-        "dispatcher.model",
-        toml::Value::String(route.to_string()),
-    );
-    set_dotted_value(
-        doc,
-        "models.default.model",
-        toml::Value::String(route.to_string()),
-    );
-    for role in worksgood::config::DispatchRole::ALL {
-        set_dotted_value(
-            doc,
-            &format!("models.{role}.model"),
-            toml::Value::String(route.to_string()),
-        );
-    }
 }
 
 fn scope_label(scope: ConfigScope) -> &'static str {

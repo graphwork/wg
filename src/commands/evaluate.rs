@@ -25,7 +25,6 @@ use worksgood::completion_manifest::{
     ContentDigest, ResolvedEvidence, ResolvedOutput, ResolvedPayload, ResolvedReviewBundle,
 };
 use worksgood::config::{Config, DispatchRole};
-use worksgood::dispatch::ExecutorKind;
 use worksgood::identity::canonical_json;
 use worksgood::json_extract::extract_json;
 use worksgood::parser::load_graph;
@@ -809,12 +808,12 @@ pub fn run(dir: &Path, task_id: &str, dry_run: bool, json_output: bool) -> Resul
     }
 
     let (config, route) = configured_evaluator(dir, &evidence)?;
-    let dispatch = AgencyDispatch {
-        handler: ExecutorKind::Pi,
-        raw_spec: route.route.clone(),
-        model_id: route.model.clone(),
-        reasoning: Some(route.reasoning),
-    };
+    let dispatch = AgencyDispatch::from_pinned_route(
+        &route.route,
+        Some(route.reasoning),
+        worksgood::config::DispatchRole::Evaluator,
+        config.authority_revision.as_deref(),
+    );
     let timeout_secs = config
         .agency
         .inference_timeout_secs()

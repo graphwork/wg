@@ -82,6 +82,36 @@ pub struct TargetLayer {
     pub baseline_path: Option<PathBuf>,
 }
 
+/// The exact reusable Cargo-baseline identity for one controlled command.
+///
+/// Callers keep the full key private and ask this value to verify publication,
+/// so a digest-shaped directory or a `READY` marker for another toolchain,
+/// source tree, command, or Cargo input can never satisfy admission.
+#[derive(Debug, Clone)]
+pub struct ExactBaseline {
+    key: TargetCacheKey,
+}
+
+impl ExactBaseline {
+    pub fn digest(&self) -> String {
+        self.key.digest()
+    }
+
+    pub fn is_ready(&self, cache_root: &Path) -> bool {
+        baseline_is_ready(&baseline_dir(cache_root, &self.digest()), &self.key)
+    }
+}
+
+/// Current publication state for the exact reusable key pinned into a private
+/// layer. This is deliberately refreshed from the immutable baseline on every
+/// call: whether a layer was seeded at creation time is historical metadata,
+/// not current cold-builder reservation authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerBaselineState {
+    pub key_digest: String,
+    pub ready: bool,
+}
+
 struct KeyLock {
     _file: File,
 }
@@ -295,9 +325,9 @@ fn parse_attested_cargo_command(shell_command: &str) -> Option<AttestedCargoComm
     if !cargo_words
         .get(cargo_cursor)
         .is_some_and(|word| matches!(word.as_str(), "build" | "check" | "test" | "clippy" | "doc"))
-        || cargo_words[cargo_cursor + 1..]
-            .iter()
-            .any(|word| word == "cargo")
+        || cargo_words[cargo_cursor + 1..].iter().any(|word| {
+            word == "cargo" || word == "--target-dir" || word.starts_with("--target-dir=")
+        })
     {
         return None;
     }
@@ -626,6 +656,19 @@ fn target_has_artifacts(target: &Path) -> bool {
         })
 }
 
+/// Resolve build-system-specific baseline metadata only when WG controls an
+/// exact reusable Cargo command. Interactive, non-Cargo and ambiguous shell
+/// work has no shared-baseline identity; it remains covered by the generic
+/// private build projection instead of acquiring a Cargo readiness dependency.
+pub fn exact_baseline(
+    source_root: &Path,
+    controlled_command: Option<&str>,
+) -> Option<ExactBaseline> {
+    let command = controlled_command.filter(|command| !command.trim().is_empty())?;
+    let key = compute_key(source_root, Some(command), "admission");
+    key.baseline_reusable.then_some(ExactBaseline { key })
+}
+
 /// Whether the exact current build key already has a published immutable
 /// baseline. `READY` is written last, so this lock-free admission read can only
 /// return false during an in-progress promotion, never observe a partial true.
@@ -634,11 +677,8 @@ pub fn has_ready_baseline(
     source_root: &Path,
     controlled_command: Option<&str>,
 ) -> bool {
-    let Some(command) = controlled_command.filter(|command| !command.trim().is_empty()) else {
-        return false;
-    };
-    let key = compute_key(source_root, Some(command), "admission");
-    key.baseline_reusable && baseline_is_ready(&baseline_dir(cache_root, &key.digest()), &key)
+    exact_baseline(source_root, controlled_command)
+        .is_some_and(|baseline| baseline.is_ready(cache_root))
 }
 
 /// Prepare one private writable target. No mutable directory is shared.
@@ -1080,6 +1120,20 @@ pub fn layer_was_seeded_from_baseline(target: &Path) -> bool {
         .is_some_and(|path| Path::new(&path).is_dir())
 }
 
+/// Refresh the exact baseline publication state pinned by a validated layer.
+/// Non-reusable layers intentionally return `None`: their existence is not
+/// evidence that a Cargo baseline is cold or that their owner is its builder.
+pub fn layer_baseline_state(target: &Path) -> Option<LayerBaselineState> {
+    let manifest = validated_layer_manifest(target)?;
+    if !manifest.key.baseline_reusable {
+        return None;
+    }
+    let cache_root = target.ancestors().nth(4)?;
+    let key_digest = manifest.key.digest();
+    let ready = baseline_is_ready(&baseline_dir(cache_root, &key_digest), &manifest.key);
+    Some(LayerBaselineState { key_digest, ready })
+}
+
 fn validated_layer_manifest(target: &Path) -> Option<LayerManifest> {
     let manifest = fs::read(target.join(LAYER_MANIFEST)).ok()?;
     let manifest: LayerManifest = serde_json::from_slice(&manifest).ok()?;
@@ -1299,6 +1353,56 @@ mod tests {
         let layer = prepare_layer_with_key(temp.path(), &source, "agent", key("empty")).unwrap();
         assert!(!promote_layer_validated(&layer.path, &layer.key).unwrap());
         assert!(!baseline_dir(temp.path(), &layer.key.digest()).exists());
+    }
+
+    #[test]
+    fn validated_layer_refreshes_exact_publication_instead_of_freezing_seed_state() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let layer =
+            prepare_layer_with_key(temp.path(), &source, "cold-builder", key("refresh")).unwrap();
+        fs::write(layer.path.join("artifact"), "complete build output").unwrap();
+
+        let before = layer_baseline_state(&layer.path).expect("reusable exact layer");
+        assert!(!before.ready);
+        assert!(!layer_was_seeded_from_baseline(&layer.path));
+
+        // READY without the exact manifest is never publication authority.
+        let incomplete = baseline_dir(temp.path(), &layer.key.digest());
+        fs::create_dir_all(&incomplete).unwrap();
+        fs::write(
+            incomplete.join(BASELINE_OWNED),
+            b"wg-owned Cargo baseline\n",
+        )
+        .unwrap();
+        fs::write(incomplete.join(READY), b"ready\n").unwrap();
+        assert!(!layer_baseline_state(&layer.path).unwrap().ready);
+
+        assert!(promote_layer_validated(&layer.path, &layer.key).unwrap());
+        let published = layer_baseline_state(&layer.path).unwrap();
+        assert_eq!(published.key_digest, before.key_digest);
+        assert!(published.ready);
+        assert!(
+            !layer_was_seeded_from_baseline(&layer.path),
+            "historical seed metadata must remain false for the cold builder"
+        );
+        assert!(
+            !promote_layer_validated(&layer.path, &layer.key).unwrap(),
+            "replayed publication is idempotent"
+        );
+        assert!(layer_baseline_state(&layer.path).unwrap().ready);
+    }
+
+    #[test]
+    fn baseline_metadata_is_optional_for_non_cargo_or_uncontrolled_work() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        assert!(exact_baseline(&source, None).is_none());
+        assert!(exact_baseline(&source, Some("sleep 30")).is_none());
+        assert!(exact_baseline(&source, Some("cargo check && touch done")).is_none());
+        assert!(exact_baseline(&source, Some("cargo check")).is_some());
     }
 
     #[cfg(unix)]
@@ -1720,6 +1824,8 @@ mod tests {
             "cargo build && touch done",
             "env CARGO_HOME=/tmp/ch cargo build",
             "CARGO_TARGET_DIR=/tmp/escape cargo build",
+            "cargo build --target-dir /tmp/escape",
+            "cargo build --target-dir=/tmp/escape",
             "echo no-build",
         ] {
             assert!(

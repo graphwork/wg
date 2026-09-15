@@ -14340,6 +14340,10 @@ impl VizApp {
             ));
         }
         lines.push(format!(
+            "  Optional evidence: {}",
+            completion_preflight.optional_evidence_capture
+        ));
+        lines.push(format!(
             "  Repair boundary: {} (budget={})",
             completion_preflight.repair_boundary, completion_preflight.deterministic_repair_budget
         ));

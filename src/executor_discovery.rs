@@ -280,6 +280,137 @@ pub fn pi_route_availability() -> PiRouteAvailability {
     pi_route_availability_in(&path_dirs, &pi_plugin_candidate_dirs())
 }
 
+/// Pi invocation context whose provider registry must recognize a route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PiCapabilityLane {
+    Worker,
+    HermeticReview,
+}
+
+impl std::fmt::Display for PiCapabilityLane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Worker => "worker",
+            Self::HermeticReview => "hermetic-review",
+        })
+    }
+}
+
+/// Ask the actual Pi CLI registry whether `(provider, model)` is available.
+/// `--offline --list-models` performs no model call. Hermetic review includes
+/// `-ne`, matching the no-extension/no-context invocation used by agency and
+/// completion review; worker probing retains the ambient Pi registration
+/// context used by `pi --mode json`.
+fn metadata_revision(path: &std::path::Path) -> String {
+    let metadata = std::fs::metadata(path).ok();
+    let modified = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let len = metadata
+        .as_ref()
+        .map(|metadata| metadata.len())
+        .unwrap_or_default();
+    let content = std::fs::read(path)
+        .ok()
+        .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+        .unwrap_or_else(|| "missing".to_string());
+    format!("{}:{modified}:{len}:{content}", path.display())
+}
+
+fn pi_registration_revision() -> String {
+    let root = std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".pi/agent")))
+        .unwrap_or_default();
+    let mut revision = format!(
+        "root={};plugin={}",
+        metadata_revision(&root),
+        std::env::var("WG_PI_PLUGIN_DIR").unwrap_or_default()
+    );
+    for relative in [
+        "settings.json",
+        "models.json",
+        "models-store.json",
+        "extensions",
+    ] {
+        revision.push('|');
+        revision.push_str(&metadata_revision(&root.join(relative)));
+    }
+    blake3::hash(revision.as_bytes()).to_hex().to_string()
+}
+
+pub fn pi_route_supported(
+    provider: &str,
+    model: &str,
+    lane: PiCapabilityLane,
+) -> anyhow::Result<bool> {
+    let availability = pi_route_availability();
+    let pi = availability.pi_binary.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Pi executable is unavailable; install Pi or select a native Claude/Codex route"
+        )
+    })?;
+    let metadata = std::fs::metadata(&pi).ok();
+    let modified = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let cache_key = format!(
+        "{}:{}:{modified}:{lane:?}:{provider}:{model}:{}",
+        pi.display(),
+        metadata
+            .as_ref()
+            .map(|metadata| metadata.len())
+            .unwrap_or_default(),
+        pi_registration_revision()
+    );
+    type CapabilityCache = std::collections::HashMap<String, (std::time::Instant, bool)>;
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<CapabilityCache>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+    if let Some(supported) = cache.lock().ok().and_then(|mut cache| {
+        cache.retain(|_, (recorded, _)| recorded.elapsed() < CACHE_TTL);
+        cache.get(&cache_key).map(|(_, supported)| *supported)
+    }) {
+        return Ok(supported);
+    }
+
+    let query = format!("{provider}/{model}");
+    let mut command = std::process::Command::new(&pi);
+    command.arg("--offline");
+    if lane == PiCapabilityLane::HermeticReview {
+        command.arg("-ne");
+    }
+    let output = command
+        .arg("--list-models")
+        .arg(&query)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| anyhow::anyhow!("failed to run {}: {error}", pi.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Pi capability query failed (exit {:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let supported = stdout.lines().skip(1).any(|line| {
+        let mut columns = line.split_whitespace();
+        columns.next() == Some(provider) && columns.next() == Some(model)
+    });
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(cache_key, (std::time::Instant::now(), supported));
+    }
+    Ok(supported)
+}
+
 /// Look up each candidate on PATH via `which`-style lookup. Returns
 /// the absolute path of the first hit, or `None`.
 fn which_probes(candidates: &[&str]) -> Option<PathBuf> {

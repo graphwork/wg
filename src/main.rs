@@ -1350,6 +1350,7 @@ fn main() -> Result<()> {
         }
         Commands::Done {
             id,
+            checks,
             converged,
             skip_verify,
             ignore_unmerged_worktree,
@@ -1359,7 +1360,12 @@ fn main() -> Result<()> {
             reason,
         } => {
             if operator_accept {
-                if converged || skip_verify || ignore_unmerged_worktree || full_smoke || skip_smoke
+                if !checks.is_empty()
+                    || converged
+                    || skip_verify
+                    || ignore_unmerged_worktree
+                    || full_smoke
+                    || skip_smoke
                 {
                     anyhow::bail!(
                         "--operator-accept cannot be combined with legacy completion flags"
@@ -1380,7 +1386,7 @@ fn main() -> Result<()> {
                         "legacy wg done bypass/merge/cycle flags are not supported by publication-derived completion; use --operator-accept --reason <WHY> for an attributed human recovery"
                     );
                 }
-                commands::completion_finish::run(&workgraph_dir, &id, "refs/heads/main")
+                commands::completion_finish::run(&workgraph_dir, &id, "refs/heads/main", &checks)
             }
         }
         Commands::CompletionObject {
@@ -3084,6 +3090,7 @@ fn main() -> Result<()> {
                 tiers,
                 strong,
                 weak,
+                reset_weak,
                 strong_reasoning,
                 weak_reasoning,
                 show,
@@ -3097,6 +3104,7 @@ fn main() -> Result<()> {
                 &tiers,
                 strong.as_deref(),
                 weak.as_deref(),
+                reset_weak,
                 strong_reasoning.as_deref(),
                 weak_reasoning.as_deref(),
                 show,
@@ -4359,6 +4367,30 @@ fn main() -> Result<()> {
             role.as_deref(),
             model.as_deref(),
             reasoning.as_deref(),
+        ),
+        Commands::PiProcessWorker {
+            task_id,
+            prompt_file,
+            session_id,
+            session_dir,
+            evidence_file,
+            process_extension,
+            pi_command,
+            provider,
+            model,
+            reasoning,
+        } => commands::pi_handler::run_process_worker(
+            &workgraph_dir,
+            &task_id,
+            std::path::Path::new(&prompt_file),
+            &session_id,
+            std::path::Path::new(&session_dir),
+            std::path::Path::new(&evidence_file),
+            std::path::Path::new(&process_extension),
+            std::path::Path::new(&pi_command),
+            &provider,
+            &model,
+            &reasoning,
         ),
         Commands::NativeExec {
             prompt_file,

@@ -1,0 +1,19 @@
+{
+  "adapter": "wg-pi-process-rpc-v1",
+  "package": "@mjakl/pi-processes",
+  "version": "2.0.0",
+  "session_id": "real-provider-candidate-final",
+  "processes": [
+    {
+      "id": "proc_1",
+      "pid": 354319,
+      "command": "node /home/bot/wg/.wg-worktrees/agent-97/tests/fixtures/pi-process-wakeup/long-command.mjs 2500 0 REAL_PROVIDER_WAKE_OK",
+      "status": "exited",
+      "exit_code": 0,
+      "success": true,
+      "log_reference": "/home/bot/wg/.wg/build-tmp/agent-97/pi-processes-7RRSRM/proc_1-stdout.log"
+    }
+  ],
+  "duplicate_events": 0,
+  "completed": true
+}

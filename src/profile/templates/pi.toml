@@ -1,15 +1,12 @@
 description = "WorksGood Pi profile — Pi owns providers, authentication, model discovery, endpoints, availability, usage, and cost"
 
-# WG owns orchestration policy only. Every route is an exact
-# `pi:<provider>:<model>` identity; Pi validates and executes it. Change these
-# IDs with `wg profile pi` after selecting them through Pi's own model catalog.
+# WG owns orchestration policy only. Strong inherits the project default. The
+# starter's established weak DeepSeek split remains explicit; use
+# `wg profile pi --reset-weak` when the selected project should inherit strong.
+# Every route is an exact `pi:<provider>:<model>` identity.
 # No WG endpoint, API key, or model-registry entry is required.
 
-[agent]
-model = "pi:openrouter:z-ai/glm-5.2"
-
 [dispatcher]
-model = "pi:openrouter:z-ai/glm-5.2"
 max_agents = 8
 # Automatic task archival is disabled by default (retention 0). Deliberately
 # opt in per project after reviewing the exact evidence-bearing batch.
@@ -22,9 +19,7 @@ disk_sentinel_enabled = true
 [tiers]
 fast = "pi:openrouter:deepseek/deepseek-chat"
 fast_reasoning = "low"
-standard = "pi:openrouter:z-ai/glm-5.2"
 standard_reasoning = "high"
-premium = "pi:openrouter:z-ai/glm-5.2"
 premium_reasoning = "xhigh"
 
 [models.default]
@@ -32,10 +27,9 @@ model = "pi:openrouter:z-ai/glm-5.2"
 reasoning = "high"
 
 [models.task_agent]
-model = "pi:openrouter:z-ai/glm-5.2"
 reasoning = "high"
 
-# Weak/recoverable judgment roles remain explicit and Pi-routed.
+# The starter's intentional weak/recoverable judgment pins are preserved.
 [models.evaluator]
 model = "pi:openrouter:deepseek/deepseek-chat"
 reasoning = "low"

@@ -321,6 +321,10 @@ pub struct SpawnPlan {
     pub executor: ExecutorKind,
     pub model: ResolvedModelSpec,
     pub reasoning: Option<ReasoningLevel>,
+    /// Content revision of the project authority resolved for this exact
+    /// attempt. Included in the immutable plan binding so a config edit
+    /// between coordinator authorization and process launch fails closed.
+    pub config_revision: Option<String>,
     /// `None` for executors that handle their own endpoint (claude/codex/
     /// shell/external workers). `Some(_)` only for `executor=native`.
     pub endpoint: Option<EndpointConfig>,
@@ -367,12 +371,13 @@ pub fn spawn_plan_binding_id(plan: &SpawnPlan, route_id: &str) -> String {
         Placement::Provider(provider) => format!("provider:{provider}"),
     };
     let material = format!(
-        "{}\n{}\n{:?}\n{}\n{}",
+        "{}\n{}\n{:?}\n{}\n{}\n{}",
         plan.executor.as_str(),
         plan.model.raw,
         plan.reasoning,
         route_id,
-        placement
+        placement,
+        plan.config_revision.as_deref().unwrap_or("unversioned")
     );
     format!("id:{}", blake3::hash(material.as_bytes()).to_hex())
 }
@@ -622,6 +627,7 @@ pub fn plan_spawn(
         executor,
         model,
         reasoning,
+        config_revision: config.authority_revision.clone(),
         endpoint,
         env,
         argv: Vec::new(),

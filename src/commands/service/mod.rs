@@ -196,21 +196,25 @@ fn resolve_service_coordinator_settings(
     cli_model: Option<&str>,
     no_coordinator_agent: bool,
 ) -> Result<(String, Option<String>)> {
-    // Handler-first: derive the effective handler from the model spec (with
-    // agent.model fallback) via `Config::effective_dispatcher_executor`, so the
-    // daemon's startup log + persisted coordinator state report the real
-    // handler (`pi` for a `pi:...` model) instead of a stale legacy default.
-    // An explicit `--executor` CLI flag still wins for one release.
-    let effective_executor = cli_executor
-        .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| config.effective_dispatcher_executor());
-    let explicit_model = cli_model
-        .map(std::string::ToString::to_string)
-        .or_else(|| config.coordinator.model.clone())
-        .or_else(|| {
-            let m = config.agent.model.clone();
-            if m.trim().is_empty() { None } else { Some(m) }
-        });
+    // Handler-first: derive the effective handler only from the current
+    // project route. Legacy daemon argv may be replayed by an old supervisor,
+    // but is observation-only and cannot override this snapshot.
+    let route = config
+        .resolve_execution_route_for_role(worksgood::config::DispatchRole::Default)
+        .ok();
+    let effective_executor = route
+        .as_ref()
+        .map(|route| route.handler.clone())
+        .unwrap_or_else(|| "pi".to_string());
+    let explicit_model = route.map(|route| route.route);
+    if let Some(stale) = cli_model {
+        loggerless_stale_route_notice(stale, explicit_model.as_deref());
+    }
+    if let Some(stale) = cli_executor {
+        eprintln!(
+            "warning[WG-SUPERVISOR-STALE-ROUTE]: ignoring persisted daemon --executor {stale:?}; project route handler {effective_executor:?} is authoritative"
+        );
+    }
 
     if no_coordinator_agent || !config.coordinator.coordinator_agent {
         return Ok((effective_executor, explicit_model));
@@ -259,6 +263,15 @@ fn resolve_service_coordinator_settings(
     }
 
     Ok((effective_executor, explicit_model))
+}
+
+fn loggerless_stale_route_notice(stale: &str, current: Option<&str>) {
+    eprintln!(
+        "warning[WG-SUPERVISOR-STALE-ROUTE]: ignoring persisted daemon --model {stale:?}; project configuration is authoritative{}",
+        current
+            .map(|route| format!(" (current route {route:?})"))
+            .unwrap_or_default()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1722,39 +1735,38 @@ pub fn run_start(
         worksgood::control_plane::assert_repository_has_no_tracked_control(project_root)?;
     }
 
-    // Handler-first: a bare-provider `--model` launch arg (the 14h-401
-    // incident) must warn loudly here, on the user's terminal, before the
-    // daemon is even forked.
+    // Compatibility: an attended `service start --model` is a project-route
+    // selection, not a hidden launch override. Persist it once through the
+    // same authoritative worksgood.toml path and never forward it to the
+    // supervisor/daemon argv.
     warn_bare_provider_model_arg(model, "wg service start");
-    #[cfg(not(test))]
-    {
-        let selection = worksgood::execution_selection::resolve(dir, model.map(|m| (m, false)))?;
-        if selection.state == worksgood::execution_selection::SelectionState::Unselected {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "code": worksgood::execution_selection::UNSELECTED_CODE,
-                        "operation": "service-start",
-                        "selection": "unselected",
-                        "setup_commands": [
-                            "wg setup --route pi --yes --model pi:<provider>:<model>",
-                            "wg profile select pi"
-                        ]
-                    }))?
-                );
-                anyhow::bail!("{}", worksgood::execution_selection::UNSELECTED_CODE);
-            }
-            anyhow::bail!(
-                "{}",
-                worksgood::execution_selection::unselected_message_for(dir, "wg service start")
+    if let Some(route) = model {
+        let (path, revision) =
+            worksgood::project_config::select_default_route_for_graph(dir, route)?;
+        if !json {
+            eprintln!(
+                "notice: `wg service start --model` selected the project default in {} (revision {}); no supervisor override will be retained",
+                path.display(),
+                revision
             );
         }
     }
+    // A route-less project may run the graph service. Work admission resolves
+    // the current revision on every tick and reports a typed, non-consuming
+    // blocker until an operator selects a supported route.
     let config = Config::load_merged(dir)?;
-    config.validate_execution_model_plane().context(
-        "service start refused: every worker role must have an explicit Pi/Claude/Codex route and effective reasoning",
-    )?;
+    if let Some(legacy_executor) = executor
+        && !json
+    {
+        let effective = config
+            .resolve_execution_route_for_role(worksgood::config::DispatchRole::Default)
+            .ok()
+            .map(|route| route.handler)
+            .unwrap_or_else(|| "unselected".to_string());
+        eprintln!(
+            "warning: deprecated --executor {legacy_executor:?} is ignored; project route is the sole routing authority (effective handler={effective})"
+        );
+    }
 
     // Check if service is already running
     if let Some(state) = ServiceState::load(dir)? {
@@ -1931,17 +1943,9 @@ pub fn run_start(
         args.push("--max-agents".to_string());
         args.push(n.to_string());
     }
-    if let Some(e) = executor {
-        args.push("--executor".to_string());
-        args.push(e.to_string());
-    }
     if let Some(i) = interval {
         args.push("--interval".to_string());
         args.push(i.to_string());
-    }
-    if let Some(m) = model {
-        args.push("--model".to_string());
-        args.push(m.to_string());
     }
     if no_coordinator_agent {
         args.push("--no-coordinator-agent".to_string());
@@ -2890,15 +2894,7 @@ pub fn run_daemon(
         worksgood::control_plane::assert_live_identity(project_root)?;
         worksgood::control_plane::assert_repository_has_no_tracked_control(project_root)?;
     }
-    worksgood::execution_selection::require(
-        dir,
-        cli_model.map(|m| (m, false)),
-        "wg service daemon",
-    )?;
     let startup_config = Config::load_merged(dir)?;
-    startup_config
-        .validate_execution_model_plane()
-        .context("daemon refused: incomplete or unsupported worker role routing")?;
     let socket = PathBuf::from(socket_path);
 
     // --- Persistent logging setup ---
@@ -2934,15 +2930,6 @@ pub fn run_daemon(
                 logger.warn(&format!("{}: {}", d.severity, d.message));
             }
         }
-    }
-
-    // Handler-first: re-assert the bare-provider `--model` warning inside the
-    // forked daemon so it lands in the daemon log too (run_start warned on the
-    // terminal; the daemon process has its own stderr → log file). Also log it
-    // through the structured logger so the mis-route is captured in the record
-    // the 14h-401 incident lacked.
-    if let Some(w) = warn_bare_provider_model_arg(cli_model, "wg service daemon") {
-        logger.warn(&w);
     }
 
     logger.info(&format!(
@@ -3110,8 +3097,10 @@ pub fn run_daemon(
     // before this point; consuming here keeps the marker single-use.
     consume_clean_shutdown_sentinel(&dir);
 
-    // Load coordinator config strictly: invalid config must abort startup.
-    let config = Config::load_merged(&dir)?;
+    // Use the exact startup snapshot/revision already admitted above. A
+    // concurrent update is picked up by reload/next replacement, never mixed
+    // into half of this daemon initialization.
+    let config = startup_config;
 
     // Surface legacy / deprecated config keys before we start the loop, so
     // users see a one-shot warning per legacy key they're still using.
@@ -4550,22 +4539,17 @@ pub fn run_restart(dir: &Path, json: bool) -> Result<()> {
     // restarted from config, NOT from the effective value — otherwise every
     // restart would seed a spurious pin that shadows later config changes on
     // reload (`docs/studies/adaptive-parallelism-budget-design.md` §8.2).
-    let (max_agents, executor, interval, model) = match &prior_config {
-        Some(cs) => (
-            cs.runtime_max_agents,
-            Some(cs.executor.as_str()),
-            Some(cs.poll_interval),
-            cs.model.as_deref(),
-        ),
-        None => (None, None, None, None),
+    let (max_agents, interval) = match &prior_config {
+        Some(cs) => (cs.runtime_max_agents, Some(cs.poll_interval)),
+        None => (None, None),
     };
 
-    // Start a new daemon with the same config.
+    // Start from the current project route. Runtime capacity/cadence pins may
+    // survive; executor/model observations from the old daemon may not.
     run_start(
         dir, None, // socket — use default
         None, // port
-        max_agents, executor, interval, model, json,
-        true,  // force — clean up any leftover state
+        max_agents, None, interval, None, json, true,  // force — clean up any leftover state
         false, // no_coordinator_agent — use default
         false, // no_pin — preserve the runtime authority exactly
         false, // no_supervise — keep the auto-restart supervisor on restart
@@ -5079,14 +5063,37 @@ pub fn run_reload(
 ) -> Result<()> {
     guard_service_control_from_worker()?;
 
-    // Handler-first: a bare-provider `--model` reload override would push the
-    // same keyless-native mis-route onto a running daemon — warn loudly.
+    // Compatibility model updates are project writes followed by a flagless
+    // route reload. They never become daemon-memory/supervisor authority.
     warn_bare_provider_model_arg(model, "wg service reload");
+    if let Some(route) = model {
+        let (path, revision) =
+            worksgood::project_config::select_default_route_for_graph(dir, route)?;
+        if !json {
+            eprintln!(
+                "notice: `wg service reload --model` selected the project default in {} (revision {})",
+                path.display(),
+                revision
+            );
+        }
+    }
+    if let Some(legacy_executor) = executor
+        && !json
+    {
+        let effective = Config::load_merged(dir)?
+            .resolve_execution_route_for_role(worksgood::config::DispatchRole::Default)
+            .ok()
+            .map(|route| route.handler)
+            .unwrap_or_else(|| "unselected".to_string());
+        eprintln!(
+            "warning: deprecated --executor {legacy_executor:?} is ignored; project route is the sole routing authority (effective handler={effective})"
+        );
+    }
     let request = IpcRequest::Reconfigure {
         max_agents,
-        executor: executor.map(std::string::ToString::to_string),
+        executor: None,
         poll_interval: interval,
-        model: model.map(std::string::ToString::to_string),
+        model: None,
         profile: None,
     };
 

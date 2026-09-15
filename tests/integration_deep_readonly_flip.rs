@@ -73,7 +73,7 @@ fn test_env(home: &Path) -> Vec<EnvGuard> {
     ]
 }
 
-fn git(project: &Path, args: &[&str]) -> String {
+fn git_output(project: &Path, args: &[&str]) -> Vec<u8> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(project)
@@ -86,7 +86,13 @@ fn git(project: &Path, args: &[&str]) -> String {
         args,
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
+    output.stdout
+}
+
+fn git(project: &Path, args: &[&str]) -> String {
+    String::from_utf8_lossy(&git_output(project, args))
+        .trim()
+        .to_string()
 }
 
 fn record(
@@ -100,17 +106,25 @@ fn record(
             vec![AgencyStage::FlipInference, AgencyStage::FlipComparison]
         }
     };
+    let exact_route = if model.starts_with("claude:") || model.starts_with("codex:") {
+        model.to_string()
+    } else {
+        format!("pi:test:{model}")
+    };
+    let handler = exact_route.split(':').next().unwrap().to_string();
+    let provider = exact_route.split(':').nth(1).unwrap_or("test").to_string();
     let route = EvaluationRouteSnapshot {
-        adapter: "pi-evaluation-v1".into(),
+        adapter: format!("{handler}-evaluation-v1"),
         calls: stages
             .into_iter()
             .map(|stage| EvaluationRouteCall {
                 stage,
-                exact_route: format!("pi:test:{model}"),
+                exact_route: exact_route.clone(),
                 endpoint: None,
                 reasoning: Some(ReasoningLevel::High),
-                handler: "pi".into(),
-                provider: "test".into(),
+                config_revision: Some("b3:test-revision".into()),
+                handler: handler.clone(),
+                provider: provider.clone(),
             })
             .collect(),
         digest: format!("b3:route-{model}"),
@@ -554,6 +568,110 @@ fn deep_flip_finds_cross_component_omission_bounded_summary_misses() {
         !serde_json::to_string(report)
             .unwrap()
             .contains("print credentials")
+    );
+}
+
+#[test]
+#[serial]
+fn handler_qualified_claude_route_runs_both_deep_flip_phases_without_pi() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let _env = test_env(&home);
+    let project = tmp.path().join("project");
+    let dir = setup_candidate(&project, "claude:sonnet", true);
+
+    assert!(run_one_pending(&dir, &config()).unwrap().ran);
+    let graph = load_graph(&dir.join("graph.jsonl")).unwrap();
+    let report = graph
+        .get_task("source")
+        .unwrap()
+        .evaluation_records
+        .iter()
+        .find(|record| record.product == EvaluationProduct::DeepReadonlyFlip)
+        .unwrap()
+        .deep_report
+        .as_ref()
+        .expect("Claude comparison must produce a checked deep report");
+    let proof = report.flip_proof.as_ref().unwrap();
+    assert_eq!(proof.inference_route, "claude:sonnet");
+    assert_eq!(proof.comparison_route, "claude:sonnet");
+    assert!(
+        report
+            .observed_evidence_kinds
+            .iter()
+            .any(|kind| kind == "original-intent")
+    );
+    assert!(report.observations.iter().any(|observation| {
+        observation.tool == "inline_readonly_evidence"
+            && observation
+                .evidence_refs
+                .iter()
+                .any(|reference| reference == "repo:src/api.rs")
+    }));
+    let comparison_prompt =
+        fs::read_to_string(home.join("fake-claude-deep-comparison.prompt")).unwrap();
+    let candidate_block = comparison_prompt
+        .split("---BEGIN UNTRUSTED EVIDENCE ")
+        .find(|block| {
+            block
+                .lines()
+                .next()
+                .is_some_and(|header| header.contains("kind=artifacts-diff"))
+        })
+        .expect("comparison prompt must carry candidate evidence");
+    let (candidate_header, candidate_body) = candidate_block.split_once('\n').unwrap();
+    let candidate_json: serde_json::Value = serde_json::from_str(
+        candidate_body
+            .split("\n---END UNTRUSTED EVIDENCE")
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    let base = git(&project, &["rev-parse", "HEAD^"]);
+    let exact_diff = String::from_utf8(git_output(&project, &["diff", &base, "HEAD", "--"]))
+        .expect("candidate diff is UTF-8");
+    assert_eq!(
+        candidate_json["source_diff"].as_str(),
+        Some(exact_diff.as_str()),
+        "non-Pi comparison must receive the full immutable candidate diff without truncation"
+    );
+    assert!(candidate_header.contains("exact=true"));
+    let source_digest = candidate_header
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("source_digest="))
+        .unwrap();
+    let included_digest = candidate_header
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("included_digest="))
+        .unwrap();
+    assert_eq!(source_digest, included_digest);
+    for evidence in comparison_prompt
+        .split("---BEGIN UNTRUSTED EVIDENCE ")
+        .skip(1)
+    {
+        let header = evidence.lines().next().unwrap();
+        assert!(
+            header.contains("exact=true"),
+            "intent-fidelity evidence must not be silently truncated: {header}"
+        );
+        let source = header
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix("source_digest="))
+            .unwrap();
+        let included = header
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix("included_digest="))
+            .unwrap();
+        assert_eq!(source, included, "exact evidence digest mismatch: {header}");
+    }
+    let invocations = fs::read_to_string(home.join("fake-claude-deep-invocations.log")).unwrap();
+    let calls: Vec<_> = invocations.lines().collect();
+    assert_eq!(calls.len(), 2, "blind inference and comparison use Claude");
+    assert!(calls.iter().all(|call| call.contains("--model sonnet")));
+    assert!(
+        !home.join("fake-pi-deep-invocations.log").exists(),
+        "handler-qualified Claude FLIP must not invoke Pi"
     );
 }
 

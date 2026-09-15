@@ -16,6 +16,31 @@ An exact executable command is a separate, optional surface:
 Completion Eval is not an Agency quality score. `wg evaluate run TASK` remains
 that separate, post-`Done`, scored authority.
 
+## Worker-selected check evidence
+
+A worker can ask the ordinary completion command to run and capture additional
+checks without changing task authority:
+
+```bash
+wg done parser --check './scripts/check-parser --focused'
+```
+
+`--check` is repeatable. WG runs required configured checks first, then records
+each selected command as `deterministic-validation/optional/v1`. Optional
+captures use the same task/requirements/generation/attempt/fence,
+repository/worktree/candidate, command, host, environment, and WG-executable
+binding as required captures. A matching selected candidate can reuse that
+managed result; changed command, candidate, executable, host, or inherited
+environment requires revalidation. Arbitrary shell output or a worker-authored
+JSON object cannot be imported as a capture.
+
+Optional success is review evidence only. It never satisfies, removes, or waives
+a configured/built-in gate, and optional failure remains a truthful observation
+rather than silently becoming a new hard gate. Workers do not need to rerun
+every command they already used while developing merely to attach a receipt;
+use `--check` when candidate-bound machine evidence is useful, and report other
+observations with their limitations.
+
 ## Optional operator-authorized exact command
 
 The normal task needs only prose criteria:
@@ -51,13 +76,16 @@ worker prose or pretend that a `wg log` line is test evidence.
 
 ## What one-step `wg done` records
 
-WG executes the configured command itself with a bounded timeout and captures a
-canonical `deterministic-validation/configured/v1` object containing:
+WG executes configured and `--check` commands itself with a bounded timeout and
+captures canonical `deterministic-validation/{configured,optional}/v1` objects
+containing:
 
 - exact `bash -lc` argv and its BLAKE3 command-identity digest;
 - task, requirements, generation, attempt, and fence;
 - digests identifying the Git repository, worktree, and cwd, plus the
   repository-relative cwd;
+- a non-disclosing digest of inherited environment values, host/platform, and
+  the exact WG executable identity;
 - candidate HEAD, tree, integrated-main OID, and before/after status digests;
 - RFC3339 start/finish times and monotonic duration;
 - exit code, signal, success, and timeout state;

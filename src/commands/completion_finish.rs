@@ -13,8 +13,9 @@ use worksgood::completion_task::{load_review_evidence, load_submission_bytes};
 use worksgood::completion_validation::{
     BASELINE_VALIDATION_EVIDENCE_KIND, CONFIGURED_VALIDATION_EVIDENCE_KIND,
     DETERMINISTIC_VALIDATION_MEDIA_TYPE, DeterministicValidationEvidence,
-    SMOKE_FAILURE_EVIDENCE_KIND, ValidationPurpose, capture_validation,
-    capture_validation_operation, configured_validation_commands, land_baseline_command,
+    OPTIONAL_VALIDATION_EVIDENCE_KIND, SMOKE_FAILURE_EVIDENCE_KIND, ValidationPurpose,
+    capture_validation, capture_validation_operation, configured_validation_commands,
+    land_baseline_command,
 };
 use worksgood::graph::CompletionContract;
 use worksgood::parser::load_graph;
@@ -31,14 +32,15 @@ impl Drop for TempFiles {
     }
 }
 
-pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
+pub fn run(dir: &Path, id: &str, integration_ref: &str, optional_checks: &[String]) -> Result<()> {
     let cwd = std::env::current_dir().context("determine worker worktree")?;
-    run_at_with_smoke(
+    run_at_with_smoke_and_checks(
         dir,
         id,
         integration_ref,
         &cwd,
         std::env::var_os("WG_AGENT_ID").is_some(),
+        optional_checks,
     )
 }
 
@@ -48,6 +50,17 @@ pub(crate) fn run_at_with_smoke(
     integration_ref: &str,
     cwd: &Path,
     is_agent: bool,
+) -> Result<()> {
+    run_at_with_smoke_and_checks(dir, id, integration_ref, cwd, is_agent, &[])
+}
+
+pub(crate) fn run_at_with_smoke_and_checks(
+    dir: &Path,
+    id: &str,
+    integration_ref: &str,
+    cwd: &Path,
+    is_agent: bool,
+    optional_checks: &[String],
 ) -> Result<()> {
     let task = load_graph(dir.join("graph.jsonl"))?
         .get_task(id)
@@ -62,7 +75,7 @@ pub(crate) fn run_at_with_smoke(
             )
         })?;
     if smoke_manifest.scenarios_for_task(id).is_empty() {
-        return run_at(dir, id, integration_ref, cwd);
+        return run_at_with_checks(dir, id, integration_ref, cwd, optional_checks);
     }
     let captured = capture_validation_operation(
         &task,
@@ -84,10 +97,21 @@ pub(crate) fn run_at_with_smoke(
             repair.feedback_id
         );
     }
-    run_at(dir, id, integration_ref, cwd)
+    run_at_with_checks(dir, id, integration_ref, cwd, optional_checks)
 }
 
 pub(crate) fn run_at(dir: &Path, id: &str, integration_ref: &str, cwd: &Path) -> Result<()> {
+    run_at_with_checks(dir, id, integration_ref, cwd, &[])
+}
+
+pub(crate) fn run_at_with_checks(
+    dir: &Path,
+    id: &str,
+    integration_ref: &str,
+    cwd: &Path,
+    optional_checks: &[String],
+) -> Result<()> {
+    let optional_checks = normalized_optional_checks(optional_checks)?;
     let graph = load_graph(dir.join("graph.jsonl"))?;
     let task = graph
         .get_task(id)
@@ -158,24 +182,36 @@ pub(crate) fn run_at(dir: &Path, id: &str, integration_ref: &str, cwd: &Path) ->
                     &candidate.dependency_outputs,
                 )?
             };
-            load_review_evidence(&completion_store, &submission, &manifest, &resolved)
-                .map_err(Into::into)
+            worksgood::completion_validation::verify_validation_evidence(
+                &task,
+                &manifest,
+                submission.review_binding.as_ref(),
+                &resolved,
+                dir.parent()
+                    .context("workgraph directory has no project root")?,
+                dir,
+            )
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let captured_optional = optional_commands(&resolved)?;
+            let reviews =
+                load_review_evidence(&completion_store, &submission, &manifest, &resolved)?;
+            Ok((reviews, captured_optional))
         })()
         .ok();
-        let strict_passed = verified_review.as_ref().is_some_and(|evidence| {
+        let strict_passed = verified_review.as_ref().is_some_and(|(evidence, _)| {
             evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Pass
                 && evidence
                     .eval
                     .as_ref()
                     .is_some_and(|eval| eval.verdict == worksgood::simple_land::ReviewVerdict::Pass)
         });
-        let semantic_rejection = verified_review.as_ref().is_some_and(|evidence| {
+        let semantic_rejection = verified_review.as_ref().is_some_and(|(evidence, _)| {
             evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::Reject
                 || evidence.eval.as_ref().is_some_and(|eval| {
                     eval.verdict == worksgood::simple_land::ReviewVerdict::Reject
                 })
         });
-        let incomplete_review = verified_review.as_ref().is_none_or(|evidence| {
+        let incomplete_review = verified_review.as_ref().is_none_or(|(evidence, _)| {
             evidence.flip.verdict == worksgood::simple_land::ReviewVerdict::IncompleteEvidence
                 || evidence.eval.as_ref().is_some_and(|eval| {
                     eval.verdict == worksgood::simple_land::ReviewVerdict::IncompleteEvidence
@@ -194,14 +230,22 @@ pub(crate) fn run_at(dir: &Path, id: &str, integration_ref: &str, cwd: &Path) ->
                             .as_ref()
                             .map(|attempt| attempt.id.as_str())
             });
-        if candidate_matches_head && candidate_matches_source_tuple && semantic_rejection {
+        let optional_checks_match = optional_checks.is_empty()
+            || verified_review
+                .as_ref()
+                .is_some_and(|(_, captured)| *captured == optional_checks);
+        if candidate_matches_head
+            && candidate_matches_source_tuple
+            && semantic_rejection
+            && config.agency.completion_review_strict
+        {
             bail!(
-                "current completion candidate was semantically rejected; publication and Done are refused. The same source attempt/worktree/session is retained: repair the candidate bytes, rerun the declared validation, then run `wg done {id}` again"
+                "current completion candidate was semantically rejected under explicit strict review policy; publication and Done are refused. Repair the candidate, or request one precise decision with `wg fail {id} --intent request-help --reason <DECISION>` / `--intent request-contract-correction --reason <ONE EXACT MISSING CHECK AND WHY>`; no check or model call was repeated"
             );
         }
         if candidate_matches_head
             && candidate_matches_source_tuple
-            && !semantic_rejection
+            && optional_checks_match
             && !incomplete_review
             && (!config.agency.completion_review_strict || strict_passed)
         {
@@ -306,7 +350,29 @@ pub(crate) fn run_at(dir: &Path, id: &str, integration_ref: &str, cwd: &Path) ->
             );
         }
         evidence.push(reference);
-    } else if evidence.is_empty() {
+    }
+
+    for (index, command) in optional_checks.iter().enumerate() {
+        eprintln!("Running optional worker-selected check (evidence only): {command}");
+        let captured = capture_validation(
+            &task,
+            command,
+            u32::try_from(index).unwrap_or(u32::MAX),
+            ValidationPurpose::Optional,
+            &cwd,
+        )
+        .with_context(|| format!("capture optional worker-selected check: {command}"))?;
+        let reference =
+            store_validation_evidence(dir, &captured, OPTIONAL_VALIDATION_EVIDENCE_KIND)?;
+        record_validation_result(dir, &task, &captured, &reference)?;
+        eprintln!(
+            "Optional check captured: exit={:?} timeout={} evidence={} (not a completion gate)",
+            captured.exit.code, captured.exit.timed_out, reference.content_digest
+        );
+        evidence.push(reference);
+    }
+
+    if task.completion_contract != CompletionContract::Land && evidence.is_empty() {
         let transcript = b"WG verified that every declared completion artifact is a regular file before snapshotting it.\n";
         let artifact = super::completion_submit::store(dir)?.put_bytes(transcript, "text/plain")?;
         evidence.push(evidence_ref(artifact, "baseline-integrity-check"));
@@ -664,6 +730,51 @@ fn non_land_candidate_matches(
         }
     }
     Ok(true)
+}
+
+fn normalized_optional_checks(checks: &[String]) -> Result<Vec<String>> {
+    if checks.len() > 32 {
+        bail!("at most 32 optional worker-selected checks may be captured per completion");
+    }
+    let mut normalized = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for check in checks {
+        let check = check.trim();
+        if check.is_empty() {
+            bail!("--check requires a non-empty command");
+        }
+        if seen.insert(check.to_string()) {
+            normalized.push(check.to_string());
+        }
+    }
+    Ok(normalized)
+}
+
+fn optional_commands(
+    bundle: &worksgood::completion_manifest::ResolvedReviewBundle,
+) -> Result<Vec<String>> {
+    let mut commands = std::collections::BTreeMap::new();
+    for evidence in &bundle.validation_evidence {
+        if evidence.evidence_kind != OPTIONAL_VALIDATION_EVIDENCE_KIND {
+            continue;
+        }
+        let captured: DeterministicValidationEvidence =
+            serde_json::from_slice(&evidence.payload.bytes)
+                .context("parse selected optional validation evidence")?;
+        let command = captured
+            .command
+            .argv
+            .get(1)
+            .cloned()
+            .context("optional validation evidence has no shell command")?;
+        if commands
+            .insert(captured.command.configured_index, command)
+            .is_some()
+        {
+            bail!("selected candidate has duplicate optional validation indexes");
+        }
+    }
+    Ok(commands.into_values().collect())
 }
 
 fn evidence_ref(

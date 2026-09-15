@@ -8,10 +8,13 @@
 //! fence, repository, and selected manifest before a model sees it.
 
 use crate::completion_manifest::{
-    CompletionManifest, ContentDigest, IncompleteEvidence, IncompleteEvidenceKind, OutputRef,
-    ResolvedReviewBundle,
+    ArtifactOutput, CompletionManifest, ContentDigest, EvidenceRef, IncompleteEvidence,
+    IncompleteEvidenceKind, OutputRef, ResolvedReviewBundle,
 };
-use crate::completion_review::CompletionReviewBinding;
+use crate::completion_review::{
+    CompletionReviewBinding, ReviewCandidateState, ReviewFailureClass, ReviewerKind,
+    VerifiedCompletionReviewActivity,
+};
 use crate::completion_task::requirements_digest;
 use crate::graph::{
     CompletionContract as GraphCompletionContract, CompletionRepairBoundary,
@@ -19,7 +22,7 @@ use crate::graph::{
     WorkGraph, parse_delay,
 };
 use crate::identity::canonical_json;
-use crate::simple_land::CompletionContract;
+use crate::simple_land::{CompletionContract, ReviewVerdict};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,9 +37,15 @@ pub const DETERMINISTIC_VALIDATION_MEDIA_TYPE: &str =
     "application/vnd.worksgood.deterministic-validation+json";
 pub const CONFIGURED_VALIDATION_EVIDENCE_KIND: &str = "deterministic-validation/configured/v1";
 pub const BASELINE_VALIDATION_EVIDENCE_KIND: &str = "deterministic-validation/baseline/v1";
+pub const OPTIONAL_VALIDATION_EVIDENCE_KIND: &str = "deterministic-validation/optional/v1";
 pub const SMOKE_FAILURE_EVIDENCE_KIND: &str = "completion-smoke/failure/v1";
 const DETERMINISTIC_VALIDATION_PREFIX: &str = "deterministic-validation/";
-const MAX_CAPTURE_BYTES_PER_STREAM: usize = 32 * 1024;
+// Validation output is immutable review evidence. Keep the bound finite, but
+// large enough for the configured repository gate (Cargo emits substantial
+// diagnostics even on success) so ordinary authoritative runs are not reduced
+// to an unverifiable prefix. Larger streams remain explicitly marked truncated
+// and therefore fail the complete-evidence review requirement closed.
+const MAX_CAPTURE_BYTES_PER_STREAM: usize = 512 * 1024;
 const MAX_COMMAND_BYTES: usize = 16 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 900;
 const MAX_TIMEOUT_SECS: u64 = 3600;
@@ -48,6 +57,9 @@ const VALIDATION_AUTHORITY_DIR: &str = "completion/v3/validation-authority";
 pub enum ValidationPurpose {
     Configured,
     Baseline,
+    /// Worker-selected evidence. This is never completion authority and cannot
+    /// satisfy a configured or built-in check.
+    Optional,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -66,6 +78,18 @@ pub struct ValidationLifecycleBinding {
     pub attempt_id: Option<String>,
     pub attempt_fence: u64,
     pub requirements_digest: ContentDigest,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ValidationEnvironmentBinding {
+    /// Digest of the exact parent environment inherited by `bash -lc`, plus
+    /// the WG executable identity and host/platform identity. Values are never
+    /// disclosed in evidence; only their canonical digest is retained.
+    pub environment_identity: ContentDigest,
+    pub platform: String,
+    pub architecture: String,
+    pub host_identity: ContentDigest,
+    pub executable_identity: ContentDigest,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -123,6 +147,10 @@ pub struct DeterministicValidationEvidence {
     pub purpose: ValidationPurpose,
     pub command: ValidationCommandIdentity,
     pub lifecycle: ValidationLifecycleBinding,
+    /// Additive for v1 compatibility. Historical configured/baseline receipts
+    /// remain readable; optional evidence always requires this binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<ValidationEnvironmentBinding>,
     pub repository: ValidationRepositoryBinding,
     pub started_at: String,
     pub finished_at: String,
@@ -137,9 +165,10 @@ impl DeterministicValidationEvidence {
         Ok(canonical_json(&serde_json::to_value(self)?))
     }
 
-    /// Deterministic validation is hard authority.  A command is acceptable
-    /// only when it passed and observed one unchanged candidate/worktree state.
-    pub fn authoritative_pass(&self, contract: CompletionContract) -> bool {
+    /// The execution observed one stable candidate/worktree state. Optional
+    /// evidence may truthfully record failure, so stability is separate from
+    /// the authoritative configured-check predicate.
+    pub fn stable_capture(&self, contract: CompletionContract) -> bool {
         let repository_unchanged = self.repository.before_head_oid
             == self.repository.after_head_oid
             && self.repository.before_tree_oid == self.repository.after_tree_oid
@@ -148,12 +177,17 @@ impl DeterministicValidationEvidence {
                 == self.repository.after_candidate_content_digest;
         let clean_land = contract != CompletionContract::Land
             || self.repository.before_status_digest == ContentDigest::of_bytes(b"");
+        repository_unchanged && clean_land
+    }
+
+    /// Deterministic validation is hard authority. A configured command is
+    /// acceptable only when it passed and observed one unchanged candidate.
+    pub fn authoritative_pass(&self, contract: CompletionContract) -> bool {
         self.exit.success
             && self.exit.code == Some(0)
             && self.exit.signal.is_none()
             && !self.exit.timed_out
-            && repository_unchanged
-            && clean_land
+            && self.stable_capture(contract)
     }
 }
 
@@ -225,6 +259,7 @@ pub struct CompletionValidationCheck {
 pub struct CompletionPreflight {
     pub checks: Vec<CompletionValidationCheck>,
     pub evidence_capture: String,
+    pub optional_evidence_capture: String,
     pub prose_is_authority: bool,
     pub repair_boundary: CompletionRepairBoundary,
     pub deterministic_repair_budget: u32,
@@ -296,7 +331,8 @@ pub fn completion_preflight(task: &Task) -> CompletionPreflight {
     };
     CompletionPreflight {
         checks,
-        evidence_capture: "wg done executes each command in the retained worktree and registers a host-bound immutable deterministic-validation/v1 evidence object before semantic review".into(),
+        evidence_capture: "wg done executes each required command in the retained worktree and registers a host-bound immutable deterministic-validation/v1 evidence object before semantic review".into(),
+        optional_evidence_capture: "pass worker-selected commands with `wg done TASK --check '<COMMAND>'`; WG captures them with the same candidate/command/environment binding but records them as optional evidence, never as a gate or contract mutation".into(),
         prose_is_authority: false,
         repair_boundary: policy.boundary,
         deterministic_repair_budget: policy.deterministic_repair_budget.max(1),
@@ -320,8 +356,9 @@ pub fn format_completion_preflight(task: &Task) -> String {
         ));
     }
     lines.extend([
-        format!("Evidence: {}.", plan.evidence_capture),
-        "Commands merely mentioned in `## Validation` prose are criteria, not executable authority; propose a missing hard check with `wg fail TASK --intent request-contract-correction --reason <PROPOSAL>`. Only an operator-approved contract update adds it.".into(),
+        format!("Required evidence: {}.", plan.evidence_capture),
+        format!("Optional worker evidence: {}.", plan.optional_evidence_capture),
+        "Commands merely mentioned in `## Validation` prose are criteria, not executable authority; propose a missing hard check with `wg fail TASK --intent request-contract-correction --reason <ONE EXACT COMMAND AND WHY IT IS REQUIRED>`. Only an operator-approved contract update adds it, records the revision, and invalidates stale candidate bindings.".into(),
         format!(
             "Permitted repair boundary: `{}` — {}.",
             plan.repair_boundary, plan.boundary_explanation
@@ -500,6 +537,7 @@ pub fn record_deterministic_repair_failure(
         validation_identity,
         candidate_identity,
         evidence: evidence_ref.clone(),
+        saved_work: None,
         command: evidence
             .command
             .argv
@@ -511,10 +549,136 @@ pub fn record_deterministic_repair_failure(
         opportunities_used,
         opportunity_limit: limit,
         failed_candidates,
+        blocker_reason_code: Some(reason_code.into()),
+        semantic_review: None,
         reason_code: reason_code.into(),
         safe_next,
         feedback_id,
         attention_event_id,
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    task.completion_repair = Some(state.clone());
+    Ok(state)
+}
+
+/// Create the same bounded attention projection from a verified *current*
+/// semantic rejection. The immutable receipt is evidence, not acceptance and
+/// not a deterministic-failure substitute.
+pub fn record_semantic_repair_attention(
+    task: &mut Task,
+    activity: &VerifiedCompletionReviewActivity,
+    receipt_ref: &ArtifactOutput,
+    reason_code: &str,
+    safe_next: String,
+) -> Result<CompletionRepairState, String> {
+    let binding = activity
+        .binding
+        .as_ref()
+        .ok_or_else(|| "semantic rejection has no source/candidate binding".to_string())?;
+    let attempt_id = task
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .map(|attempt| attempt.id.as_str());
+    let candidate = task
+        .completion_candidate
+        .as_ref()
+        .ok_or_else(|| "semantic rejection has no current completion candidate".to_string())?;
+    let selected_receipt = match activity.reviewer_kind {
+        ReviewerKind::Flip => candidate.flip_receipt.as_ref(),
+        ReviewerKind::Eval => candidate.eval_receipt.as_ref(),
+    };
+    if activity.candidate_state != ReviewCandidateState::Current
+        || activity.verdict != ReviewVerdict::Reject
+        || activity.failure_class != Some(ReviewFailureClass::SemanticRejection)
+        || binding.task_id != task.id
+        || binding.generation != task.lifecycle.generation
+        || binding.attempt_id.as_deref() != attempt_id
+        || binding.attempt_fence != task.lifecycle.fence
+        || candidate.review_binding.as_ref() != Some(binding)
+        || candidate.manifest.content_digest != activity.manifest_digest
+        || selected_receipt != Some(receipt_ref)
+        || receipt_ref.content_digest.as_str() != activity.activity_id
+        || requirements_digest(task).ok().as_ref() != Some(&activity.requirements_digest)
+    {
+        return Err(
+            "semantic repair request does not bind the current task/source attempt/candidate/review receipt"
+                .into(),
+        );
+    }
+
+    let reviewer = match activity.reviewer_kind {
+        ReviewerKind::Flip => "flip",
+        ReviewerKind::Eval => "eval",
+    };
+    let blocker_reason_code = format!("{reviewer}-semantic-rejection");
+    let finding_text = if activity.findings.is_empty() {
+        "<no structured findings; inspect immutable review receipt>".to_string()
+    } else {
+        activity
+            .findings
+            .iter()
+            .map(|finding| format!("{}: {}", finding.code, finding.message))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let redacted = crate::chat_runtime::redact_text(&finding_text);
+    let mut diagnostic_excerpt: String = redacted.chars().take(MAX_REPAIR_EXCERPT_CHARS).collect();
+    if redacted.chars().count() > MAX_REPAIR_EXCERPT_CHARS {
+        diagnostic_excerpt.push_str(" …[bounded]");
+    }
+    let feedback_id = format!(
+        "b3:{}",
+        blake3::hash(&canonical_json(&serde_json::json!({
+            "task": task.id,
+            "generation": binding.generation,
+            "attempt": binding.attempt_id,
+            "fence": binding.attempt_fence,
+            "candidate_sequence": binding.candidate_sequence,
+            "manifest": activity.manifest_digest,
+            "review_receipt": receipt_ref.content_digest,
+            "blocker": blocker_reason_code,
+        })))
+        .to_hex()
+    );
+    let event_id = format!("attention:{feedback_id}:{reason_code}");
+    let policy = effective_repair_policy(task);
+    let evidence = EvidenceRef {
+        content_digest: receipt_ref.content_digest.clone(),
+        immutable_locator: receipt_ref.immutable_locator.clone(),
+        evidence_kind: format!("completion-semantic-review/{reviewer}/v1"),
+        media_type: receipt_ref.media_type.clone(),
+        size: receipt_ref.size,
+        review_projection: receipt_ref.review_projection.clone(),
+    };
+    let state = CompletionRepairState {
+        version: COMPLETION_REPAIR_STATE_VERSION,
+        disposition: CompletionRepairDisposition::NeedsAttention,
+        task_id: task.id.clone(),
+        generation: binding.generation,
+        attempt_id: binding.attempt_id.clone(),
+        fence: binding.attempt_fence,
+        requirements_digest: activity.requirements_digest.clone(),
+        validation_identity: receipt_ref.content_digest.clone(),
+        candidate_identity: activity.manifest_digest.clone(),
+        evidence,
+        saved_work: None,
+        command: format!("completion semantic {reviewer} review"),
+        exit_category: "semantic-rejection".into(),
+        diagnostic_excerpt,
+        opportunities_used: 0,
+        opportunity_limit: policy.deterministic_repair_budget.max(1),
+        failed_candidates: Vec::new(),
+        blocker_reason_code: Some(blocker_reason_code),
+        semantic_review: Some(crate::graph::CompletionSemanticRepairBinding {
+            reviewer_kind: activity.reviewer_kind,
+            review_receipt: receipt_ref.content_digest.clone(),
+            candidate_sequence: binding.candidate_sequence,
+        }),
+        reason_code: reason_code.into(),
+        safe_next,
+        feedback_id,
+        attention_event_id: Some(event_id),
         updated_at: Utc::now().to_rfc3339(),
     };
     task.completion_repair = Some(state.clone());
@@ -526,10 +690,31 @@ pub fn request_repair_attention(
     reason_code: &str,
     safe_next: String,
 ) -> Result<bool, String> {
+    let current_requirements = requirements_digest(task).ok();
     let state = task
         .completion_repair
         .as_mut()
         .ok_or_else(|| "no evidence-backed deterministic repair is active".to_string())?;
+    let semantic_current = state.semantic_review.as_ref().is_none_or(|semantic| {
+        task.completion_candidate.as_ref().is_some_and(|candidate| {
+            let selected = match semantic.reviewer_kind {
+                ReviewerKind::Flip => candidate.flip_receipt.as_ref(),
+                ReviewerKind::Eval => candidate.eval_receipt.as_ref(),
+            };
+            candidate.manifest.content_digest == state.candidate_identity
+                && candidate.review_binding.as_ref().is_some_and(|binding| {
+                    binding.task_id == state.task_id
+                        && binding.generation == state.generation
+                        && binding.attempt_id == state.attempt_id
+                        && binding.attempt_fence == state.fence
+                        && binding.candidate_sequence == semantic.candidate_sequence
+                })
+                && selected.is_some_and(|receipt| {
+                    receipt.content_digest == semantic.review_receipt
+                        && receipt.content_digest == state.evidence.content_digest
+                })
+        })
+    });
     if state.task_id != task.id
         || state.generation != task.lifecycle.generation
         || state.fence != task.lifecycle.fence
@@ -539,8 +724,13 @@ pub fn request_repair_attention(
                 .current_attempt
                 .as_ref()
                 .map(|attempt| attempt.id.as_str())
+        || current_requirements.as_ref() != Some(&state.requirements_digest)
+        || !semantic_current
     {
-        return Err("repair request is stale for the current source attempt/fence".into());
+        return Err(
+            "repair request is stale for the current source attempt/fence/requirements/candidate"
+                .into(),
+        );
     }
     let event_id = format!("attention:{}:{reason_code}", state.feedback_id);
     let changed = state.disposition != CompletionRepairDisposition::NeedsAttention
@@ -558,6 +748,8 @@ pub fn request_repair_attention(
 pub struct StalledChain {
     pub root_task_id: String,
     pub root_blocker: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_work: Option<String>,
     pub active_repair: bool,
     pub affected_downstream: Vec<String>,
     pub safe_operator_action: String,
@@ -635,7 +827,15 @@ pub fn stalled_chains(graph: &WorkGraph) -> Vec<StalledChain> {
         }
         chains.push(StalledChain {
             root_task_id: root.id.clone(),
-            root_blocker: format!("{}: {}", repair.reason_code, repair.exit_category),
+            root_blocker: format!(
+                "{}: {}",
+                repair
+                    .blocker_reason_code
+                    .as_deref()
+                    .unwrap_or(&repair.reason_code),
+                repair.exit_category
+            ),
+            saved_work: repair.saved_work.clone(),
             active_repair: false,
             affected_downstream: affected.into_iter().collect(),
             safe_operator_action: repair.safe_next.clone(),
@@ -765,6 +965,8 @@ pub fn capture_validation(
         return Err(ValidationCaptureError::InvalidCommand);
     }
     let before = repository_state(cwd).map_err(ValidationCaptureError::Repository)?;
+    let environment =
+        validation_environment_binding().map_err(ValidationCaptureError::Repository)?;
     let requirements_digest = requirements_digest(task)
         .map_err(|error| ValidationCaptureError::Lifecycle(error.to_string()))?;
     let command_identity = command_identity(command, configured_index);
@@ -836,6 +1038,7 @@ pub fn capture_validation(
             attempt_fence: task.lifecycle.fence,
             requirements_digest,
         },
+        environment: Some(environment),
         repository: ValidationRepositoryBinding {
             repository_identity: before.repository_identity,
             worktree_identity: before.worktree_identity,
@@ -879,6 +1082,8 @@ where
         return Err(ValidationCaptureError::InvalidCommand);
     }
     let before = repository_state(cwd).map_err(ValidationCaptureError::Repository)?;
+    let environment =
+        validation_environment_binding().map_err(ValidationCaptureError::Repository)?;
     let requirements_digest = requirements_digest(task)
         .map_err(|error| ValidationCaptureError::Lifecycle(error.to_string()))?;
     let started = Utc::now();
@@ -923,6 +1128,7 @@ where
             attempt_fence: task.lifecycle.fence,
             requirements_digest,
         },
+        environment: Some(environment),
         repository: ValidationRepositoryBinding {
             repository_identity: before.repository_identity,
             worktree_identity: before.worktree_identity,
@@ -976,6 +1182,60 @@ fn validation_timeout(task: &Task) -> Duration {
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
     Duration::from_secs(seconds)
+}
+
+fn validation_environment_binding() -> Result<ValidationEnvironmentBinding, String> {
+    let mut environment = std::env::vars_os()
+        .map(|(key, value)| {
+            (
+                hex::encode(key.as_encoded_bytes()),
+                hex::encode(value.as_encoded_bytes()),
+            )
+        })
+        .collect::<Vec<_>>();
+    environment.sort();
+
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("resolve WG executable: {error}"))?
+        .canonicalize()
+        .map_err(|error| format!("canonicalize WG executable: {error}"))?;
+    let metadata = fs::metadata(&executable)
+        .map_err(|error| format!("inspect WG executable {}: {error}", executable.display()))?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos().to_string());
+    let executable_identity = ContentDigest::of_bytes(&canonical_json(&serde_json::json!({
+        "path": hex::encode(executable.as_os_str().as_encoded_bytes()),
+        "size": metadata.len(),
+        "modified_unix_nanos": modified,
+    })));
+
+    let host_bytes = fs::read("/etc/machine-id")
+        .or_else(|_| fs::read("/var/lib/dbus/machine-id"))
+        .unwrap_or_else(|_| {
+            std::env::var_os("HOSTNAME")
+                .map(|value| value.as_encoded_bytes().to_vec())
+                .unwrap_or_default()
+        });
+    let host_identity = ContentDigest::of_bytes(&host_bytes);
+    let platform = std::env::consts::OS.to_string();
+    let architecture = std::env::consts::ARCH.to_string();
+    let environment_identity = ContentDigest::of_bytes(&canonical_json(&serde_json::json!({
+        "environment": environment,
+        "platform": platform,
+        "architecture": architecture,
+        "host_identity": host_identity,
+        "executable_identity": executable_identity,
+    })));
+    Ok(ValidationEnvironmentBinding {
+        environment_identity,
+        platform,
+        architecture,
+        host_identity,
+        executable_identity,
+    })
 }
 
 fn command_identity(command: &str, configured_index: u32) -> ValidationCommandIdentity {
@@ -1263,6 +1523,7 @@ pub fn verify_validation_evidence(
 
     let expected_repository_identity = live_repository_identity(repository_root)?;
     let mut configured = BTreeMap::new();
+    let mut optional = BTreeMap::new();
     let mut baseline_count = 0_usize;
     for evidence in &structured {
         let parsed: DeterministicValidationEvidence =
@@ -1280,6 +1541,7 @@ pub fn verify_validation_evidence(
             binding,
             &parsed,
             &expected_repository_identity,
+            parsed.purpose != ValidationPurpose::Optional,
         )?;
         match parsed.purpose {
             ValidationPurpose::Configured => {
@@ -1318,6 +1580,32 @@ pub fn verify_validation_evidence(
                         IncompleteEvidenceKind::InvalidManifest,
                         "baseline deterministic validation",
                         "Land baseline command identity is not the configured WG integrity check",
+                    ));
+                }
+            }
+            ValidationPurpose::Optional => {
+                if evidence.evidence_kind != OPTIONAL_VALIDATION_EVIDENCE_KIND {
+                    return Err(incomplete(
+                        IncompleteEvidenceKind::InvalidManifest,
+                        evidence.evidence_kind.clone(),
+                        "optional validation purpose uses the wrong evidence kind",
+                    ));
+                }
+                if parsed.environment.is_none() {
+                    return Err(incomplete(
+                        IncompleteEvidenceKind::Missing,
+                        "optional validation environment binding",
+                        "optional evidence cannot be reused without exact execution-environment identity",
+                    ));
+                }
+                if optional
+                    .insert(parsed.command.configured_index, parsed)
+                    .is_some()
+                {
+                    return Err(incomplete(
+                        IncompleteEvidenceKind::InvalidManifest,
+                        "optional validation evidence",
+                        "duplicate optional validation index",
                     ));
                 }
             }
@@ -1367,6 +1655,7 @@ fn verify_one(
     binding: Option<&CompletionReviewBinding>,
     evidence: &DeterministicValidationEvidence,
     expected_repository_identity: &ContentDigest,
+    require_success: bool,
 ) -> Result<(), IncompleteEvidence> {
     if evidence.evidence_version != DETERMINISTIC_VALIDATION_VERSION
         || evidence.capture_origin != "wg_done"
@@ -1423,15 +1712,38 @@ fn verify_one(
             "evidence does not bind the reviewed Git commit/tree/base",
         ));
     }
-    if !evidence.authoritative_pass(manifest.completion_contract) {
+    if !evidence.stable_capture(manifest.completion_contract) {
         return Err(incomplete(
             IncompleteEvidenceKind::DigestMismatch,
-            "deterministic validation result",
+            "deterministic validation candidate binding",
+            "command did not observe one unchanged candidate/worktree state",
+        ));
+    }
+    if require_success && !evidence.authoritative_pass(manifest.completion_contract) {
+        return Err(incomplete(
+            IncompleteEvidenceKind::DigestMismatch,
+            "required deterministic validation result",
             format!(
-                "command did not pass on one unchanged candidate (exit={:?}, signal={:?}, timeout={})",
+                "required command did not pass (exit={:?}, signal={:?}, timeout={})",
                 evidence.exit.code, evidence.exit.signal, evidence.exit.timed_out
             ),
         ));
+    }
+    if let Some(environment) = evidence.environment.as_ref() {
+        let current = validation_environment_binding().map_err(|detail| {
+            incomplete(
+                IncompleteEvidenceKind::Inaccessible,
+                "deterministic validation environment",
+                detail,
+            )
+        })?;
+        if *environment != current {
+            return Err(incomplete(
+                IncompleteEvidenceKind::DigestMismatch,
+                "deterministic validation environment binding",
+                "execution environment or WG executable changed; revalidation is required",
+            ));
+        }
     }
     verify_timing(evidence)?;
     verify_output_shape("stdout", &evidence.stdout)?;
@@ -1670,7 +1982,12 @@ mod tests {
         EvidenceRef {
             content_digest: artifact.content_digest,
             immutable_locator: artifact.immutable_locator,
-            evidence_kind: CONFIGURED_VALIDATION_EVIDENCE_KIND.into(),
+            evidence_kind: match evidence.purpose {
+                ValidationPurpose::Configured => CONFIGURED_VALIDATION_EVIDENCE_KIND,
+                ValidationPurpose::Baseline => BASELINE_VALIDATION_EVIDENCE_KIND,
+                ValidationPurpose::Optional => OPTIONAL_VALIDATION_EVIDENCE_KIND,
+            }
+            .into(),
             media_type: artifact.media_type,
             size: artifact.size,
             review_projection: artifact.review_projection,
@@ -1680,10 +1997,13 @@ mod tests {
     #[test]
     fn capture_records_bounded_streams_exit_repository_and_timing() {
         let (temp, task) = fixture();
-        let command = "python3 -c \"import sys; print('x'*70000); print('err', file=sys.stderr)\"";
+        let command = format!(
+            "python3 -c \"import sys; print('x'*{}); print('err', file=sys.stderr)\"",
+            MAX_CAPTURE_BYTES_PER_STREAM + 1
+        );
         let evidence = capture_validation(
             &task,
-            command,
+            &command,
             0,
             ValidationPurpose::Configured,
             temp.path(),
@@ -1844,6 +2164,113 @@ mod tests {
         assert_eq!(failing.exit.code, Some(9));
         assert!(!failing.authoritative_pass(CompletionContract::Land));
         assert!(failing.stderr.content.contains("nope"));
+    }
+
+    #[test]
+    fn optional_success_is_evidence_but_cannot_satisfy_a_failed_required_gate() {
+        let (temp, mut task) = fixture();
+        task.validation_commands = vec!["exit 9".into()];
+        let store = CompletionArtifactStore::open(temp.path().join("store")).unwrap();
+        let authority_dir = temp.path().join(".wg");
+        let required = capture_validation(
+            &task,
+            "exit 9",
+            0,
+            ValidationPurpose::Configured,
+            temp.path(),
+        )
+        .unwrap();
+        let optional = capture_validation(
+            &task,
+            "printf 'useful signal\\n'",
+            0,
+            ValidationPurpose::Optional,
+            temp.path(),
+        )
+        .unwrap();
+        assert!(!required.authoritative_pass(CompletionContract::Report));
+        assert!(optional.authoritative_pass(CompletionContract::Report));
+        let output = store.put_bytes(b"report", "text/plain").unwrap();
+        let manifest = CompletionManifest {
+            manifest_version: COMPLETION_MANIFEST_VERSION,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            completion_contract: CompletionContract::Report,
+            requirements_digest: requirements_digest(&task).unwrap(),
+            source_revision: required.repository.before_head_oid.clone(),
+            outputs: vec![OutputRef::Artifact(output)],
+            validation_evidence: vec![
+                evidence_ref(&store, &authority_dir, &required),
+                evidence_ref(&store, &authority_dir, &optional),
+            ],
+            worker_summary_digest: ContentDigest::of_bytes(b"summary"),
+        };
+        let bundle = crate::completion_manifest::ReviewResolver::new(&store)
+            .resolve(
+                &manifest,
+                &crate::completion_task::task_requirements_bytes(&task).unwrap(),
+                b"summary",
+            )
+            .unwrap();
+        let error = verify_validation_evidence(
+            &task,
+            &manifest,
+            None,
+            &bundle,
+            temp.path(),
+            &authority_dir,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, IncompleteEvidenceKind::DigestMismatch);
+        assert_eq!(error.reference, "required deterministic validation result");
+    }
+
+    #[test]
+    fn optional_evidence_is_bound_to_the_capture_environment() {
+        let (temp, mut task) = fixture();
+        task.validation_commands.clear();
+        let store = CompletionArtifactStore::open(temp.path().join("store")).unwrap();
+        let authority_dir = temp.path().join(".wg");
+        let mut optional = capture_validation(
+            &task,
+            "printf 'ok\\n'",
+            0,
+            ValidationPurpose::Optional,
+            temp.path(),
+        )
+        .unwrap();
+        optional.environment.as_mut().unwrap().environment_identity =
+            ContentDigest::of_bytes(b"foreign environment");
+        let output = store.put_bytes(b"report", "text/plain").unwrap();
+        let manifest = CompletionManifest {
+            manifest_version: COMPLETION_MANIFEST_VERSION,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            completion_contract: CompletionContract::Report,
+            requirements_digest: requirements_digest(&task).unwrap(),
+            source_revision: optional.repository.before_head_oid.clone(),
+            outputs: vec![OutputRef::Artifact(output)],
+            validation_evidence: vec![evidence_ref(&store, &authority_dir, &optional)],
+            worker_summary_digest: ContentDigest::of_bytes(b"summary"),
+        };
+        let bundle = crate::completion_manifest::ReviewResolver::new(&store)
+            .resolve(
+                &manifest,
+                &crate::completion_task::task_requirements_bytes(&task).unwrap(),
+                b"summary",
+            )
+            .unwrap();
+        let error = verify_validation_evidence(
+            &task,
+            &manifest,
+            None,
+            &bundle,
+            temp.path(),
+            &authority_dir,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, IncompleteEvidenceKind::DigestMismatch);
+        assert!(error.reference.contains("environment"));
     }
 
     #[test]

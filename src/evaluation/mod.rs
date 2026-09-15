@@ -179,6 +179,8 @@ pub struct EvaluationRouteCall {
     pub endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_revision: Option<String>,
     pub handler: String,
     pub provider: String,
 }
@@ -984,6 +986,7 @@ fn route_snapshot(
             exact_route: call.route,
             endpoint: call.endpoint,
             reasoning: call.reasoning,
+            config_revision: call.config_revision,
             handler: call.system.handler,
             provider: call.system.provider,
         })

@@ -1057,6 +1057,7 @@ mod tests {
             flip_receipt_digest: flip.content_digest.to_string(),
             eval_receipt_digest: None,
             review_policy: "strict".into(),
+            semantic_outcome: None,
             contract: source.completion_contract.to_string(),
             publication,
             completed_at: "2026-01-01T00:00:00Z".into(),

@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::config::{Config, ConfigSource, parse_exact_pi_route, parse_supported_execution_route};
+use crate::config::{Config, ConfigSource, parse_supported_execution_route};
 use crate::dispatch::handler_for_model;
 
 pub const UNSELECTED_CODE: &str = "WG-EXEC-UNSELECTED";
@@ -52,6 +52,7 @@ pub struct ExecutionSelection {
     pub route: Option<String>,
     pub system: Option<ExecutionSystemKey>,
     pub source: Option<ExecutionSelectionSource>,
+    pub config_revision: Option<String>,
 }
 
 impl ExecutionSelection {
@@ -61,6 +62,7 @@ impl ExecutionSelection {
             route: None,
             system: None,
             source: None,
+            config_revision: None,
         }
     }
 }
@@ -137,6 +139,7 @@ pub fn resolve(dir: &Path, cli_or_task_model: Option<(&str, bool)>) -> Result<Ex
             system: system_key(&route),
             route: Some(route),
             source: Some(source),
+            config_revision: None,
         });
     }
 
@@ -149,94 +152,83 @@ fn resolve_config_sources(
     config: &Config,
     sources: &std::collections::BTreeMap<String, ConfigSource>,
 ) -> Result<ExecutionSelection> {
-    let candidates: [(&str, Option<&str>); 4] = [
-        ("dispatcher.model", config.coordinator.model.as_deref()),
-        (
-            "models.task_agent.model",
-            config
-                .models
-                .task_agent
-                .as_ref()
-                .and_then(|m| m.model.as_deref()),
-        ),
-        (
-            "models.default.model",
-            config
-                .models
-                .default
-                .as_ref()
-                .and_then(|m| m.model.as_deref()),
-        ),
-        ("agent.model", Some(config.agent.model.as_str())),
-    ];
-    for (key, value) in candidates {
-        let Some(raw) = value else { continue };
-        let Some(source) = sources.get(key) else {
-            continue;
-        };
-        // A global label is compatibility-inspection data only. Even a caller
-        // that constructs an old source map cannot turn it into authority.
-        if matches!(source, ConfigSource::Default | ConfigSource::Global) {
-            continue;
-        }
-        let route = raw.trim().to_string();
-        parse_exact_pi_route(&route).map_err(|error| {
-            anyhow::anyhow!(
-                "error[WG-PI-ROUTE-REQUIRED]: {key} selects non-Pi project route {raw:?}: {error}. Select an exact `pi:<provider>:<model>` route; no machine-global or cross-system fallback was attempted"
-            )
-        })?;
-        let path = match source {
-            ConfigSource::ProjectFile | ConfigSource::ProjectProfileImport => {
-                crate::project_config::path_for_graph(dir).ok_or_else(|| {
-                    anyhow::anyhow!("project-file source has no bound project path")
-                })?
+    let resolved =
+        match config.resolve_execution_route_for_role(crate::config::DispatchRole::Default) {
+            Ok(route) => route,
+            Err(error) if format!("{error:#}").contains("WG-EXEC-ROUTE-MISSING") => {
+                return Ok(ExecutionSelection::unselected());
             }
-            ConfigSource::Local => dir.join("config.toml"),
-            ConfigSource::ProjectProfile => crate::profile::project::association_path(dir),
-            ConfigSource::Global | ConfigSource::Default => continue,
+            Err(error) => return Err(error),
         };
-        let selection_source = match source {
-            ConfigSource::ProjectProfile => {
-                let association =
-                    crate::profile::project::read_association(dir)?.ok_or_else(|| {
-                        anyhow::anyhow!("legacy project-profile source has no association")
-                    })?;
-                ExecutionSelectionSource::Profile {
-                    name: association.profile,
-                    path,
-                }
-            }
-            ConfigSource::ProjectProfileImport => {
-                let document = crate::project_config::load_for_graph(dir)?.ok_or_else(|| {
-                    anyhow::anyhow!("project-profile-import source has no project document")
-                })?;
-                let origin = document.profile_origin.ok_or_else(|| {
-                    anyhow::anyhow!("project-profile-import source has no profile_origin")
-                })?;
-                ExecutionSelectionSource::Profile {
-                    name: origin.name,
-                    path,
-                }
-            }
-            _ => ExecutionSelectionSource::Config {
-                scope: *source,
-                path,
-                key: key.into(),
-            },
-        };
-        return Ok(ExecutionSelection {
-            state: SelectionState::Selected,
-            system: system_key(&route),
-            route: Some(route),
-            source: Some(selection_source),
-        });
+    let key = resolved
+        .source
+        .split(" → ")
+        .next()
+        .unwrap_or(&resolved.source);
+    let source = sources.get(key).ok_or_else(|| {
+        anyhow::anyhow!(
+            "error[WG-EXEC-ROUTE-MISSING]: role=default route source {key} has no project provenance"
+        )
+    })?;
+    if matches!(source, ConfigSource::Default | ConfigSource::Global) {
+        return Ok(ExecutionSelection::unselected());
     }
-    Ok(ExecutionSelection::unselected())
+    let route = resolved.route;
+    parse_supported_execution_route(&route).map_err(|error| {
+        anyhow::anyhow!(
+            "error[WG-EXEC-ROUTE-UNSUPPORTED]: role=default effective_route={route:?} config_source={source} config_revision={} corrective_action=`wg config set agent.model pi:<provider>:<model>`: {error}",
+            resolved.config_revision
+        )
+    })?;
+    let path = match source {
+        ConfigSource::ProjectFile | ConfigSource::ProjectProfileImport => {
+            crate::project_config::path_for_graph(dir)
+                .ok_or_else(|| anyhow::anyhow!("project-file source has no bound project path"))?
+        }
+        ConfigSource::Local => dir.join("config.toml"),
+        ConfigSource::ProjectProfile => crate::profile::project::association_path(dir),
+        ConfigSource::Global | ConfigSource::Default => return Ok(ExecutionSelection::unselected()),
+    };
+    let selection_source = match source {
+        ConfigSource::ProjectProfile => {
+            let association = crate::profile::project::read_association(dir)?.ok_or_else(|| {
+                anyhow::anyhow!("legacy project-profile source has no association")
+            })?;
+            ExecutionSelectionSource::Profile {
+                name: association.profile,
+                path,
+            }
+        }
+        ConfigSource::ProjectProfileImport => {
+            let document = crate::project_config::load_for_graph(dir)?.ok_or_else(|| {
+                anyhow::anyhow!("project-profile-import source has no project document")
+            })?;
+            let origin = document.profile_origin.ok_or_else(|| {
+                anyhow::anyhow!("project-profile-import source has no profile_origin")
+            })?;
+            ExecutionSelectionSource::Profile {
+                name: origin.name,
+                path,
+            }
+        }
+        _ => ExecutionSelectionSource::Config {
+            scope: *source,
+            path,
+            key: key.into(),
+        },
+    };
+    return Ok(ExecutionSelection {
+        state: SelectionState::Selected,
+        system: system_key(&route),
+        route: Some(route),
+        source: Some(selection_source),
+        config_revision: Some(resolved.config_revision),
+    });
 }
 
 pub fn unselected_message(operation: &str) -> String {
     format!(
-        "error[{UNSELECTED_CODE}]: No project Pi route is selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nSelect the route for this project explicitly:\n  wg profile select pi\n  wg setup --route pi --yes --model pi:<provider>:<model>\n\nPi owns provider authentication, endpoints, and model discovery. WG global config, WG secrets, and ~/.wg/active-profile never select a project route. `wg init`, graph reads, graph edits, and the setup-neutral TUI remain credential-free and do not create a route."
+        "error[{UNSELECTED_CODE}]: No project execution route is selected.\nThis WG is available for graph-only use, but `{operation}` requires an LLM route.\n\nSelect one handler-qualified route for this project explicitly:\n  wg setup --route pi --yes --model pi:<provider>:<model>\n  wg config set agent.model claude:<native-model>\n  wg config set agent.model codex:<native-model>\n\nThe selected handler owns authentication and model discovery. WG global config, WG secrets, and ~/.wg/active-profile never select a project route. `wg init`, graph reads, graph edits, and the setup-neutral TUI remain credential-free and do not create a route."
     )
 }
 

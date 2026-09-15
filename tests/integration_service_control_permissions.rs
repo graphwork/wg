@@ -22,17 +22,19 @@ fn wg_binary() -> PathBuf {
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(wg_binary());
-    cmd.arg("--dir")
-        .arg(wg_dir)
-        .args(args)
-        .env_remove("WG_EXECUTOR_TYPE")
-        .env_remove("WG_MODEL")
-        .env_remove("WG_TIER")
-        .env_remove("WG_TASK_ID")
-        .env_remove("WG_AGENT_ID")
-        .env_remove("WG_CHAT_REF")
-        .env_remove("WG_CHAT_ID")
-        .stdin(Stdio::null())
+    cmd.arg("--dir").arg(wg_dir).args(args);
+
+    // This command is a disposable child targeting a synthetic graph. Do not
+    // let the parent test runner's exact worker capability, graph identity, or
+    // attempt fence leak across that graph boundary. Individual tests add only
+    // the legacy task/agent context they intend to exercise.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("WG_") {
+            cmd.env_remove(key);
+        }
+    }
+
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd
