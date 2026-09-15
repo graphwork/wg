@@ -795,7 +795,7 @@ Wrong vs right:
 
 - Bug: typing in the TUI does not update `last_interaction_at`.
   - Wrong (CLI-only): call `wg msg send <chat>` and assert the chat file mtime advanced.
-  - Right (human flow): start `wg tui` in tmux, drive keystrokes via `tmux send-keys`, read `last_interaction_at` from the chat file (see `tests/smoke/scenarios/tui_chat_pty_last_interaction.sh`).
+  - Right (human flow): start `wg tui` in tmux, drive keystrokes via `tmux send-keys`, read `last_interaction_at` from the chat file, and use the repository's existing human-flow harness when it has one.
 - Bug: a button in a web app fails to submit.
   - Wrong: POST directly to the form endpoint.
   - Right: drive the click via a headless browser.
@@ -810,14 +810,15 @@ Validation checklist for user-visible fixes:
 - [ ] Reproducer is a live or scripted simulation of the real human flow
       (TUI via tmux/PTY, browser via headless driver, terminal via `expect`
       or equivalent), not only a CLI / unit substitute
-- [ ] The reproducer fails on `main` and passes after the fix
-- [ ] A scenario is added to `tests/smoke/scenarios/` and listed in `owners`
-      of `tests/smoke/manifest.toml` so future regressions are caught by the
-      smoke gate (the manifest is grow-only)
+- [ ] The reproducer fails on the base revision and passes after the fix
+- [ ] The reproducer is added to the repository's existing checked-in
+      human-flow or smoke harness when one exists
+- [ ] WorksGood's own `tests/smoke/` layout is used only when changing WorksGood;
+      do not create it in ordinary projects
 - [ ] Relevant checks from the repository's checked-in policy are run and reported
 ```
 
-If you are tempted to validate a user-visible fix with only a CLI or unit test "because it exercises the same code", stop. Add the human-flow simulation.
+If you are tempted to validate a user-visible fix with only a CLI or unit test "because it exercises the same code", stop. Add the human-flow simulation using the project's native test structure, not WorksGood-specific scaffolding.
 
 ## Core Commands
 
@@ -1538,6 +1539,8 @@ mod tests {
             !prompt.to_ascii_lowercase().contains("workgraph"),
             "essential worker prompt leaked stale product branding"
         );
+        assert!(prompt.contains("do not create it in ordinary projects"));
+        assert!(!prompt.contains("A scenario is added to `tests/smoke/scenarios/`"));
     }
 
     #[test]

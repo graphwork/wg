@@ -14376,6 +14376,13 @@ impl VizApp {
             ));
             lines.push(format!("    next: {}", repair.safe_next));
         }
+        if let Some(blocker) = task.completion_blocker.as_ref()
+            && blocker.kind == worksgood::graph::CompletionBlockerKind::LandingPending
+        {
+            lines.push(format!("  LANDING PENDING: {}", blocker.reason));
+            lines.push("    Preserve user changes and clean the integration checkout.".to_string());
+            lines.push(format!("    SAFE RESUME: wg resume {} --only", task.id));
+        }
         if let Some(chain) = worksgood::completion_validation::stalled_chains(&graph)
             .into_iter()
             .find(|chain| {
