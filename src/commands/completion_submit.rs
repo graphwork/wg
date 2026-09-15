@@ -299,11 +299,24 @@ pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> R
             );
             Ok(())
         }
-        ReviewValveStatus::ReviewUnavailable => bail!(
-            "strict review unavailable for manifest {}; the candidate is preserved, no semantic acceptance was recorded, and no source quality failure was inferred",
-            outcome.flip.receipt.manifest_digest
+        ReviewValveStatus::ReviewUnavailable => park_strict_review_unavailable(
+            dir,
+            id,
+            &outcome.flip.receipt.manifest_digest.to_string(),
         ),
     }
+}
+
+fn park_strict_review_unavailable(dir: &Path, id: &str, manifest_digest: &str) -> Result<()> {
+    let reason = format!(
+        "strict review unavailable for manifest {manifest_digest}; the candidate is preserved, no semantic acceptance was recorded, and no source quality failure was inferred"
+    );
+    super::completion_wait::park_needs_review(dir, id, &reason)?;
+    // Review authority is unavailable, not a source execution failure.
+    // Parking is the complete typed outcome; returning an error would make
+    // the outer worker wrapper consume a retry and overwrite this blocker
+    // with a generic exit failure.
+    Ok(())
 }
 
 fn current_rejection_is_authoritative_runtime_evidence_gap(
@@ -2304,6 +2317,7 @@ mod tests {
     #[test]
     fn reviewer_unavailability_preserves_submission_without_source_replacement() {
         let fixture = fixture();
+        bind_running_attempt(&fixture);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mut flip = FakeReviewer {
             route: "pi:test/flip".to_string(),
@@ -2345,5 +2359,37 @@ mod tests {
         let verified = worksgood::completion_review::verified_review_activities(&fixture.dir, task);
         assert_eq!(verified.invalid_count, 0);
         assert_eq!(verified.activities[0].findings[0].code, "test.offline");
+
+        let candidate_digest = task
+            .completion_candidate
+            .as_ref()
+            .unwrap()
+            .manifest
+            .content_digest
+            .to_string();
+        let retry_count = task.retry_count;
+        let spawn_failures = task.spawn_failures;
+        park_strict_review_unavailable(&fixture.dir, "report", &candidate_digest).unwrap();
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert_eq!(task.retry_count, retry_count);
+        assert_eq!(task.spawn_failures, spawn_failures);
+        assert!(task.failure_reason.is_none());
+        let blocker = task
+            .completion_blocker
+            .as_ref()
+            .expect("typed strict-review blocker");
+        assert_eq!(
+            blocker.kind,
+            worksgood::graph::CompletionBlockerKind::NeedsReview
+        );
+        assert_eq!(
+            blocker.candidate.manifest.content_digest.to_string(),
+            candidate_digest
+        );
+        assert!(task.completion_candidate.is_some());
+        assert_eq!(task.completion_review_activity.len(), 1);
     }
 }

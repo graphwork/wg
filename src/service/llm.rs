@@ -301,6 +301,15 @@ fn agency_native_creds_available(config: &Config, raw_spec: &str) -> bool {
 }
 
 fn execution_dispatch_for_role(config: &Config, role: DispatchRole) -> Result<AgencyDispatch> {
+    if crate::execution_assignment::experiment_enabled() {
+        let resolved = config.resolve_opaque_pi_route_for_role(role)?;
+        return Ok(agency_dispatch_for_spec_with_binding(
+            &resolved.route,
+            Some(resolved.reasoning),
+            Some(role),
+            &resolved.config_revision,
+        ));
+    }
     let resolved = config.resolve_execution_route_for_role(role)?;
     if resolved.handler == "pi" && resolved.reasoning.is_none() {
         // Preserve Pi's strict reasoning contract while allowing native
@@ -322,9 +331,10 @@ fn execution_dispatch_for_role(config: &Config, role: DispatchRole) -> Result<Ag
 /// fallbacks cannot bypass the canonical role resolver's capability policy.
 fn opaque_assignment_for_dispatch(
     dispatch: &AgencyDispatch,
+    timeout_secs: Option<u64>,
 ) -> Result<crate::execution_assignment::ExecutionAssignment> {
     let role = dispatch.role.unwrap_or(DispatchRole::Reviewer);
-    crate::execution_assignment::resolved_pi_assignment(
+    crate::execution_assignment::resolved_pi_assignment_with_timeout(
         &format!(".{role}-oneshot"),
         "role-execution",
         role,
@@ -336,13 +346,14 @@ fn opaque_assignment_for_dispatch(
             )
         })?,
         "pi",
+        timeout_secs,
     )
 }
 
 fn validate_opaque_pi_assignment(
     assignment: &crate::execution_assignment::ExecutionAssignment,
 ) -> Result<()> {
-    match crate::execution_assignment::preflight_hermetic(assignment) {
+    match crate::execution_assignment::preflight(assignment) {
         crate::execution_assignment::PiPreflightOutcome::Ready => Ok(()),
         crate::execution_assignment::PiPreflightOutcome::MissingRequiredCapability {
             diagnostic,
@@ -359,7 +370,7 @@ pub(crate) fn validate_pi_oneshot_capability(dispatch: &AgencyDispatch) -> Resul
         return Ok(());
     }
     if crate::execution_assignment::experiment_enabled() {
-        return validate_opaque_pi_assignment(&opaque_assignment_for_dispatch(dispatch)?);
+        return validate_opaque_pi_assignment(&opaque_assignment_for_dispatch(dispatch, None)?);
     }
     let (provider, model) = crate::config::parse_exact_pi_route(&dispatch.raw_spec)?;
     let lane = dispatch.capability_lane;
@@ -438,7 +449,7 @@ fn call_dispatch_route(
                 dispatch.raw_spec
             );
         }
-        let assignment = opaque_assignment_for_dispatch(dispatch)?;
+        let assignment = opaque_assignment_for_dispatch(dispatch, Some(timeout_secs))?;
         validate_opaque_pi_assignment(&assignment)?;
         return call_pi_cli_with_assignment(config, &assignment, prompt, timeout_secs);
     }
@@ -1257,31 +1268,35 @@ fn call_pi_cli_inner(
 ) -> Result<LlmCallResult> {
     use std::io::Write as _;
 
-    let (program, args) = if let Some(assignment) = assignment {
+    let (program, args, pinned_timeout, pinned_config_root) = if let Some(assignment) = assignment {
         let crate::execution_assignment::RuntimeExecution::Pi {
-            program,
             opaque_route,
             reasoning,
+            launch_plan,
             ..
         } = &assignment.execution
         else {
             anyhow::bail!("lightweight Pi runtime received a shell assignment");
         };
+        let launch = launch_plan.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "WG-OPAQUE-LAUNCH-PLAN-MISSING: historical one-shot assignment is not executable"
+            )
+        })?;
+        crate::execution_assignment::verify_launch_plan(launch)
+            .context("pinned Pi one-shot invocation changed after preflight")?;
+        let mut args = launch.fixed_argv.clone();
+        args.extend([
+            "--model".to_string(),
+            opaque_route.clone(),
+            "--thinking".to_string(),
+            reasoning.as_str().to_string(),
+        ]);
         (
-            program.clone(),
-            vec![
-                "--mode".to_string(),
-                "json".to_string(),
-                "--print".to_string(),
-                "-ne".to_string(),
-                "--no-tools".to_string(),
-                "--no-context-files".to_string(),
-                "--no-session".to_string(),
-                "--model".to_string(),
-                opaque_route.clone(),
-                "--thinking".to_string(),
-                reasoning.as_str().to_string(),
-            ],
+            launch.executable.path.clone(),
+            args,
+            launch.timeout_secs,
+            Some(launch.config_root.clone()),
         )
     } else {
         let (provider, model) =
@@ -1293,8 +1308,17 @@ fn call_pi_cli_inner(
         (
             std::path::PathBuf::from("pi"),
             pi_one_shot_command_args(&PiOneShotModelArg { provider, model }, reasoning),
+            None,
+            None,
         )
     };
+
+    if let Some(assignment) = assignment
+        && let Some(dir) = std::env::var_os("WG_DIR").map(std::path::PathBuf::from)
+    {
+        crate::execution_assignment::persist_oneshot_attribution(&dir, assignment)
+            .context("persist opaque one-shot invocation attribution")?;
+    }
 
     let (mut child, _killer) = crate::platform_timeout::spawn_with_timeout(
         &program,
@@ -1305,9 +1329,21 @@ fn call_pi_cli_inner(
             cmd.stdin(process::Stdio::piped())
                 .stdout(process::Stdio::piped())
                 .stderr(process::Stdio::piped());
+            if let Some(config_root) = pinned_config_root.as_deref() {
+                cmd.env("PI_CODING_AGENT_DIR", config_root);
+            }
+            if let Some(assignment) = assignment
+                && let crate::execution_assignment::RuntimeExecution::Pi {
+                    launch_plan: Some(launch),
+                    ..
+                } = &assignment.execution
+                && let Some(cwd) = launch.execution_cwd.as_deref()
+            {
+                cmd.current_dir(cwd);
+            }
             cmd
         },
-        timeout_secs,
+        pinned_timeout.unwrap_or(timeout_secs),
     )
     .context("Failed to spawn pi CLI for lightweight LLM call")?;
 
@@ -2540,7 +2576,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","content":[{"typ
         let _log = EnvGuard::set("OPAQUE_REVIEW_LOG", Some(&log.to_string_lossy()));
         let _experiment = EnvGuard::set(crate::execution_assignment::EXPERIMENT_ENV, Some("1"));
         let dispatch = agency_dispatch_for_spec_with_binding(
-            "pi:future+wire:model/with:odd:bytes",
+            "pi:openai-codex/gpt-5.6-sol",
             Some(ReasoningLevel::Xhigh),
             Some(DispatchRole::Reviewer),
             "b3:review",
@@ -2559,8 +2595,18 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","content":[{"typ
             argv.iter()
                 .position(|arg| arg == "--model")
                 .map(|index| argv[index + 1].as_str()),
-            Some("future+wire:model/with:odd:bytes")
+            Some("openai-codex/gpt-5.6-sol")
         );
+        for required in [
+            "-ne",
+            "--no-tools",
+            "--no-context-files",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-session",
+        ] {
+            assert!(argv.iter().any(|arg| arg == required), "{argv:?}");
+        }
         assert_eq!(
             argv.iter()
                 .position(|arg| arg == "--thinking")

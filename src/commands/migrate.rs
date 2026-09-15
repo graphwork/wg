@@ -1417,6 +1417,133 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
+// `wg migrate opaque-pi-route` — exact, operator-declared route replacement.
+// ---------------------------------------------------------------------------
+
+/// Replace only exact string values in one declared TOML file. This migration
+/// deliberately has no discovery or provider/model inference: the operator
+/// supplies both byte strings and receives a pre-mutation backup.
+pub fn run_opaque_pi_route_migrate(
+    path: &Path,
+    from: &str,
+    to: &str,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    worksgood::config::parse_exact_pi_route(from).map_err(|error| {
+        anyhow::anyhow!(
+            "--from must be one exact legacy split Pi route (`pi:<provider>:<model>`): {error:#}"
+        )
+    })?;
+    worksgood::config::parse_opaque_pi_route(to).map_err(|error| {
+        anyhow::anyhow!(
+            "--to must be one exact opaque Pi route (`pi:<pi-native-selection>`): {error:#}"
+        )
+    })?;
+    if from == to {
+        bail!("--from and --to are identical; refusing a no-op migration");
+    }
+
+    let original = std::fs::read(path)
+        .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", path.display()))?;
+    let text = std::str::from_utf8(&original)
+        .map_err(|error| anyhow::anyhow!("{} is not UTF-8 TOML: {error}", path.display()))?;
+    let mut document: toml::Value = toml::from_str(text)
+        .map_err(|error| anyhow::anyhow!("failed to parse {}: {error}", path.display()))?;
+    let mut changed_keys = Vec::new();
+    replace_exact_toml_strings(&mut document, String::new(), from, to, &mut changed_keys);
+
+    let mut backup_path = None;
+    if !dry_run && !changed_keys.is_empty() {
+        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.fZ");
+        let backup = path.with_extension(format!(
+            "{}.pre-opaque-pi-migrate.{stamp}",
+            path.extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("toml")
+        ));
+        worksgood::atomic_file::write_atomic_create_new(&backup, &original).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to write migration backup {}: {error}",
+                backup.display()
+            )
+        })?;
+        let rendered = toml::to_string_pretty(&document)?;
+        worksgood::atomic_file::write_atomic(path, rendered.as_bytes()).map_err(|error| {
+            anyhow::anyhow!(
+                "failed to atomically write migrated config {}: {error}",
+                path.display()
+            )
+        })?;
+        backup_path = Some(backup);
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "path": path,
+                "from": from,
+                "to": to,
+                "matches": changed_keys,
+                "dry_run": dry_run,
+                "wrote": !dry_run && !changed_keys.is_empty(),
+                "backup_path": backup_path,
+            }))?
+        );
+    } else if changed_keys.is_empty() {
+        println!("No exact `{from}` values found in {}", path.display());
+    } else {
+        let verb = if dry_run { "Would replace" } else { "Replaced" };
+        println!(
+            "{verb} {} exact value(s) in {}: {} -> {}",
+            changed_keys.len(),
+            path.display(),
+            from,
+            to
+        );
+        for key in &changed_keys {
+            println!("  {key}");
+        }
+        if let Some(backup) = backup_path {
+            println!("Backup: {}", backup.display());
+        }
+    }
+    Ok(())
+}
+
+fn replace_exact_toml_strings(
+    value: &mut toml::Value,
+    path: String,
+    from: &str,
+    to: &str,
+    changed: &mut Vec<String>,
+) {
+    match value {
+        toml::Value::String(current) if current == from => {
+            *current = to.to_string();
+            changed.push(path);
+        }
+        toml::Value::Array(values) => {
+            for (index, child) in values.iter_mut().enumerate() {
+                replace_exact_toml_strings(child, format!("{path}[{index}]"), from, to, changed);
+            }
+        }
+        toml::Value::Table(table) => {
+            for (key, child) in table {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                replace_exact_toml_strings(child, child_path, from, to, changed);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
 // `wg migrate config` — rewrite stale config.toml files to canonical form.
 // ---------------------------------------------------------------------------
 
@@ -2160,6 +2287,47 @@ premium = "claude:opus"
         // Second pass is also a no-op
         let r2 = migrate_one(&path, false).unwrap();
         assert!(r2.is_noop(), "second pass should be a no-op; got {:?}", r2);
+    }
+
+    #[test]
+    fn opaque_pi_route_migration_is_exact_explicit_and_backed_up() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "pi:openai-codex:gpt-5.6-sol"
+
+[models.reviewer]
+model = "pi:other:model"
+
+[notes]
+text = "prefix pi:openai-codex:gpt-5.6-sol"
+"#,
+        );
+        run_opaque_pi_route_migrate(
+            &path,
+            "pi:openai-codex:gpt-5.6-sol",
+            "pi:openai-codex/gpt-5.6-sol",
+            false,
+            true,
+        )
+        .unwrap();
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("model = \"pi:openai-codex/gpt-5.6-sol\""));
+        assert!(migrated.contains("model = \"pi:other:model\""));
+        assert!(migrated.contains("prefix pi:openai-codex:gpt-5.6-sol"));
+        let backups = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("pre-opaque-pi-migrate")
+            })
+            .count();
+        assert_eq!(backups, 1);
     }
 
     #[test]

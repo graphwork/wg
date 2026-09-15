@@ -98,33 +98,51 @@ fn process_adapter_command(root: &std::path::Path, scenario: &str) -> std::proce
     let fake_pi = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/pi-process-wakeup/fake-pi-rpc.mjs");
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_wg"));
-    command
-        .args([
-            "--dir",
-            wg_dir.to_str().unwrap(),
-            "pi-process-worker",
-            "--task-id",
-            "entrypoint-proof",
-            "--prompt-file",
-            prompt.to_str().unwrap(),
-            "--session-id",
-            "same-authorized-session",
-            "--session-dir",
-            session_dir.to_str().unwrap(),
-            "--evidence-file",
-            root.join("evidence.json").to_str().unwrap(),
-            "--process-extension",
-            extension.to_str().unwrap(),
-            "--pi-command",
-            fake_pi.to_str().unwrap(),
+    command.args([
+        "--dir",
+        wg_dir.to_str().unwrap(),
+        "pi-process-worker",
+        "--task-id",
+        "entrypoint-proof",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--session-id",
+        "same-authorized-session",
+        "--session-dir",
+        session_dir.to_str().unwrap(),
+        "--evidence-file",
+        root.join("evidence.json").to_str().unwrap(),
+        "--process-extension",
+        extension.to_str().unwrap(),
+        "--pi-command",
+        fake_pi.to_str().unwrap(),
+        "--reasoning",
+        "low",
+    ]);
+    if scenario == "race-success" {
+        command.args([
+            "--opaque-model",
+            "openai-codex/gpt-5.6-sol",
+            "--pi-fixed-arg",
+            "--mode",
+            "--pi-fixed-arg",
+            "rpc",
+            "--pi-fixed-arg",
+            "--no-approve",
+            "--pi-fixed-arg",
+            "-ne",
+        ]);
+    } else {
+        command.args([
             "--provider",
             "controlled-wire",
             "--model",
             "neutral-fixture",
-            "--reasoning",
-            "low",
-        ])
+        ]);
+    }
+    command
         .env("HOME", root.join("home"))
+        .env("WG_PI_PROCESS_ARGV_FILE", root.join("pi-argv.json"))
         .env("XDG_CACHE_HOME", root.join("cache"))
         .env("WG_PI_PROCESS_TEST_SCENARIO", scenario)
         // This subprocess is the isolated system under test, not a nested WG
@@ -152,6 +170,22 @@ fn production_process_adapter_reconciles_completion_before_yield_duplicate_and_n
         let stream = String::from_utf8(output.stdout).unwrap();
         assert_eq!(stream.matches("ONE_CONTINUATION").count(), 1);
         assert_eq!(stream.matches("\"toolCallId\":\"start-1\"").count(), 1);
+        let argv: Vec<String> =
+            serde_json::from_slice(&std::fs::read(temp.path().join("pi-argv.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            argv.iter()
+                .position(|arg| arg == "--mode")
+                .map(|index| argv[index + 1].as_str()),
+            Some("rpc")
+        );
+        assert!(argv.iter().any(|arg| arg == "--no-approve"), "{argv:?}");
+        assert!(argv.iter().any(|arg| arg == "-ne"), "{argv:?}");
+        if scenario == "race-success" {
+            let model_index = argv.iter().position(|arg| arg == "--model").unwrap();
+            assert_eq!(argv[model_index + 1], "openai-codex/gpt-5.6-sol");
+            assert!(!argv.iter().any(|arg| arg == "--provider"));
+        }
 
         let evidence: serde_json::Value =
             serde_json::from_slice(&std::fs::read(temp.path().join("evidence.json")).unwrap())

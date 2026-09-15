@@ -519,8 +519,35 @@ fn rpc_spawn_args_with_processes(
     dist_entry: &Path,
     process_extension: Option<&Path>,
 ) -> Vec<String> {
-    let mut args = vec!["--mode".to_string(), "rpc".to_string()];
-    if let Some(marg) = marg {
+    rpc_spawn_args_with_selection(
+        marg,
+        None,
+        None,
+        reasoning,
+        session_id,
+        session_dir,
+        dist_entry,
+        process_extension,
+    )
+}
+
+fn rpc_spawn_args_with_selection(
+    marg: Option<&PiModelArg>,
+    opaque_model: Option<&str>,
+    pinned_fixed_argv: Option<&[String]>,
+    reasoning: Option<ReasoningLevel>,
+    session_id: &str,
+    session_dir: &Path,
+    dist_entry: &Path,
+    process_extension: Option<&Path>,
+) -> Vec<String> {
+    let mut args = pinned_fixed_argv.map_or_else(
+        || vec!["--mode".to_string(), "rpc".to_string()],
+        <[String]>::to_vec,
+    );
+    if let Some(selection) = opaque_model {
+        args.extend(["--model".to_string(), selection.to_string()]);
+    } else if let Some(marg) = marg {
         args.extend([
             "--provider".to_string(),
             marg.provider.clone(),
@@ -536,18 +563,21 @@ fn rpc_spawn_args_with_processes(
         session_id.to_string(),
         "--session-dir".to_string(),
         session_dir.to_string_lossy().to_string(),
-        "--no-approve".to_string(),
-        // Hermetic plugin load: exactly the embedded build, no discovery.
-        "-e".to_string(),
-        dist_entry.to_string_lossy().to_string(),
     ]);
+    if pinned_fixed_argv.is_none() {
+        args.push("--no-approve".to_string());
+    }
+    // Hermetic plugin load: exactly the embedded build, no discovery.
+    args.extend(["-e".to_string(), dist_entry.to_string_lossy().to_string()]);
     if let Some(process_extension) = process_extension {
         args.extend([
             "-e".to_string(),
             process_extension.to_string_lossy().to_string(),
         ]);
     }
-    args.push("-ne".to_string());
+    if pinned_fixed_argv.is_none() {
+        args.push("-ne".to_string());
+    }
     args
 }
 
@@ -1171,6 +1201,83 @@ struct ProcessWakeRecord {
     log_reference: Option<String>,
 }
 
+#[cfg(unix)]
+static PROCESS_ADAPTER_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+#[cfg(unix)]
+extern "C" fn process_adapter_signal(signal: libc::c_int) {
+    PROCESS_ADAPTER_SIGNAL.store(signal, std::sync::atomic::Ordering::Release);
+}
+
+struct OwnedRpcProcess {
+    child: Child,
+    #[cfg(unix)]
+    pi_group: libc::pid_t,
+    managed_groups: std::collections::BTreeSet<u32>,
+    grace: std::time::Duration,
+    finished: bool,
+}
+
+impl OwnedRpcProcess {
+    fn record_managed(&mut self, pid: u32) {
+        self.managed_groups.insert(pid);
+    }
+
+    fn forget_managed(&mut self, pid: u32) {
+        self.managed_groups.remove(&pid);
+    }
+
+    fn terminate_and_reap(&mut self) {
+        if self.finished {
+            return;
+        }
+        #[cfg(unix)]
+        unsafe {
+            // Each managed-process PID is a group leader (`detached: true` in
+            // the pinned extension). Signal only groups learned from a
+            // successful process-start receipt, then the separately-owned Pi
+            // session. No process-name scans or guessed ancestry are used.
+            for pid in &self.managed_groups {
+                libc::kill(-(*pid as libc::pid_t), libc::SIGTERM);
+            }
+            libc::kill(-self.pi_group, libc::SIGTERM);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = self.child.kill();
+        }
+        let deadline = std::time::Instant::now() + self.grace;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => {
+                    self.finished = true;
+                    return;
+                }
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                _ => break,
+            }
+        }
+        #[cfg(unix)]
+        unsafe {
+            for pid in &self.managed_groups {
+                libc::kill(-(*pid as libc::pid_t), libc::SIGKILL);
+            }
+            libc::kill(-self.pi_group, libc::SIGKILL);
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.finished = true;
+    }
+}
+
+impl Drop for OwnedRpcProcess {
+    fn drop(&mut self) {
+        self.terminate_and_reap();
+    }
+}
+
 fn bounded_evidence_text(value: Option<&str>) -> String {
     value
         .unwrap_or_default()
@@ -1245,28 +1352,76 @@ pub fn run_process_worker(
     evidence_file: &Path,
     process_extension: &Path,
     pi_command: &Path,
-    provider: &str,
-    model: &str,
+    provider: Option<&str>,
+    model: Option<&str>,
+    opaque_model: Option<&str>,
+    pinned_fixed_argv: &[String],
     reasoning: &str,
+    pinned_wg_extension: Option<&Path>,
+    pinned_wg_plugin_root: Option<&Path>,
+    pinned_wg_plugin_compat: Option<&str>,
+    timeout_secs: u64,
+    cancellation_grace_secs: u64,
 ) -> Result<()> {
     verify_process_extension(process_extension)?;
     let reasoning = reasoning.parse::<ReasoningLevel>()?;
-    let plugin = pi_plugin::ensure_pi_plugin(EnsureMode::Hermetic)
-        .context("ensure the version-locked WG Pi plugin")?;
+    let resolved_plugin;
+    let (wg_extension, wg_plugin_root, wg_plugin_compat) = match (
+        pinned_wg_extension,
+        pinned_wg_plugin_root,
+        pinned_wg_plugin_compat,
+    ) {
+        (Some(extension), Some(root), Some(compat)) => (extension, root, compat),
+        (None, None, None) => {
+            resolved_plugin = pi_plugin::ensure_pi_plugin(EnsureMode::Hermetic)
+                .context("ensure the version-locked WG Pi plugin")?;
+            (
+                resolved_plugin.dist_entry.as_path(),
+                resolved_plugin.root.as_path(),
+                resolved_plugin.compat.as_str(),
+            )
+        }
+        _ => anyhow::bail!(
+            "WG-OPAQUE-LAUNCH-PLAN-INCOMPLETE: pinned WG extension/root/compat must be supplied together"
+        ),
+    };
+    if opaque_model.is_some() == provider.is_some() || provider.is_some() != model.is_some() {
+        anyhow::bail!(
+            "Pi process worker requires exactly one opaque model or one complete legacy provider/model pair"
+        );
+    }
+    let pinned_fixed_argv = if opaque_model.is_some() {
+        let required = ["--mode", "rpc", "--no-approve", "-ne"];
+        if pinned_fixed_argv.iter().map(String::as_str).ne(required) {
+            anyhow::bail!(
+                "WG-OPAQUE-LAUNCH-PLAN-INCOMPLETE: managed RPC fixed argv does not match the assignment contract"
+            );
+        }
+        Some(pinned_fixed_argv)
+    } else {
+        if !pinned_fixed_argv.is_empty() {
+            anyhow::bail!(
+                "stable split-route process worker must not receive experimental fixed argv"
+            );
+        }
+        None
+    };
     std::fs::create_dir_all(session_dir)?;
-    let marg = PiModelArg {
+    let marg = provider.zip(model).map(|(provider, model)| PiModelArg {
         provider: provider.to_string(),
         model: model.to_string(),
-    };
-    let args = rpc_spawn_args_with_processes(
-        Some(&marg),
+    });
+    let args = rpc_spawn_args_with_selection(
+        marg.as_ref(),
+        opaque_model,
+        pinned_fixed_argv,
         Some(reasoning),
         session_id,
         session_dir,
-        &plugin.dist_entry,
+        wg_extension,
         Some(process_extension),
     );
-    let child_env = plugin_child_env(&plugin.compat, &plugin.root, workgraph_dir, task_id);
+    let child_env = plugin_child_env(wg_plugin_compat, wg_plugin_root, workgraph_dir, task_id);
     let mut command = Command::new(pi_command);
     command
         .args(args)
@@ -1277,9 +1432,58 @@ pub fn run_process_worker(
     for (key, value) in child_env {
         command.env(key, value);
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid only changes the child process's session/group before
+        // exec. Failure is returned so ownership is never guessed.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        PROCESS_ADAPTER_SIGNAL.store(0, std::sync::atomic::Ordering::Release);
+        // SAFETY: this standalone internal adapter owns its signal lifecycle;
+        // the handler only stores an atomic integer and is async-signal-safe.
+        unsafe {
+            libc::signal(
+                libc::SIGTERM,
+                process_adapter_signal as *const () as libc::sighandler_t,
+            );
+            libc::signal(
+                libc::SIGINT,
+                process_adapter_signal as *const () as libc::sighandler_t,
+            );
+        }
+    }
     let mut child = command.spawn().context("spawn retained `pi --mode rpc`")?;
+    #[cfg(unix)]
+    let pi_group = {
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: getpgid is a read-only process identity query.
+        let observed = unsafe { libc::getpgid(pid) };
+        if observed != pid {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!(
+                "WG-PI-PROCESS-OWNERSHIP-AMBIGUOUS: child pid={pid} pgid={observed}; refusing managed execution"
+            );
+        }
+        observed
+    };
     let mut stdin = child.stdin.take().context("retained Pi stdin")?;
     let stdout = child.stdout.take().context("retained Pi stdout")?;
+    let mut owned = OwnedRpcProcess {
+        child,
+        #[cfg(unix)]
+        pi_group,
+        managed_groups: std::collections::BTreeSet::new(),
+        grace: std::time::Duration::from_secs(cancellation_grace_secs.max(1)),
+        finished: false,
+    };
     let prompt = std::fs::read_to_string(prompt_file)
         .with_context(|| format!("read task prompt {}", prompt_file.display()))?;
     serde_json::to_writer(
@@ -1302,19 +1506,63 @@ pub fn run_process_worker(
     let mut turn_end_count = 0_u64;
     let mut completion_min_turn_end: Option<u64> = None;
     let mut out = std::io::stdout().lock();
-    let mut reader = BufReader::new(stdout);
-    let mut bytes = Vec::new();
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<std::io::Result<Vec<u8>>>();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut bytes = Vec::new();
+            match reader.read_until(b'\n', &mut bytes) {
+                Ok(0) => {
+                    let _ = line_tx.send(Ok(Vec::new()));
+                    break;
+                }
+                Ok(_) => {
+                    if line_tx.send(Ok(bytes)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = line_tx.send(Err(error));
+                    break;
+                }
+            }
+        }
+    });
+    let deadline = (timeout_secs > 0)
+        .then(|| std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs));
 
     loop {
-        bytes.clear();
-        let read = reader.read_until(b'\n', &mut bytes)?;
-        if read == 0 {
+        #[cfg(unix)]
+        {
+            let signal = PROCESS_ADAPTER_SIGNAL.load(std::sync::atomic::Ordering::Acquire);
+            if signal != 0 {
+                owned.terminate_and_reap();
+                anyhow::bail!(
+                    "WG-PI-PROCESS-CANCELLED: signal {signal}; all receipt-bound managed groups and the Pi session were terminated and reaped"
+                );
+            }
+        }
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            owned.terminate_and_reap();
             anyhow::bail!(
-                "WG-PI-PROCESS-DISCONNECTED: retained Pi RPC session {} disappeared; evidence preserved at {}; refusing blind command replay",
-                session_id,
-                evidence_file.display()
+                "WG-PI-PROCESS-TIMEOUT: pinned adapter deadline of {timeout_secs}s elapsed; owned descendants were terminated and reaped"
             );
         }
+        let bytes = match line_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(Ok(bytes)) if bytes.is_empty() => {
+                anyhow::bail!(
+                    "WG-PI-PROCESS-DISCONNECTED: retained Pi RPC session {} disappeared; evidence preserved at {}; refusing blind command replay",
+                    session_id,
+                    evidence_file.display()
+                );
+            }
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(error)) => return Err(error.into()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                anyhow::bail!("WG-PI-PROCESS-DISCONNECTED: RPC reader disappeared")
+            }
+        };
         out.write_all(&bytes)?;
         out.flush()?;
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -1341,9 +1589,13 @@ pub fn run_process_worker(
                 && !completed.contains(id)
             {
                 active.insert(id.to_string());
+                let process_pid = process.get("pid").and_then(|v| v.as_u64());
+                if let Some(pid) = process_pid.and_then(|pid| u32::try_from(pid).ok()) {
+                    owned.record_managed(pid);
+                }
                 evidence.processes.push(ProcessWakeRecord {
                     id: id.to_string(),
-                    pid: process.get("pid").and_then(|v| v.as_u64()),
+                    pid: process_pid,
                     command: bounded_evidence_text(process.get("command").and_then(|v| v.as_str())),
                     status: "running".to_string(),
                     exit_code: None,
@@ -1374,6 +1626,15 @@ pub fn run_process_worker(
                     evidence.duplicate_events = evidence.duplicate_events.saturating_add(1);
                 } else {
                     active.remove(id);
+                    let completed_pid = evidence
+                        .processes
+                        .iter()
+                        .find(|p| p.id == id)
+                        .and_then(|record| record.pid)
+                        .and_then(|pid| u32::try_from(pid).ok());
+                    if let Some(pid) = completed_pid {
+                        owned.forget_managed(pid);
+                    }
                     if let Some(record) = evidence.processes.iter_mut().find(|p| p.id == id) {
                         record.status = bounded_evidence_text(
                             details
@@ -1429,8 +1690,7 @@ pub fn run_process_worker(
             // Pi 0.84 accepts EOF/process termination as the headless RPC
             // shutdown boundary; do not block indefinitely on an extension
             // command response that this protocol version does not emit.
-            let _ = child.kill();
-            let _ = child.wait();
+            owned.terminate_and_reap();
             return Ok(());
         }
     }

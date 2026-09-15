@@ -30,19 +30,86 @@ pub fn experiment_enabled() -> bool {
         .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
 }
 
-/// Runtime selection.  There are deliberately no provider, endpoint, registry,
+/// Non-secret identity of one path consumed by a Pi invocation. The digest
+/// authenticates bytes without serializing settings, extension source, or
+/// credentials into an assignment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedPathIdentity {
+    pub path: PathBuf,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PiInvocationKind {
+    WorkerJson,
+    HermeticReview,
+    ManagedProcessRpc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PiWorkingDirectoryPolicy {
+    /// Capability query runs in `capability_cwd`; execution is bound to the
+    /// exact attempt workspace when the assignment gains attempt authority.
+    AttemptWorkspace,
+    Exact,
+}
+
+/// Complete non-secret Pi invocation policy. Capability and execution argv
+/// are separate fields so `--offline --list-models` is an explicit phase
+/// delta rather than a hidden second resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PiLaunchPlan {
+    pub invocation_kind: PiInvocationKind,
+    pub executable: PinnedPathIdentity,
+    pub fixed_argv: Vec<String>,
+    pub capability_argv: Vec<String>,
+    pub config_root: PathBuf,
+    pub config_identity: String,
+    pub executor_config: PinnedPathIdentity,
+    pub extension_policy: String,
+    pub extension_identities: Vec<PinnedPathIdentity>,
+    pub tool_policy: String,
+    pub capability_cwd: PathBuf,
+    pub working_directory_policy: PiWorkingDirectoryPolicy,
+    /// Exact review cwd, or the resolved worker attempt workspace once bound.
+    pub execution_cwd: Option<PathBuf>,
+    pub prompt_policy: String,
+    pub session_policy: String,
+    pub timeout_secs: Option<u64>,
+    pub cancellation_grace_secs: u64,
+    pub network_policy: String,
+    /// Pi owns credential lookup and token refresh. This descriptive boundary
+    /// is intentionally stable while auth bytes remain mutable and unrecorded.
+    pub authentication_boundary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_process_extension: Option<PinnedPathIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wg_extension: Option<PinnedPathIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wg_plugin_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wg_plugin_compat: Option<String>,
+}
+
+/// Runtime selection. There are deliberately no provider, endpoint, registry,
 /// handler, tier, or fallback fields in the Pi variant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeExecution {
     Pi {
-        /// Exact configured Pi executable used by both preflight and launch.
+        /// Exact configured Pi executable retained for historical readers.
         program: PathBuf,
         /// Every byte after the single outer `pi:` envelope.
         opaque_route: String,
         reasoning: ReasoningLevel,
         /// `None` is an explicitly fresh session; `Some` pins exact resume id.
         session_id: Option<String>,
+        /// Historical assignment files omitted the complete plan. They remain
+        /// readable, but cannot be launched by the repaired experiment.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_plan: Option<Box<PiLaunchPlan>>,
     },
     Shell {
         /// Exact argv, including argv[0]. No shell parsing occurs after assignment.
@@ -57,6 +124,8 @@ pub enum RuntimeExecution {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionAssignment {
+    /// Assignment envelope schema. The launch plan is an optional additive
+    /// field within v1 so pre-plan historical records remain readable.
     pub schema: u32,
     pub task_id: String,
     /// Agency identity selected during authoring, or an explicit direct marker.
@@ -77,6 +146,10 @@ pub struct BoundExecutionAssignment {
     pub generation: u64,
     pub attempt_id: String,
     pub attempt_fence: u64,
+    /// Exact cwd resolved from the authored AttemptWorkspace policy. Historical
+    /// files omit it and remain readable, but repaired launches always persist it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +195,13 @@ struct PreflightBackoffEntry {
 fn assignment_preflight_key(assignment: &ExecutionAssignment) -> String {
     let bytes = serde_json::to_vec(assignment).expect("assignment serializes");
     blake3::hash(&bytes).to_hex().to_string()
+}
+
+/// Stable coalescing identity for admission evidence about this exact plan.
+/// It contains no route or credential bytes.
+#[must_use]
+pub fn preflight_notification_key(assignment: &ExecutionAssignment) -> String {
+    assignment_preflight_key(assignment)
 }
 
 fn unix_ms(now: SystemTime) -> u64 {
@@ -223,8 +303,328 @@ fn record_preflight_outcome_at(
     save_backoff(dir, &state)
 }
 
-/// Resolve authoring policy once.  This is the only experiment function which
-/// may consult role/tier/profile policy.  Runtime code receives the result.
+fn digest_bytes(bytes: &[u8]) -> String {
+    format!("b3:{}", blake3::hash(bytes).to_hex())
+}
+
+fn pinned_path(path: impl AsRef<Path>) -> PinnedPathIdentity {
+    let path = pin_executable(path.as_ref());
+    let digest = std::fs::read(&path)
+        .map(|bytes| digest_bytes(&bytes))
+        .unwrap_or_else(|_| "missing".to_string());
+    PinnedPathIdentity { path, digest }
+}
+
+fn pi_config_root() -> PathBuf {
+    let root = std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".pi/agent")))
+        .or_else(|| dirs::home_dir().map(|home| home.join(".pi/agent")))
+        .unwrap_or_else(|| PathBuf::from(".pi/agent"));
+    if root.is_absolute() {
+        root
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(root)
+    }
+}
+
+/// Digest only non-secret configuration surfaces which may change model
+/// registration or invocation behavior. Authentication stores are deliberately
+/// excluded so Pi can refresh OAuth tokens while an assignment is live.
+fn pi_config_identity(root: &Path) -> String {
+    let mut material = Vec::new();
+    material.extend_from_slice(root.to_string_lossy().as_bytes());
+    for relative in ["settings.json", "models.json", "models-store.json"] {
+        material.extend_from_slice(relative.as_bytes());
+        match std::fs::read(root.join(relative)) {
+            Ok(bytes) => material.extend_from_slice(blake3::hash(&bytes).as_bytes()),
+            Err(_) => material.extend_from_slice(b"missing"),
+        }
+    }
+    digest_bytes(&material)
+}
+
+fn executor_config_identity(
+    project_root: &Path,
+    settings: &crate::service::executor::ExecutorSettings,
+) -> PinnedPathIdentity {
+    let path = project_root.join(".wg/executors/pi.toml");
+    if path.is_file() {
+        return pinned_path(path);
+    }
+    PinnedPathIdentity {
+        path: PathBuf::from("<built-in-pi-executor>"),
+        digest: digest_bytes(&serde_json::to_vec(settings).expect("executor settings serialize")),
+    }
+}
+
+fn reserved_pi_flag(arg: &str) -> bool {
+    let name = arg.split_once('=').map_or(arg, |(name, _)| name);
+    matches!(
+        name,
+        "--provider"
+            | "--model"
+            | "-m"
+            | "--thinking"
+            | "--session"
+            | "--session-id"
+            | "--session-dir"
+            | "--resume"
+            | "-r"
+            | "--continue"
+            | "-c"
+            | "--prompt"
+            | "-p"
+            | "--extension"
+            | "-e"
+            | "--no-extensions"
+            | "-ne"
+            | "--tools"
+            | "-t"
+            | "--no-tools"
+            | "-nt"
+            | "--no-builtin-tools"
+            | "-nbt"
+            | "--exclude-tools"
+            | "-xt"
+            | "--offline"
+            | "--api-key"
+            | "--no-session"
+            | "--mode"
+            | "--no-context-files"
+            | "-nc"
+            | "--skill"
+            | "--no-skills"
+            | "-ns"
+            | "--prompt-template"
+            | "--no-prompt-templates"
+            | "-np"
+    )
+}
+
+fn worker_launch_plan(
+    task: &Task,
+    config: &Config,
+    program: &Path,
+    project_root: &Path,
+) -> Result<PiLaunchPlan> {
+    let executor = crate::service::executor::ExecutorRegistry::new(&project_root.join(".wg"))
+        .load_config("pi")?
+        .executor;
+    if executor.executor_type != "pi" {
+        bail!(
+            "error[WG-OPAQUE-ASSIGNMENT-CONFIG]: Pi executor config changed type to {:?}",
+            executor.executor_type
+        );
+    }
+    let pinned_program = pin_executable(program);
+    let custom_executor_path = project_root.join(".wg/executors/pi.toml");
+    if custom_executor_path.is_file()
+        && pin_executable(Path::new(&executor.command)) != pinned_program
+    {
+        bail!(
+            "error[WG-OPAQUE-ASSIGNMENT-CONFIG]: configured Pi executable changed while authoring (selected={} configured={})",
+            pinned_program.display(),
+            executor.command
+        );
+    }
+    if executor
+        .env
+        .iter()
+        .any(|(key, value)| key != "WG_TASK_ID" || value != "{{task_id}}")
+    {
+        bail!(
+            "error[WG-OPAQUE-ASSIGNMENT-CONFIG]: experimental Pi executor env must remain wrapper-owned; custom env (which may contain secrets) is not serializable"
+        );
+    }
+    let mut fixed_argv = Vec::new();
+    let mut args = executor.args.iter();
+    while let Some(arg) = args.next() {
+        if matches!(arg.as_str(), "--prompt" | "-p") {
+            let _ = args.next().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "error[WG-OPAQUE-ASSIGNMENT-ARGV-CONFLICT]: configured prompt flag has no value"
+                )
+            })?;
+            continue;
+        }
+        if arg == "--mode" {
+            let value = args.next().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "error[WG-OPAQUE-ASSIGNMENT-ARGV-CONFLICT]: configured --mode has no value"
+                )
+            })?;
+            if value != "json" {
+                bail!(
+                    "error[WG-OPAQUE-ASSIGNMENT-ARGV-CONFLICT]: worker Pi mode must be json, got {value:?}"
+                );
+            }
+            continue;
+        }
+        if reserved_pi_flag(arg) {
+            bail!(
+                "error[WG-OPAQUE-ASSIGNMENT-ARGV-CONFLICT]: configured Pi argv contains WG-owned selector/policy flag {arg:?}"
+            );
+        }
+        fixed_argv.push(arg.clone());
+    }
+    let managed_process_extension = std::env::var_os("WG_PI_PROCESS_WAKE_EXTENSION")
+        .map(PathBuf::from)
+        .map(|path| {
+            if !path.is_absolute() {
+                bail!("error[WG-OPAQUE-ASSIGNMENT-CONFIG]: WG_PI_PROCESS_WAKE_EXTENSION must be an absolute path");
+            }
+            let identity = pinned_path(path);
+            if identity.digest == "missing" {
+                bail!("error[WG-OPAQUE-ASSIGNMENT-CONFIG]: managed process extension is unavailable at {}", identity.path.display());
+            }
+            Ok(identity)
+        })
+        .transpose()?;
+    if managed_process_extension.is_some() {
+        if !fixed_argv.is_empty() {
+            bail!(
+                "error[WG-OPAQUE-ASSIGNMENT-ARGV-CONFLICT]: managed-process Pi does not accept custom executor argv because the RPC adapter must own its complete invocation"
+            );
+        }
+        fixed_argv.extend([
+            "--mode".to_string(),
+            "rpc".to_string(),
+            "--no-approve".to_string(),
+            "-ne".to_string(),
+        ]);
+    } else {
+        fixed_argv.extend([
+            "--mode".to_string(),
+            "json".to_string(),
+            "-ne".to_string(),
+            "--no-skills".to_string(),
+            "--no-prompt-templates".to_string(),
+            "--no-context-files".to_string(),
+        ]);
+    }
+    let config_root = pi_config_root();
+    let task_timeout = task
+        .timeout
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            crate::graph::parse_delay(value).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "error[WG-OPAQUE-ASSIGNMENT-CONFIG]: invalid task timeout {value:?}"
+                )
+            })
+        })
+        .transpose()?;
+    let coordinator_timeout = (!config.coordinator.agent_timeout.is_empty())
+        .then(|| crate::graph::parse_delay(&config.coordinator.agent_timeout))
+        .flatten();
+    let timeout_secs = task_timeout.or(executor.timeout).or(coordinator_timeout);
+    let wg_plugin = crate::pi_plugin::ensure_pi_plugin(crate::pi_plugin::EnsureMode::Hermetic)
+        .context("prepare exact WG extension for opaque Pi worker assignment")?;
+    let wg_extension = Some(pinned_path(&wg_plugin.dist_entry));
+    let mut extension_identities: Vec<_> = managed_process_extension.clone().into_iter().collect();
+    extension_identities.extend(wg_extension.clone());
+    Ok(PiLaunchPlan {
+        invocation_kind: if managed_process_extension.is_some() {
+            PiInvocationKind::ManagedProcessRpc
+        } else {
+            PiInvocationKind::WorkerJson
+        },
+        executable: pinned_path(&pinned_program),
+        fixed_argv,
+        capability_argv: vec![
+            "--offline".into(), "-ne".into(), "--no-skills".into(),
+            "--no-prompt-templates".into(), "--no-context-files".into(),
+        ],
+        config_root: config_root.clone(),
+        config_identity: pi_config_identity(&config_root),
+        executor_config: executor_config_identity(project_root, &executor),
+        extension_policy: if managed_process_extension.is_some() {
+            "discovery disabled; exact managed-process and WG extensions are adapter-owned".into()
+        } else {
+            "discovery disabled; exact version-locked WG extension only".into()
+        },
+        extension_identities,
+        tool_policy: if managed_process_extension.is_some() {
+            "Pi built-ins plus exact process and WG graph tools; graph authority remains wrapper-scoped".into()
+        } else {
+            "Pi built-ins plus exact version-locked WG graph tools".into()
+        },
+        capability_cwd: project_root.to_path_buf(),
+        working_directory_policy: PiWorkingDirectoryPolicy::AttemptWorkspace,
+        execution_cwd: None,
+        prompt_policy: "assembled WG task prompt on stdin with fixed -p instruction".into(),
+        session_policy: task.session_id.as_ref().map_or_else(
+            || "fresh exact generated session".into(),
+            |id| format!("resume exact session:{id}"),
+        ),
+        timeout_secs,
+        cancellation_grace_secs: 5,
+        network_policy: "capability=offline; execution=Pi-configured network".into(),
+        authentication_boundary: "Pi-owned mutable credential/token refresh; auth bytes excluded from assignment identity".into(),
+        managed_process_extension,
+        wg_extension,
+        wg_plugin_root: Some(wg_plugin.root.clone()),
+        wg_plugin_compat: Some(wg_plugin.compat),
+    })
+}
+
+fn review_launch_plan(program: &Path, timeout_secs: Option<u64>) -> PiLaunchPlan {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let config_root = pi_config_root();
+    let settings = crate::service::executor::ExecutorSettings {
+        executor_type: "pi".into(),
+        command: program.to_string_lossy().into_owned(),
+        args: Vec::new(),
+        env: std::collections::HashMap::new(),
+        prompt_template: None,
+        working_dir: None,
+        timeout: timeout_secs,
+        model: None,
+    };
+    PiLaunchPlan {
+        invocation_kind: PiInvocationKind::HermeticReview,
+        executable: pinned_path(program),
+        fixed_argv: vec![
+            "--mode".into(), "json".into(), "--print".into(), "-ne".into(),
+            "--no-tools".into(), "--no-context-files".into(), "--no-skills".into(),
+            "--no-prompt-templates".into(), "--no-session".into(),
+        ],
+        capability_argv: vec![
+            "--offline".into(), "-ne".into(), "--no-tools".into(),
+            "--no-context-files".into(), "--no-skills".into(),
+            "--no-prompt-templates".into(), "--no-session".into(),
+        ],
+        config_root: config_root.clone(),
+        config_identity: pi_config_identity(&config_root),
+        executor_config: PinnedPathIdentity {
+            path: PathBuf::from("<hermetic-review-built-in>"),
+            digest: digest_bytes(&serde_json::to_vec(&settings).expect("review settings serialize")),
+        },
+        extension_policy: "discovery disabled; no extensions".into(),
+        extension_identities: Vec::new(),
+        tool_policy: "all tools disabled".into(),
+        capability_cwd: cwd.clone(),
+        working_directory_policy: PiWorkingDirectoryPolicy::Exact,
+        execution_cwd: Some(cwd),
+        prompt_policy: "one prompt on stdin; print/json response".into(),
+        session_policy: "ephemeral; no session".into(),
+        timeout_secs,
+        cancellation_grace_secs: 5,
+        network_policy: "capability=offline; execution=Pi-configured network".into(),
+        authentication_boundary: "Pi-owned mutable credential/token refresh; auth bytes excluded from assignment identity".into(),
+        managed_process_extension: None,
+        wg_extension: None,
+        wg_plugin_root: None,
+        wg_plugin_compat: None,
+    }
+}
+
+/// Resolve authoring policy once. This is the only experiment function which
+/// may consult role/tier/profile policy. Runtime code receives the result.
 pub fn resolve(
     task: &Task,
     config: &Config,
@@ -310,13 +710,12 @@ pub fn resolve(
             })?;
         (route.route, reasoning)
     } else {
-        let route = config.resolve_execution_route_for_role(role)?;
-        let reasoning = task.reasoning.or(route.reasoning).ok_or_else(|| {
+        let route = config.resolve_opaque_pi_route_for_role(role).map_err(|error| {
             anyhow::anyhow!(
-                "error[WG-EXEC-REASONING-MISSING]: role={role} route={:?} has no pinned reasoning",
-                route.route
+                "error[WG-OPAQUE-LEGACY-ACTIVE]: role selection is not a safe outer Pi envelope and was not migrated: {error:#}"
             )
         })?;
+        let reasoning = task.reasoning.unwrap_or(route.reasoning);
         (route.route, reasoning)
     };
 
@@ -332,8 +731,20 @@ pub fn resolve(
         resolved.1,
         pi_program,
     )?;
-    if let RuntimeExecution::Pi { session_id, .. } = &mut assignment.execution {
+    if let RuntimeExecution::Pi {
+        session_id,
+        launch_plan,
+        program,
+        ..
+    } = &mut assignment.execution
+    {
         *session_id = task.session_id.clone();
+        *launch_plan = Some(Box::new(worker_launch_plan(
+            task,
+            config,
+            program,
+            shell_working_directory.as_ref(),
+        )?));
     }
     assignment.authoring_fingerprint = task_authoring_fingerprint(
         task,
@@ -357,14 +768,33 @@ pub fn resolved_pi_assignment(
     reasoning: ReasoningLevel,
     pi_program: impl AsRef<Path>,
 ) -> Result<ExecutionAssignment> {
-    let opaque_route = authored_route.strip_prefix("pi:").ok_or_else(|| {
+    resolved_pi_assignment_with_timeout(
+        task_id,
+        agent_identity,
+        role,
+        config_revision,
+        authored_route,
+        reasoning,
+        pi_program,
+        None,
+    )
+}
+
+pub fn resolved_pi_assignment_with_timeout(
+    task_id: &str,
+    agent_identity: &str,
+    role: DispatchRole,
+    config_revision: &str,
+    authored_route: &str,
+    reasoning: ReasoningLevel,
+    pi_program: impl AsRef<Path>,
+    timeout_secs: Option<u64>,
+) -> Result<ExecutionAssignment> {
+    let opaque_route = crate::config::parse_opaque_pi_route(authored_route).map_err(|error| {
         anyhow::anyhow!(
-            "error[WG-OPAQUE-LEGACY-ACTIVE]: experimental execution accepts only an exact outer `pi:` envelope; active route {authored_route:?} needs an explicit loss-aware migration and was not translated"
+            "error[WG-OPAQUE-LEGACY-ACTIVE]: experimental execution accepts only a safe exact outer `pi:` envelope; active route {authored_route:?} needs an explicit operator-declared migration and was not translated: {error}"
         )
     })?;
-    if opaque_route.trim().is_empty() {
-        bail!("error[WG-OPAQUE-PI-ROUTE-MISSING]: `pi:` must carry a non-empty opaque route");
-    }
     Ok(ExecutionAssignment {
         schema: 1,
         task_id: task_id.to_string(),
@@ -385,6 +815,10 @@ pub fn resolved_pi_assignment(
             opaque_route: opaque_route.to_string(),
             reasoning,
             session_id: None,
+            launch_plan: Some(Box::new(review_launch_plan(
+                pi_program.as_ref(),
+                timeout_secs,
+            ))),
         },
     })
 }
@@ -437,7 +871,15 @@ pub fn task_authoring_fingerprint(task: &Task, config_revision: &str) -> String 
 
 pub fn pin_executable(program: &Path) -> PathBuf {
     if program.components().count() > 1 {
-        return std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
+        return std::fs::canonicalize(program).unwrap_or_else(|_| {
+            if program.is_absolute() {
+                program.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(program)
+            }
+        });
     }
     std::env::var_os("PATH")
         .and_then(|path| {
@@ -454,35 +896,30 @@ pub fn pin_executable(program: &Path) -> PathBuf {
 /// model registry.  Exit 2 is Pi's deterministic configuration/capability
 /// rejection contract. Other failures are transient/indeterminate.
 pub fn preflight(assignment: &ExecutionAssignment) -> PiPreflightOutcome {
-    preflight_in_context(assignment, false)
-}
-
-pub fn preflight_hermetic(assignment: &ExecutionAssignment) -> PiPreflightOutcome {
-    preflight_in_context(assignment, true)
-}
-
-fn preflight_in_context(assignment: &ExecutionAssignment, hermetic: bool) -> PiPreflightOutcome {
     let RuntimeExecution::Pi {
-        program,
         opaque_route,
+        launch_plan,
         ..
     } = &assignment.execution
     else {
         return PiPreflightOutcome::Ready;
     };
-
-    if std::env::var_os("WG_PI_PROCESS_WAKE_EXTENSION").is_some() {
+    let Some(plan) = launch_plan.as_deref() else {
         return PiPreflightOutcome::MissingRequiredCapability {
             exit_code: None,
-            diagnostic: "WG-OPAQUE-OPTIONAL-CAPABILITY-UNISOLATED: managed-process wake currently requires provider/model splitting; disable that optional extension or use the stable runtime. No task attempt was admitted.".to_string(),
+            diagnostic: "WG-OPAQUE-LAUNCH-PLAN-MISSING: historical assignment is readable but cannot be executed without a complete pinned invocation".into(),
+        };
+    };
+    if let Err(error) = verify_launch_plan(plan) {
+        return PiPreflightOutcome::MissingRequiredCapability {
+            exit_code: None,
+            diagnostic: format!("WG-OPAQUE-LAUNCH-IDENTITY-CHANGED: {error:#}"),
         };
     }
-
-    let mut command = Command::new(program);
-    command.arg("--offline");
-    if hermetic {
-        command.arg("-ne");
-    }
+    let mut command = Command::new(&plan.executable.path);
+    command.args(&plan.capability_argv);
+    command.current_dir(&plan.capability_cwd);
+    command.env("PI_CODING_AGENT_DIR", &plan.config_root);
     let output = command
         .arg("--list-models")
         .arg(opaque_route)
@@ -529,7 +966,7 @@ fn preflight_in_context(assignment: &ExecutionAssignment, hermetic: bool) -> PiP
                 exit_code: None,
                 diagnostic: format!(
                     "Pi executable {} is unavailable: {error}",
-                    program.display()
+                    plan.executable.path.display()
                 ),
             }
         }
@@ -537,10 +974,53 @@ fn preflight_in_context(assignment: &ExecutionAssignment, hermetic: bool) -> PiP
             exit_code: None,
             diagnostic: format!(
                 "Pi preflight could not start {}: {error}",
-                program.display()
+                plan.executable.path.display()
             ),
         },
     }
+}
+
+pub fn verify_launch_plan(plan: &PiLaunchPlan) -> Result<()> {
+    let executable = pinned_path(&plan.executable.path);
+    if executable != plan.executable {
+        bail!(
+            "pinned Pi executable identity changed (expected={} {} observed={})",
+            plan.executable.path.display(),
+            plan.executable.digest,
+            executable.digest
+        );
+    }
+    let observed_config = pi_config_identity(&plan.config_root);
+    if observed_config != plan.config_identity {
+        bail!(
+            "Pi non-secret configuration identity changed (expected={} observed={}); mutable auth/token refresh files are not part of either identity",
+            plan.config_identity,
+            observed_config
+        );
+    }
+    if !matches!(
+        plan.executor_config.path.to_str(),
+        Some("<hermetic-review-built-in>" | "<built-in-pi-executor>")
+    ) {
+        let observed_digest = if plan.executor_config.path.is_file() {
+            pinned_path(&plan.executor_config.path).digest
+        } else {
+            "missing".into()
+        };
+        if observed_digest != plan.executor_config.digest {
+            bail!(
+                "configured Pi invocation changed after pinning at {}",
+                plan.executor_config.path.display()
+            );
+        }
+    }
+    for expected in &plan.extension_identities {
+        let observed = pinned_path(&expected.path);
+        if &observed != expected {
+            bail!("pinned Pi extension changed at {}", expected.path.display());
+        }
+    }
+    Ok(())
 }
 
 fn bounded_diagnostic(stderr: &[u8], stdout: &[u8]) -> String {
@@ -598,18 +1078,54 @@ pub fn as_spawn_plan(assignment: &ExecutionAssignment) -> crate::dispatch::Spawn
 }
 
 pub fn bind(
-    assignment: ExecutionAssignment,
+    mut assignment: ExecutionAssignment,
     runtime_agent_id: impl Into<String>,
     generation: u64,
     attempt_id: impl Into<String>,
     attempt_fence: u64,
+    execution_cwd: Option<PathBuf>,
 ) -> BoundExecutionAssignment {
+    if let RuntimeExecution::Pi {
+        launch_plan: Some(plan),
+        ..
+    } = &mut assignment.execution
+    {
+        if let Some(cwd) = execution_cwd.as_ref() {
+            plan.capability_cwd = cwd.clone();
+        }
+        plan.execution_cwd = execution_cwd.clone();
+    }
     BoundExecutionAssignment {
         assignment,
         runtime_agent_id: runtime_agent_id.into(),
         generation,
         attempt_id: attempt_id.into(),
         attempt_fence,
+        execution_cwd,
+    }
+}
+
+/// Persist content-addressed one-shot invocation identity for reviewer/evaluator
+/// attribution. The object contains only the non-secret assignment; prompts,
+/// credentials and refreshed tokens are never included.
+pub fn persist_oneshot_attribution(
+    dir: &Path,
+    assignment: &ExecutionAssignment,
+) -> Result<PathBuf> {
+    let bytes = serde_json::to_vec_pretty(assignment)?;
+    let object_id = blake3::hash(&bytes).to_hex();
+    let root = dir.join("service/opaque-oneshot-attribution");
+    std::fs::create_dir_all(&root)?;
+    let path = root.join(format!("{object_id}.json"));
+    match crate::atomic_file::write_atomic_create_new(&path, &bytes) {
+        Ok(()) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if std::fs::read(&path)? != bytes {
+                bail!("one-shot attribution object changed at {}", path.display());
+            }
+            Ok(path)
+        }
+        Err(error) => Err(error).with_context(|| format!("persist {}", path.display())),
     }
 }
 
@@ -685,15 +1201,17 @@ mod tests {
             assignment.authored_route,
             "pi:future+wire:model/with:odd:bytes"
         );
-        assert_eq!(
+        assert!(matches!(
             assignment.execution,
             RuntimeExecution::Pi {
-                program: PathBuf::from("/x/pi"),
-                opaque_route: "future+wire:model/with:odd:bytes".into(),
+                program,
+                opaque_route,
                 reasoning: ReasoningLevel::High,
                 session_id: None,
-            }
-        );
+                launch_plan: Some(_),
+            } if program == PathBuf::from("/x/pi")
+                && opaque_route == "future+wire:model/with:odd:bytes"
+        ));
     }
 
     #[test]
@@ -876,7 +1394,14 @@ mod tests {
             temp.path(),
         )
         .unwrap();
-        let bound = bind(assignment, "agent-7", 2, "attempt-2-3", 9);
+        let bound = bind(
+            assignment,
+            "agent-7",
+            2,
+            "attempt-2-3",
+            9,
+            Some(temp.path().to_path_buf()),
+        );
         let first = persist(temp.path(), &bound).unwrap();
         let second = persist(temp.path(), &bound).unwrap();
         assert_eq!(first, second);
@@ -886,6 +1411,14 @@ mod tests {
         assert_eq!(recorded.attempt_fence, 9);
         assert_eq!(recorded.assignment.config_revision, "b3:revision-1");
         assert_eq!(recorded.assignment.authored_route, "pi:test:stable");
+        assert_eq!(recorded.execution_cwd.as_deref(), Some(temp.path()));
+        assert!(matches!(
+            &recorded.assignment.execution,
+            RuntimeExecution::Pi {
+                launch_plan: Some(plan),
+                ..
+            } if plan.execution_cwd.as_deref() == Some(temp.path())
+        ));
 
         let mut changed_same_attempt = bound.clone();
         changed_same_attempt.assignment.config_revision = "b3:illegal-rewrite".into();
@@ -901,7 +1434,14 @@ mod tests {
             temp.path(),
         )
         .unwrap();
-        let next = bind(next_assignment, "agent-8", 3, "attempt-3-1", 10);
+        let next = bind(
+            next_assignment,
+            "agent-8",
+            3,
+            "attempt-3-1",
+            10,
+            Some(temp.path().to_path_buf()),
+        );
         let next_path = persist(temp.path(), &next).unwrap();
         assert_ne!(first, next_path);
         assert_eq!(
@@ -968,6 +1508,59 @@ mod tests {
         assert!(preflight_backoff_remaining_at(temp.path(), &first, t0).is_none());
     }
 
+    #[test]
+    fn historical_assignment_without_launch_plan_is_readable_but_not_executable() {
+        let task = Task {
+            id: "historical".into(),
+            ..Task::default()
+        };
+        let mut assignment = resolve(
+            &task,
+            &config("pi:openai-codex/gpt-5.6-sol", "b3:historical"),
+            DispatchRole::TaskAgent,
+            None,
+            "pi",
+            "/project",
+        )
+        .unwrap();
+        let RuntimeExecution::Pi { launch_plan, .. } = &mut assignment.execution else {
+            unreachable!()
+        };
+        *launch_plan = None;
+        let historical: ExecutionAssignment =
+            serde_json::from_slice(&serde_json::to_vec(&assignment).unwrap()).unwrap();
+        assert!(matches!(
+            preflight(&historical),
+            PiPreflightOutcome::MissingRequiredCapability { diagnostic, .. }
+                if diagnostic.contains("WG-OPAQUE-LAUNCH-PLAN-MISSING")
+        ));
+    }
+
+    #[test]
+    fn pinned_non_secret_pi_config_drift_is_detected_without_freezing_auth() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_root = temp.path().join("pi-config");
+        std::fs::create_dir_all(&config_root).unwrap();
+        std::fs::write(config_root.join("settings.json"), br#"{"theme":"one"}"#).unwrap();
+        let mut plan = review_launch_plan(Path::new("pi"), Some(30));
+        plan.config_root = config_root.clone();
+        plan.config_identity = pi_config_identity(&config_root);
+        verify_launch_plan(&plan).unwrap();
+
+        // Settings/model registration are launch behavior and therefore pinned.
+        std::fs::write(config_root.join("settings.json"), br#"{"theme":"two"}"#).unwrap();
+        assert!(
+            verify_launch_plan(&plan)
+                .unwrap_err()
+                .to_string()
+                .contains("non-secret configuration identity changed")
+        );
+        // Auth/token files are deliberately outside the plan identity.
+        std::fs::write(config_root.join("settings.json"), br#"{"theme":"one"}"#).unwrap();
+        std::fs::write(config_root.join("auth.json"), br#"{"refresh":"rotated"}"#).unwrap();
+        verify_launch_plan(&plan).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn controlled_pi_preflight_preserves_route_and_classifies_pi_status() {
@@ -1003,16 +1596,13 @@ mod tests {
         assert_eq!(preflight(&assignment), PiPreflightOutcome::Ready);
         assert_eq!(
             std::fs::read_to_string(&log).unwrap(),
-            "--offline\n--list-models\nodd+provider:model:alpha/beta\n"
+            "--offline\n-ne\n--no-skills\n--no-prompt-templates\n--no-context-files\n--list-models\nodd+provider:model:alpha/beta\n"
         );
 
         std::fs::write(&fake, "#!/bin/sh\nprintf 'Provider Model\\n'\n").unwrap();
         assert!(matches!(
             preflight(&assignment),
-            PiPreflightOutcome::MissingRequiredCapability {
-                exit_code: Some(0),
-                ..
-            }
+            PiPreflightOutcome::MissingRequiredCapability { .. }
         ));
         std::fs::write(
             &fake,
@@ -1021,15 +1611,12 @@ mod tests {
         .unwrap();
         assert!(matches!(
             preflight(&assignment),
-            PiPreflightOutcome::MissingRequiredCapability {
-                exit_code: Some(0),
-                ..
-            }
+            PiPreflightOutcome::MissingRequiredCapability { .. }
         ));
 
         std::fs::write(
             &fake,
-            "#!/bin/sh\ncase \"$3\" in missing:*) echo pi-rejected >&2; exit 2;; transient:*) echo pi-busy >&2; exit 75;; esac\n",
+            "#!/bin/sh\nroute=''; for route in \"$@\"; do :; done; case \"$route\" in missing:*) echo pi-rejected >&2; exit 2;; transient:*) echo pi-busy >&2; exit 75;; esac\n",
         )
         .unwrap();
         let missing_config = config("pi:missing:exact", "b3:m");

@@ -1942,11 +1942,9 @@ fn record_direct_dispatch_failure(
     recorded
 }
 
-/// Persist exactly one breaker-neutral diagnostic when the transactional spawn
-/// path fails before publishing its launch permit. The task must already be
-/// Open and unassigned: this function records evidence but never repairs or
-/// overwrites ownership. Keying by generation coalesces repeated coordinator
-/// ticks while the operator repairs the same checkout/configuration cause.
+/// Persist one breaker-neutral diagnostic when an opaque launch fails after
+/// preparation but before a launch permit survives. One event per generation
+/// prevents changing incidental error text from producing notification spam.
 fn record_spawn_preparation_deferral(graph_path: &Path, task_id: &str, diagnostic: &str) -> bool {
     let mut recorded = false;
     let diagnostic = diagnostic.to_string();
@@ -1994,7 +1992,22 @@ fn record_spawn_preparation_deferral(graph_path: &Path, task_id: &str, diagnosti
     recorded
 }
 
-fn note_spawn_preparation_deferral(graph_path: &Path, task_id: &str, diagnostic: &str) {
+fn note_spawn_preparation_deferral(
+    summary: &mut SpawnSummary,
+    graph_path: &Path,
+    task_id: &str,
+    diagnostic: &str,
+) {
+    summary.admission_deferred_tasks = summary.admission_deferred_tasks.saturating_add(1);
+    summary
+        .admission_deferred_reason
+        .get_or_insert_with(|| diagnostic.to_string());
+    summary
+        .admission_deferred
+        .push(super::AdmissionDeferredTask {
+            task_id: task_id.to_string(),
+            reason: diagnostic.to_string(),
+        });
     if record_spawn_preparation_deferral(graph_path, task_id, diagnostic) {
         eprintln!(
             "[dispatcher] Deferring '{}': pre-launch preparation rolled back cleanly; no spawn failure charged. Repair and retry: {}",
@@ -2004,11 +2017,17 @@ fn note_spawn_preparation_deferral(graph_path: &Path, task_id: &str, diagnostic:
 }
 
 /// Persist one coalesced lifecycle evidence event for an admission refusal.
-/// Returns true only for the first identical reason in this task generation so
-/// the caller can rate-limit the human log while still reporting every tick in
-/// service status metrics.
-fn record_admission_deferral(graph_path: &Path, task_id: &str, reason: &str) -> bool {
-    let reason_key = blake3::hash(reason.as_bytes()).to_hex();
+/// Returns true only for the first reason/key in this task generation so the
+/// caller can rate-limit the human log while still reporting status metrics.
+fn record_admission_deferral_with_key(
+    graph_path: &Path,
+    task_id: &str,
+    reason: &str,
+    coalesce_key: Option<&str>,
+) -> bool {
+    let reason_key = coalesce_key
+        .map(str::to_string)
+        .unwrap_or_else(|| blake3::hash(reason.as_bytes()).to_hex().to_string());
     let mut recorded = false;
     let _ = modify_graph(graph_path, |graph| {
         let Some(task) = graph.get_task_mut(task_id) else {
@@ -2106,6 +2125,30 @@ fn note_admission_deferral(
     task_id: &str,
     reason: &str,
 ) {
+    note_admission_deferral_with_key(summary, graph_path, task_id, reason, None);
+}
+
+fn note_opaque_preflight_deferral(
+    summary: &mut SpawnSummary,
+    graph_path: &Path,
+    task_id: &str,
+    assignment: &worksgood::execution_assignment::ExecutionAssignment,
+    reason: &str,
+) {
+    let key = format!(
+        "opaque-preflight:{}",
+        worksgood::execution_assignment::preflight_notification_key(assignment)
+    );
+    note_admission_deferral_with_key(summary, graph_path, task_id, reason, Some(&key));
+}
+
+fn note_admission_deferral_with_key(
+    summary: &mut SpawnSummary,
+    graph_path: &Path,
+    task_id: &str,
+    reason: &str,
+    coalesce_key: Option<&str>,
+) {
     summary.admission_deferred_tasks = summary.admission_deferred_tasks.saturating_add(1);
     summary
         .admission_deferred_reason
@@ -2116,7 +2159,7 @@ fn note_admission_deferral(
             task_id: task_id.to_string(),
             reason: reason.to_string(),
         });
-    if record_admission_deferral(graph_path, task_id, reason) {
+    if record_admission_deferral_with_key(graph_path, task_id, reason, coalesce_key) {
         eprintln!(
             "[dispatcher] Deferring '{}': {} (admission backpressure, not a spawn failure; identical deferrals are coalesced; retrying on bounded coordinator ticks)",
             task_id, reason
@@ -2674,17 +2717,15 @@ fn spawn_agents_for_ready_tasks(
                     continue;
                 }
             };
-            if let Some(remaining) =
+            if let Some(_remaining) =
                 worksgood::execution_assignment::preflight_backoff_remaining(dir, &assignment)
             {
-                note_admission_deferral(
+                note_opaque_preflight_deferral(
                     &mut summary,
                     &graph_file,
                     &task.id,
-                    &format!(
-                        "opaque Pi preflight backoff active for {}ms; no attempt was claimed",
-                        remaining.as_millis()
-                    ),
+                    &assignment,
+                    "opaque Pi preflight backoff active; no attempt was claimed; next probe follows the persisted bounded deadline",
                 );
                 continue;
             }
@@ -2694,10 +2735,11 @@ fn spawn_agents_for_ready_tasks(
                 &assignment,
                 &outcome,
             ) {
-                note_admission_deferral(
+                note_opaque_preflight_deferral(
                     &mut summary,
                     &graph_file,
                     &task.id,
+                    &assignment,
                     &format!("opaque Pi preflight state persistence failed: {error:#}"),
                 );
                 continue;
@@ -2708,10 +2750,11 @@ fn spawn_agents_for_ready_tasks(
                     worksgood::execution_assignment::PiPreflightOutcome::TransientFailure { .. } => "transient_failure",
                     worksgood::execution_assignment::PiPreflightOutcome::Ready => unreachable!(),
                 };
-                note_admission_deferral(
+                note_opaque_preflight_deferral(
                     &mut summary,
                     &graph_file,
                     &task.id,
+                    &assignment,
                     &format!(
                         "opaque Pi preflight {class}: {}",
                         outcome.diagnostic().unwrap_or("Pi returned no diagnostic")
@@ -2832,13 +2875,22 @@ fn spawn_agents_for_ready_tasks(
                 }
             }
             Err(error) => {
-                eprintln!("[dispatcher] Launch failed for '{}': {error:#}", task.id);
-                record_direct_dispatch_failure(
-                    &graph_file,
-                    &task.id,
-                    &format!("{error:#}"),
-                    &executor,
-                );
+                let diagnostic = format!("{error:#}");
+                if opaque_experiment
+                    && (diagnostic.contains("WG-OPAQUE-ADMISSION-BLOCKED")
+                        || diagnostic.contains("WG-OPAQUE-ASSIGNMENT-")
+                        || diagnostic.contains("WG-OPAQUE-LAUNCH-"))
+                {
+                    note_spawn_preparation_deferral(
+                        &mut summary,
+                        &graph_file,
+                        &task.id,
+                        &format!("opaque assignment admission blocked: {diagnostic}"),
+                    );
+                } else {
+                    eprintln!("[dispatcher] Launch failed for '{}': {diagnostic}", task.id);
+                    record_direct_dispatch_failure(&graph_file, &task.id, &diagnostic, &executor);
+                }
             }
         }
     }
@@ -5422,6 +5474,53 @@ mod tests {
             &unsupported_path,
             "unsupported-provider",
             "WG-PI-PROVIDER-UNSUPPORTED",
+        );
+    }
+
+    #[test]
+    fn opaque_preflight_notification_is_assignment_keyed_across_restart_ticks() {
+        let dir = tempdir().unwrap();
+        let graph_path = dir.path().join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(Task {
+            id: "opaque-preflight".into(),
+            status: Status::Open,
+            ..Default::default()
+        }));
+        save_graph(&graph, &graph_path).unwrap();
+
+        assert!(record_admission_deferral_with_key(
+            &graph_path,
+            "opaque-preflight",
+            "first transient diagnostic",
+            Some("opaque-preflight:assignment-a"),
+        ));
+        // Reloading from disk models a daemon restart; changing from the
+        // initial diagnostic to its backoff summary must not notify twice.
+        drop(load_graph(&graph_path).unwrap());
+        assert!(!record_admission_deferral_with_key(
+            &graph_path,
+            "opaque-preflight",
+            "backoff active",
+            Some("opaque-preflight:assignment-a"),
+        ));
+        assert!(record_admission_deferral_with_key(
+            &graph_path,
+            "opaque-preflight",
+            "new configuration may be reported",
+            Some("opaque-preflight:assignment-b"),
+        ));
+
+        let graph = load_graph(&graph_path).unwrap();
+        let task = graph.get_task("opaque-preflight").unwrap();
+        assert_eq!(task.spawn_failures, 0);
+        assert_eq!(
+            task.lifecycle
+                .audit
+                .iter()
+                .filter(|event| event.event_kind == "admission-deferred")
+                .count(),
+            2
         );
     }
 

@@ -1735,18 +1735,23 @@ fn spawn_agent_inner_authorized_impl(
     let executor_config = if let Some(assignment) = opaque_assignment {
         use worksgood::service::executor::{ExecutorConfig, ExecutorSettings};
         let executor = match &assignment.execution {
-            worksgood::execution_assignment::RuntimeExecution::Pi { program, .. } => {
+            worksgood::execution_assignment::RuntimeExecution::Pi { launch_plan, .. } => {
+                let launch = launch_plan.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "WG-OPAQUE-LAUNCH-PLAN-MISSING: historical assignment is readable but cannot be launched"
+                    )
+                })?;
                 ExecutorSettings {
                     executor_type: "pi".to_string(),
-                    command: program.to_string_lossy().into_owned(),
-                    args: vec!["--mode".into(), "json".into()],
+                    command: launch.executable.path.to_string_lossy().into_owned(),
+                    args: launch.fixed_argv.clone(),
                     env: std::collections::HashMap::from([(
                         "WG_TASK_ID".to_string(),
                         task.id.clone(),
                     )]),
                     prompt_template: None,
                     working_dir: None,
-                    timeout: None,
+                    timeout: launch.timeout_secs,
                     model: None,
                 }
             }
@@ -2156,8 +2161,68 @@ fn spawn_agent_inner_authorized_impl(
             .map(|wt| wt.path.as_path())
             .or(nongit_workspace.as_deref())
             .or_else(|| settings.working_dir.as_deref().map(Path::new))
+            .or_else(|| {
+                opaque_assignment.and_then(|assignment| {
+                    matches!(
+                        &assignment.execution,
+                        worksgood::execution_assignment::RuntimeExecution::Pi { .. }
+                    )
+                    .then(|| dir.parent().unwrap_or(dir))
+                })
+            })
     });
     preflight_executor_command(&settings, resolved_executor_name, effective_working_dir)?;
+    if let Some(
+        assignment @ worksgood::execution_assignment::ExecutionAssignment {
+            execution:
+                worksgood::execution_assignment::RuntimeExecution::Pi {
+                    launch_plan: Some(launch),
+                    ..
+                },
+            ..
+        },
+    ) = opaque_assignment
+    {
+        worksgood::execution_assignment::verify_launch_plan(launch).map_err(|error| {
+            anyhow::anyhow!(
+                "error[WG-OPAQUE-ADMISSION-BLOCKED]: pinned Pi invocation changed before launch: {error:#}; no attempt was claimed"
+            )
+        })?;
+        let execution_cwd = effective_working_dir.ok_or_else(|| {
+            anyhow::anyhow!(
+                "error[WG-OPAQUE-ADMISSION-BLOCKED]: attempt workspace cwd was not resolved; no attempt was claimed"
+            )
+        })?;
+        // The coordinator's first probe runs before a worktree/owned report
+        // workspace exists. Once reservation creates that path, repeat the
+        // capability probe in the exact cwd that execution will use, still
+        // before the graph claim. Thus no successful preflight describes a
+        // different filesystem context from the process it admits.
+        let mut exact_context = (*assignment).clone();
+        if let worksgood::execution_assignment::RuntimeExecution::Pi {
+            launch_plan: Some(plan),
+            ..
+        } = &mut exact_context.execution
+        {
+            plan.capability_cwd = execution_cwd.to_path_buf();
+            plan.execution_cwd = Some(execution_cwd.to_path_buf());
+        }
+        match worksgood::execution_assignment::preflight(&exact_context) {
+            worksgood::execution_assignment::PiPreflightOutcome::Ready => {}
+            worksgood::execution_assignment::PiPreflightOutcome::MissingRequiredCapability {
+                diagnostic,
+                ..
+            } => anyhow::bail!(
+                "error[WG-OPAQUE-ADMISSION-BLOCKED]: exact attempt-workspace capability preflight failed: {diagnostic}; no attempt was claimed"
+            ),
+            worksgood::execution_assignment::PiPreflightOutcome::TransientFailure {
+                diagnostic,
+                ..
+            } => anyhow::bail!(
+                "error[WG-OPAQUE-ADMISSION-TRANSIENT]: exact attempt-workspace capability preflight was unavailable: {diagnostic}; no attempt was claimed"
+            ),
+        }
+    }
 
     // Validate endpoint resolution for registry-resolved models — but only
     // when the plan actually selected an endpoint. If plan.endpoint is None
@@ -2193,6 +2258,12 @@ fn spawn_agent_inner_authorized_impl(
         }
         worksgood::execution_assignment::RuntimeExecution::Shell { .. } => None,
     });
+    let opaque_pi_launch = opaque_assignment.and_then(|assignment| match &assignment.execution {
+        worksgood::execution_assignment::RuntimeExecution::Pi { launch_plan, .. } => {
+            launch_plan.as_deref()
+        }
+        worksgood::execution_assignment::RuntimeExecution::Shell { .. } => None,
+    });
     let (inner_command, fallback_command) = build_inner_command_with_reasoning_opaque(
         &settings,
         exec_mode,
@@ -2207,11 +2278,21 @@ fn spawn_agent_inner_authorized_impl(
         &task_exec,
         resume_session_id.as_deref(),
         opaque_pi_route,
+        opaque_pi_launch,
     )?;
 
     // Resolve effective timeout: CLI param > task.timeout > executor config > coordinator config.
     // Empty string means disabled.
-    let effective_timeout_secs: Option<u64> = if let Some(t) = timeout {
+    let assigned_timeout = opaque_assignment.and_then(|assignment| match &assignment.execution {
+        worksgood::execution_assignment::RuntimeExecution::Pi {
+            launch_plan: Some(launch),
+            ..
+        } => Some(launch.timeout_secs),
+        _ => None,
+    });
+    let effective_timeout_secs: Option<u64> = if let Some(timeout) = assigned_timeout {
+        timeout
+    } else if let Some(t) = timeout {
         if t.is_empty() {
             None
         } else {
@@ -2293,6 +2374,17 @@ fn spawn_agent_inner_authorized_impl(
         .context("Failed to resolve bash executable for spawn wrapper")?;
     let mut cmd = Command::new(&bash_path);
     cmd.arg(strip_verbatim_prefix(&wrapper_path));
+    if let Some(worksgood::execution_assignment::ExecutionAssignment {
+        execution:
+            worksgood::execution_assignment::RuntimeExecution::Pi {
+                launch_plan: Some(launch),
+                ..
+            },
+        ..
+    }) = opaque_assignment
+    {
+        cmd.env("PI_CODING_AGENT_DIR", &launch.config_root);
+    }
 
     // Set environment variables from executor config
     for (key, value) in &settings.env {
@@ -2396,6 +2488,14 @@ fn spawn_agent_inner_authorized_impl(
         // Preserve the configured cwd for non-agent shell and compatibility
         // executions; they do not participate in the worker completion valve.
         cmd.current_dir(wd);
+    } else if opaque_assignment.is_some()
+        && let Some(wd) = effective_working_dir
+    {
+        // The immutable attempt-workspace policy must also control the actual
+        // wrapper process. In shared-workspace mode there is no worktree or
+        // executor cwd to do this implicitly.
+        cmd.current_dir(wd);
+        cmd.env("WG_PROJECT_ROOT", dir.parent().unwrap_or(dir));
     }
     if let Some(path) = owned_target_path.as_ref() {
         // Every attempt writes its private layer. Unchanged artifacts are
@@ -2494,6 +2594,7 @@ fn spawn_agent_inner_authorized_impl(
                 claim_snapshot.generation,
                 &claim_snapshot.attempt_id,
                 claim_snapshot.attempt_fence,
+                effective_working_dir.map(Path::to_path_buf),
             );
             let assignment_path = worksgood::execution_assignment::persist(dir, &bound)
                 .context("persist immutable execution assignment")?;
@@ -3385,12 +3486,8 @@ fn opaque_pi_prompt_command(
     opaque_route: &str,
     reasoning: ReasoningLevel,
     resume_session_id: Option<&str>,
+    launch: &worksgood::execution_assignment::PiLaunchPlan,
 ) -> Result<String> {
-    if std::env::var_os("WG_PI_PROCESS_WAKE_EXTENSION").is_some() {
-        anyhow::bail!(
-            "WG-OPAQUE-OPTIONAL-CAPABILITY-UNISOLATED: managed-process wake requires the stable split-route adapter; this must be diagnosed before attempt admission"
-        );
-    }
     if args_have_flag(&settings.args, &["--model", "-m"]) {
         anyhow::bail!(
             "WG-OPAQUE-ASSIGNMENT-ARGV-CONFLICT: immutable Pi assignment settings must not contain a second model selector"
@@ -3400,6 +3497,16 @@ fn opaque_pi_prompt_command(
     let mut parts = vec![shell_escape(&settings.command)];
     for arg in &settings.args {
         parts.push(shell_escape(arg));
+    }
+    if launch.invocation_kind
+        != worksgood::execution_assignment::PiInvocationKind::ManagedProcessRpc
+    {
+        let wg_extension = launch
+            .wg_extension
+            .as_ref()
+            .context("opaque Pi worker assignment has no pinned WG extension")?;
+        parts.push("-e".to_string());
+        parts.push(shell_escape(&wg_extension.path.to_string_lossy()));
     }
     parts.push("--model".to_string());
     parts.push(shell_escape(opaque_route));
@@ -3448,10 +3555,81 @@ fn opaque_pi_prompt_command(
         parts.push(shell_escape(&session_id));
     }
     if !args_have_flag(&settings.args, &["--prompt", "-p"]) {
-        parts.push("--prompt".to_string());
+        // Pi's supported headless prompt flag is the short `-p`; unlike some
+        // external CLIs it does not expose a `--prompt` long form.
+        parts.push("-p".to_string());
         parts.push(shell_escape(
             "Complete the WG task prompt supplied on stdin.",
         ));
+    }
+    if launch.invocation_kind
+        == worksgood::execution_assignment::PiInvocationKind::ManagedProcessRpc
+    {
+        if resume_session_id.is_some() {
+            anyhow::bail!(
+                "WG-PI-PROCESS-REATTACH-UNPROVEN: the prior RPC process disappeared; refusing replay"
+            );
+        }
+        let process_extension = launch
+            .managed_process_extension
+            .as_ref()
+            .context("managed opaque Pi assignment has no pinned process extension")?;
+        let wg_extension = launch
+            .wg_extension
+            .as_ref()
+            .context("managed opaque Pi assignment has no pinned WG extension")?;
+        let wg_plugin_root = launch
+            .wg_plugin_root
+            .as_ref()
+            .context("managed opaque Pi assignment has no pinned WG plugin root")?;
+        let wg_plugin_compat = launch
+            .wg_plugin_compat
+            .as_deref()
+            .context("managed opaque Pi assignment has no pinned WG plugin compat")?;
+        let wg = std::env::current_exe().context("resolve current wg executable")?;
+        let mut adapter = vec![
+            shell_escape(&wg.to_string_lossy()),
+            "--dir".into(),
+            "\"${WG_PROJECT_ROOT}\"".into(),
+            "pi-process-worker".into(),
+            "--task-id".into(),
+            "\"${WG_TASK_ID}\"".into(),
+            "--prompt-file".into(),
+            shell_escape(&prompt_file.to_string_lossy()),
+            "--session-id".into(),
+            shell_escape(&session_id),
+            "--session-dir".into(),
+            shell_escape(&session_dir.to_string_lossy()),
+            "--evidence-file".into(),
+            shell_escape(
+                &output_dir
+                    .join("pi-process-evidence.json")
+                    .to_string_lossy(),
+            ),
+            "--process-extension".into(),
+            shell_escape(&process_extension.path.to_string_lossy()),
+            "--wg-extension".into(),
+            shell_escape(&wg_extension.path.to_string_lossy()),
+            "--wg-plugin-root".into(),
+            shell_escape(&wg_plugin_root.to_string_lossy()),
+            "--wg-plugin-compat".into(),
+            shell_escape(wg_plugin_compat),
+            "--pi-command".into(),
+            shell_escape(&launch.executable.path.to_string_lossy()),
+            "--opaque-model".into(),
+            shell_escape(opaque_route),
+            "--reasoning".into(),
+            shell_escape(reasoning.as_str()),
+            "--timeout-secs".into(),
+            launch.timeout_secs.unwrap_or(0).to_string(),
+            "--cancellation-grace-secs".into(),
+            launch.cancellation_grace_secs.to_string(),
+        ];
+        for arg in &launch.fixed_argv {
+            adapter.push("--pi-fixed-arg".into());
+            adapter.push(shell_escape(arg));
+        }
+        return Ok(adapter.join(" "));
     }
     Ok(prompt_file_command(
         &prompt_file.to_string_lossy(),
@@ -3912,6 +4090,7 @@ fn build_inner_command_with_reasoning(
         task_exec,
         resume_session_id,
         None,
+        None,
     )
 }
 
@@ -3930,6 +4109,7 @@ fn build_inner_command_with_reasoning_opaque(
     task_exec: &Option<String>,
     resume_session_id: Option<&str>,
     opaque_pi_route: Option<&str>,
+    opaque_pi_launch: Option<&worksgood::execution_assignment::PiLaunchPlan>,
 ) -> Result<(String, Option<String>)> {
     let inner_command = match settings.executor_type.as_str() {
         "claude" if resume_session_id.is_some() && exec_mode != "bare" => {
@@ -4210,6 +4390,7 @@ fn build_inner_command_with_reasoning_opaque(
                     resolved_reasoning
                         .context("immutable Pi assignment requires pinned reasoning")?,
                     resume_session_id,
+                    opaque_pi_launch.context("immutable Pi assignment has no launch plan")?,
                 )?
             } else {
                 external_prompt_command(
@@ -6585,6 +6766,27 @@ mod tests {
         let settings = external_test_settings("pi", "/candidate/pi", &["--mode", "json"]);
         let vars = test_template_vars();
         let route = "future+wire:model/with:odd:bytes";
+        let launch_assignment = worksgood::execution_assignment::resolve(
+            &worksgood::graph::Task {
+                id: "test".into(),
+                model: Some(format!("pi:{route}")),
+                reasoning: Some(ReasoningLevel::High),
+                ..Default::default()
+            },
+            &worksgood::config::Config::default(),
+            worksgood::config::DispatchRole::TaskAgent,
+            None,
+            Path::new("/candidate/pi"),
+            temp_dir.path(),
+        )
+        .unwrap();
+        let worksgood::execution_assignment::RuntimeExecution::Pi {
+            launch_plan: Some(launch),
+            ..
+        } = launch_assignment.execution
+        else {
+            panic!("expected Pi plan");
+        };
         let (command, fallback) = build_inner_command_with_reasoning_opaque(
             &settings,
             "full",
@@ -6599,6 +6801,7 @@ mod tests {
             &None,
             None,
             Some(route),
+            Some(&launch),
         )
         .unwrap();
         assert!(fallback.is_none());
@@ -6623,12 +6826,35 @@ mod tests {
             "/candidate/pi",
             &["--mode", "json", "--model=mutable-route"],
         );
+        let route = "pinned:opaque/route";
+        let launch_assignment = worksgood::execution_assignment::resolve(
+            &worksgood::graph::Task {
+                id: "test".into(),
+                model: Some(format!("pi:{route}")),
+                reasoning: Some(ReasoningLevel::High),
+                ..Default::default()
+            },
+            &worksgood::config::Config::default(),
+            worksgood::config::DispatchRole::TaskAgent,
+            None,
+            Path::new("/candidate/pi"),
+            temp_dir.path(),
+        )
+        .unwrap();
+        let worksgood::execution_assignment::RuntimeExecution::Pi {
+            launch_plan: Some(launch),
+            ..
+        } = launch_assignment.execution
+        else {
+            panic!("expected Pi plan");
+        };
         let error = opaque_pi_prompt_command(
             &settings,
             temp_dir.path(),
             "pinned:opaque/route",
             ReasoningLevel::High,
             None,
+            &launch,
         )
         .unwrap_err()
         .to_string();

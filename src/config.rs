@@ -2435,6 +2435,41 @@ pub struct ResolvedExecutionRoute {
     pub config_revision: String,
 }
 
+/// Experiment-only Pi selection resolved without interpreting Pi's dialect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedOpaquePiRoute {
+    pub route: String,
+    pub selection: String,
+    pub reasoning: ReasoningLevel,
+    pub source: String,
+    pub provenance: RouteProvenance,
+    pub config_source: String,
+    pub config_revision: String,
+}
+
+/// Validate only Pi's outer execution-system envelope.
+///
+/// The returned suffix is borrowed from the input and is byte-for-byte exact.
+/// It may contain slashes, colons, aliases, or future Pi syntax. WG never
+/// splits or normalizes it. Control bytes and surrounding whitespace are
+/// rejected because they make persisted/displayed invocation identity
+/// ambiguous; ordinary printable data remains Pi-owned.
+pub fn parse_opaque_pi_route(route: &str) -> anyhow::Result<&str> {
+    if route != route.trim() {
+        anyhow::bail!("opaque Pi route must not contain surrounding whitespace");
+    }
+    let selection = route
+        .strip_prefix("pi:")
+        .ok_or_else(|| anyhow::anyhow!("expected exact outer `pi:` envelope"))?;
+    if selection.is_empty() {
+        anyhow::bail!("`pi:` must carry a non-empty opaque selection");
+    }
+    if selection.chars().any(char::is_control) {
+        anyhow::bail!("opaque Pi selection contains a control character");
+    }
+    Ok(selection)
+}
+
 /// Parse the only supported Pi route shape.
 ///
 /// Pi owns provider/model validation, so WG deliberately validates only the
@@ -2466,6 +2501,11 @@ pub fn parse_exact_pi_route(route: &str) -> anyhow::Result<(String, String)> {
 /// substituted.
 pub fn parse_supported_execution_route(route: &str) -> anyhow::Result<(String, String)> {
     let raw = route.trim();
+    if crate::execution_assignment::experiment_enabled()
+        && let Ok(selection) = parse_opaque_pi_route(route)
+    {
+        return Ok(("pi".to_string(), selection.to_string()));
+    }
     if let Ok((provider, model)) = parse_exact_pi_route(raw) {
         return Ok(("pi".to_string(), format!("{provider}:{model}")));
     }
@@ -3790,10 +3830,17 @@ impl Config {
             })?;
         let (provider, model) = match handler.as_str() {
             "pi" => {
-                let (provider, model) = parsed_model
-                    .split_once(':')
-                    .expect("parse_supported_execution_route returned a malformed Pi identity");
-                (Some(provider.to_string()), model.to_string())
+                if let Some((provider, model)) = parsed_model.split_once(':') {
+                    (Some(provider.to_string()), model.to_string())
+                } else if crate::execution_assignment::experiment_enabled() {
+                    // Experiment-only compatibility projection. Opaque runtime
+                    // consumers use `resolve_opaque_pi_route_for_role`; this
+                    // stable-shaped value exists only so startup/status code
+                    // does not reinterpret or reject the selected Pi bytes.
+                    (None, parsed_model)
+                } else {
+                    unreachable!("supported execution parser returned a malformed Pi identity")
+                }
             }
             "claude" => (Some("anthropic".to_string()), parsed_model),
             "codex" => (Some("codex".to_string()), parsed_model),
@@ -3811,6 +3858,49 @@ impl Config {
             handler,
             provider,
             model,
+            reasoning,
+            source,
+            provenance,
+            config_source,
+            config_revision: self
+                .authority_revision
+                .clone()
+                .unwrap_or_else(|| "unversioned".to_string()),
+        })
+    }
+
+    /// Resolve one role for the opt-in opaque Pi assignment experiment.
+    ///
+    /// This deliberately bypasses the stable provider/model grammar while
+    /// retaining the same role/tier/override and reasoning precedence. Only
+    /// the outer `pi:` envelope is WG-owned; the exact suffix belongs to Pi.
+    pub fn resolve_opaque_pi_route_for_role(
+        &self,
+        role: DispatchRole,
+    ) -> anyhow::Result<ResolvedOpaquePiRoute> {
+        let (route, source, provenance) = self.configured_route_for_role(role)?;
+        let selection = parse_opaque_pi_route(&route)
+            .map(str::to_string)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "error[WG-OPAQUE-PI-ROUTE-REQUIRED]: role={role} effective_route={route:?} source={source}: {error}"
+                )
+            })?;
+        let reasoning = self.resolve_reasoning_for_role(role).ok_or_else(|| {
+            anyhow::anyhow!(
+                "error[WG-EXEC-REASONING-MISSING]: role={role} route={route:?} has no effective reasoning; set models.{role}.reasoning or tiers.{}_reasoning",
+                role.default_tier()
+            )
+        })?;
+        let config_source = self
+            .value_sources
+            .get(source.split(" → ").next().unwrap_or(&source))
+            .map(ToString::to_string)
+            .or_else(|| self.authority_source.clone())
+            .unwrap_or_else(|| "in-memory".to_string());
+        Ok(ResolvedOpaquePiRoute {
+            route,
+            selection,
             reasoning,
             source,
             provenance,

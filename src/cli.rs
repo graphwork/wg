@@ -2998,12 +2998,31 @@ pub enum Commands {
         process_extension: String,
         #[arg(long)]
         pi_command: String,
-        #[arg(long)]
-        provider: String,
-        #[arg(long)]
-        model: String,
+        /// Stable-path split provider. Mutually exclusive with --opaque-model.
+        #[arg(long, requires = "model", conflicts_with = "opaque_model")]
+        provider: Option<String>,
+        /// Stable-path split model. Mutually exclusive with --opaque-model.
+        #[arg(long, requires = "provider", conflicts_with = "opaque_model")]
+        model: Option<String>,
+        /// Experiment assignment's exact Pi-native selector.
+        #[arg(long, conflicts_with_all = ["provider", "model"])]
+        opaque_model: Option<String>,
+        /// Complete fixed RPC argv from the immutable experiment assignment.
+        #[arg(long = "pi-fixed-arg", allow_hyphen_values = true)]
+        pi_fixed_args: Vec<String>,
         #[arg(long)]
         reasoning: String,
+        #[arg(long)]
+        wg_extension: Option<String>,
+        #[arg(long)]
+        wg_plugin_root: Option<String>,
+        #[arg(long)]
+        wg_plugin_compat: Option<String>,
+        /// Adapter-owned deadline; zero means the outer worker deadline owns it.
+        #[arg(long, default_value_t = 0)]
+        timeout_secs: u64,
+        #[arg(long, default_value_t = 5)]
+        cancellation_grace_secs: u64,
     },
 
     /// Print the WG directory that `wg` would use from here,
@@ -6653,6 +6672,27 @@ pub enum MigrateCommands {
         all: bool,
 
         /// Print a unified diff of what would change but don't rewrite.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Explicitly replace one declared legacy split Pi route with one opaque
+    /// Pi-native selection in exactly one TOML file.
+    ///
+    /// Only string values exactly equal to `--from` are changed. Arbitrary
+    /// `pi:` values are never guessed or normalized, and a backup is written
+    /// before mutation.
+    OpaquePiRoute {
+        /// TOML file to inspect and (unless --dry-run) rewrite.
+        #[arg(long)]
+        path: PathBuf,
+        /// Exact legacy split route, for example `pi:openai-codex:gpt-5.6-sol`.
+        #[arg(long)]
+        from: String,
+        /// Exact opaque replacement, for example `pi:openai-codex/gpt-5.6-sol`.
+        #[arg(long)]
+        to: String,
+        /// Report exact matches without writing.
         #[arg(long)]
         dry_run: bool,
     },

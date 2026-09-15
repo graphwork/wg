@@ -3664,6 +3664,14 @@ fn main() -> Result<()> {
                 };
                 commands::migrate::run_config_migrate(&workgraph_dir, target, dry_run, cli.json)
             }
+            MigrateCommands::OpaquePiRoute {
+                path,
+                from,
+                to,
+                dry_run,
+            } => {
+                commands::migrate::run_opaque_pi_route_migrate(&path, &from, &to, dry_run, cli.json)
+            }
             MigrateCommands::Secrets {
                 dry_run,
                 global,
@@ -4394,7 +4402,14 @@ fn main() -> Result<()> {
             pi_command,
             provider,
             model,
+            opaque_model,
+            pi_fixed_args,
             reasoning,
+            wg_extension,
+            wg_plugin_root,
+            wg_plugin_compat,
+            timeout_secs,
+            cancellation_grace_secs,
         } => commands::pi_handler::run_process_worker(
             &workgraph_dir,
             &task_id,
@@ -4404,9 +4419,16 @@ fn main() -> Result<()> {
             std::path::Path::new(&evidence_file),
             std::path::Path::new(&process_extension),
             std::path::Path::new(&pi_command),
-            &provider,
-            &model,
+            provider.as_deref(),
+            model.as_deref(),
+            opaque_model.as_deref(),
+            &pi_fixed_args,
             &reasoning,
+            wg_extension.as_deref().map(std::path::Path::new),
+            wg_plugin_root.as_deref().map(std::path::Path::new),
+            wg_plugin_compat.as_deref(),
+            timeout_secs,
+            cancellation_grace_secs,
         ),
         Commands::NativeExec {
             prompt_file,

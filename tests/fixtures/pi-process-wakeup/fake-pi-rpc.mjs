@@ -6,6 +6,9 @@ import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
 const scenario = process.env.WG_PI_PROCESS_TEST_SCENARIO;
+if (process.env.WG_PI_PROCESS_ARGV_FILE) {
+  writeFileSync(process.env.WG_PI_PROCESS_ARGV_FILE, JSON.stringify(process.argv.slice(2)));
+}
 const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const started = (command = "node neutral-command.mjs") => emit({
   type: "tool_execution_end",

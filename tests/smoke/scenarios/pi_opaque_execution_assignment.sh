@@ -18,6 +18,8 @@ cat >"$fakebin/pi" <<'FAKE_PI'
 set -euo pipefail
 n=$(find "${OPAQUE_PI_CALLS:?}" -type f 2>/dev/null | wc -l | tr -d ' ')
 n=$((n+1)); printf '%s\0' "$@" >"$OPAQUE_PI_CALLS/$n.argv"
+printf '%s' "$PWD" >"$OPAQUE_PI_CALLS/$n.cwd"
+printf '%s' "${PI_CODING_AGENT_DIR:-}" >"$OPAQUE_PI_CALLS/$n.config-root"
 route=''; previous=''
 for arg in "$@"; do [[ "$previous" == --model || "$previous" == --list-models ]] && route="$arg"; previous="$arg"; done
 if [[ " $* " == *' --offline '* ]]; then
@@ -45,7 +47,7 @@ printf 'base\n' >base.txt; git add base.txt; git commit -qm base
 G="$project/.wg"; wgrun(){ (cd "$project" && "$WG_BIN" --dir "$G" "$@"); }
 cleanup(){ wgrun service stop --force --kill-agents >/dev/null 2>&1 || true; }
 add_cleanup_hook cleanup
-wgrun config --local --model 'pi:future+wire:model/with:odd:bytes' --reasoning high \
+wgrun config --local --model 'pi:openai-codex/gpt-5.6-sol' --reasoning high \
   --auto-assign false --auto-evaluate false --no-reload >/dev/null
 wgrun config set dispatcher.worktree_isolation false >/dev/null
 wgrun config set dispatcher.settling_delay_ms 0 >/dev/null
@@ -60,15 +62,21 @@ for _ in $(seq 1 200); do
   sleep .05
 done
 [[ -n "$assignment" ]] || loud_fail "daemon did not persist an immutable assignment: $(tail -80 "$G/service/daemon.log" 2>/dev/null || true)"
-python3 - "$assignment" "$fakebin/pi" <<'PY'
+python3 - "$assignment" "$fakebin/pi" "$project" <<'PY'
 import json,sys,os
 x=json.load(open(sys.argv[1]))
 assert x['task_id']=='opaque-run',x
 assert x['execution']['kind']=='pi',x
-assert x['execution']['opaque_route']=='future+wire:model/with:odd:bytes',x
+assert x['execution']['opaque_route']=='openai-codex/gpt-5.6-sol',x
 assert x['execution']['reasoning']=='high',x
 assert x['execution']['program']==os.path.realpath(sys.argv[2]),x
-assert x['authored_route']=='pi:future+wire:model/with:odd:bytes',x
+plan=x['execution']['launch_plan']
+assert plan['fixed_argv'][:2]==['--mode','json'],plan
+assert plan['config_identity'] and plan['tool_policy'],plan
+assert plan['working_directory_policy']=='attempt_workspace',plan
+assert plan['capability_cwd']==sys.argv[3] and plan['execution_cwd']==sys.argv[3],plan
+assert x['execution_cwd']==sys.argv[3],x
+assert x['authored_route']=='pi:openai-codex/gpt-5.6-sol',x
 assert x['attempt_id'].startswith('attempt-'),x
 assert x['attempt_fence']>0 and x['runtime_agent_id'].startswith('agent-'),x
 assert x['config_revision']!='unversioned',x
@@ -82,13 +90,21 @@ for p in glob.glob(sys.argv[1]+'/*.argv'):
 PY
 )
 [[ -n "$worker_argv" ]] || loud_fail "fake Pi never received worker launch"
-python3 - "$worker_argv" <<'PY'
-import sys
+python3 - "$worker_argv" "$assignment" <<'PY'
+import json,os,sys
 a=[x.decode() for x in open(sys.argv[1],'rb').read().split(b'\0') if x]
+plan=json.load(open(sys.argv[2]))['execution']['launch_plan']
 assert '--provider' not in a,a
-i=a.index('--model'); assert a[i+1]=='future+wire:model/with:odd:bytes',a
-assert a.count('future+wire:model/with:odd:bytes')==1,a
+i=a.index('--model'); assert a[i+1]=='openai-codex/gpt-5.6-sol',a
+assert a.count('openai-codex/gpt-5.6-sol')==1,a
 j=a.index('--thinking'); assert a[j+1]=='high',a
+p=a.index('-p'); assert a[p+1]=='Complete the WG task prompt supplied on stdin.',a
+assert '--prompt' not in a,a
+assert '-ne' in a and '-e' in a,a
+e=a.index('-e'); assert a[e+1]==plan['wg_extension']['path'],(a,plan)
+stem=os.path.splitext(sys.argv[1])[0]
+assert open(stem+'.cwd').read()==plan['execution_cwd'],plan
+assert open(stem+'.config-root').read()==plan['config_root'],plan
 PY
 before=$(sha256sum "$assignment" | cut -d' ' -f1)
 # Mutation and daemon restart apply to new assignments only; the running attempt bytes stay pinned.
