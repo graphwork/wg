@@ -8,6 +8,8 @@ Task: `first-user-release-rehearsal`
 
 Result: **the installed stable path completed one useful, reviewed, locally landed change; cancellation/restart cleanup passed; missing-auth admission remains misleading; three directly exercised fixtures and one startup summary were repaired candidate-locally**
 
+> **Post-fix evidence reconciliation (2026-09-15):** The historical completion record includes a failed optional `explicit_execution_selection` receipt (`b3:9635c92af450ec594538fefaa7283a94163723a3dba693bb9e08a50c5ccb586b`, exit 101), despite later prose saying the repaired scenario passed; the subsequent FLIP rejection correctly caught that mismatch. The exact checked-in scenario has now passed against integrated source `5a4b9f98` through the candidate-bound Rust/subreaper harness, with the successful command captured on `close-pi-execution-release-candidate`. See [Integrated Pi execution release-candidate closure](pi-execution-release-candidate-closure.md). The old failed receipt and rejection remain historical evidence.
+
 ## Final deployed-stable rerun (2026-09-15)
 
 This is the release decision evidence. The 2026-09-12 run below is retained as historical context, not presented as current-version evidence.

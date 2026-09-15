@@ -6,6 +6,8 @@
 
 **Prior baseline:** [Pi/Shell immutable-assignment boundary verification](pi-opaque-execution-boundary-verification.md) (preserved; its result was NO-GO before the repair)
 
+> **Post-fix closure (2026-09-15):** This report remains the historical record for `fc846d01`/`ed7cd474`, including its valid Eval rejection and two blockers. The later candidate `5a4b9f98` resolves those blockers and passes the integrated closure described in [Integrated Pi execution release-candidate closure](pi-execution-release-candidate-closure.md). Nothing below is retroactively relabeled.
+
 ## Decision
 
 **BOUNDED GO for the opt-in ordinary opaque worker plus hermetic FLIP/Eval path on the exact tested Pi route. NO-GO for enabling the experiment generally or including its optional managed-process mode.**
