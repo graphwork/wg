@@ -1554,6 +1554,42 @@ mod tests {
     }
 
     #[test]
+    fn helper_reports_silent_command_and_line_before_cleanup() {
+        let td = TempDir::new().unwrap();
+        let helper =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/smoke/scenarios/_helpers.sh");
+        let body = format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\n. '{}'\nfalse\n",
+            helper.display()
+        );
+        write_script(td.path(), "silent-failure.sh", &body);
+        let scenario = Scenario {
+            name: "silent-diagnostic".to_string(),
+            script: "silent-failure.sh".to_string(),
+            owners: vec!["task-a".to_string()],
+            description: String::new(),
+            timeout_seconds: Some(10),
+        };
+
+        let result = run_scenario(&scenario, td.path());
+        match result.outcome {
+            ScenarioOutcome::Fail {
+                exit_code,
+                stderr_tail,
+            } => {
+                assert_eq!(exit_code, 1);
+                assert!(
+                    stderr_tail.contains(
+                        "SMOKE COMMAND FAILED: scenario=silent-diagnostic line=4 command=false"
+                    ),
+                    "missing actionable silent-command diagnostic: {stderr_tail}"
+                );
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn skip_outcome_for_exit_77() {
         let td = TempDir::new().unwrap();
         write_script(

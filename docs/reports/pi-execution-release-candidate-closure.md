@@ -61,6 +61,74 @@ The first-user rehearsal's completion log contains an old optional validation fa
 
 For this closure, `tests/integration_explicit_execution_selection.rs` is a focused Linux-subreaper entry point. It selects the exact existing grow-only manifest scenario, prepends Cargo's exact `CARGO_BIN_EXE_wg` directory to `PATH`, runs it via `worksgood::smoke`, restores `PATH`, and fails the Rust test if the scenario blocks completion. The unchanged checked-in `explicit_execution_selection` scenario now passes against the integrated candidate. The successful command is captured again as optional deterministic evidence on this closure task; the old exit-101 receipt remains historical and is not relabeled.
 
+### Release-gate stabilization reconciliation — 2026-09-15 UTC
+
+The preceding paragraph records what the closure worker observed, but it does not
+supersede the closure task's later immutable validation result. On source
+`911634042f9098a553472583530fcf332b2319ba`, `close-pi-execution-release-candidate`
+captured the exact command
+`cargo test --locked --test integration_explicit_execution_selection -- --test-threads=1`
+as optional evidence
+`b3:16ce6e58a2443777714543894f14a84ca6691f50483a1fbada83ea0e4c6e2b1b`.
+It exited **101**. The receipt's test stdout contains only
+`FAIL explicit_execution_selection (exit 1)` with an empty scenario diagnostic;
+its stderr contains build warnings and Cargo's final failure, not the failed shell
+assertion. The semantic reviewer therefore correctly rejected the contradictory
+candidate: FLIP receipt
+`b3:c7e780e8c3692b34ef80b1fcdb898d7921d67cd08f9694c9d5e83c4def1a2598`
+records `flip.validation-conflict`. Both receipts remain authoritative history.
+Neither the twelve later attended passes nor this repair turns that failed check
+into a pass.
+
+`stabilize-explicit-selection-release-gate` found a real environment-dependent
+isolation defect rather than enough evidence to dismiss the event as a random
+one-off. Before repair, an isolated exact run whose smoke root was nested below a
+long worker scratch failed at scenario step 3 with:
+
+```text
+Error: Failed to bind to socket ".../project/.wg/service/daemon.sock"
+Caused by:
+    local socket name length exceeds capacity of sun_path of sockaddr_un
+```
+
+That reproducer explains how the candidate runner environment can make the test
+fail, but the old receipt omitted the scenario log, so it cannot prove that this
+was the exact cause of the historical occurrence. After isolating the smoke root,
+a stress sequence also reached 16 passes and then failed once after entering the
+selected-service lifecycle; at that point the old fixture still reported only the
+stage, not the failed subcommand. The repair therefore addresses both observed
+problems rather than narrating either away:
+
+- the integration entry point now creates a unique short `/tmp/wg-ex-*` root,
+  temporarily overrides and then restores `WG_SMOKE_ROOT`, and asserts that the
+  subreaper retained no scratch or ownership record;
+- the selected-service status assertion uses a bounded readiness poll instead of
+  letting immediate terminal scheduling decide the result;
+- the scenario emits bounded step/substep markers and prints captured service
+  output on lifecycle failures; the common helper reports the source line and
+  shell command for otherwise silent `set -e` failures, with a focused regression
+  for that diagnostic.
+
+After diagnostic instrumentation, 200 consecutive attended exact runs passed;
+a further 30/30 passed after the bounded status-readiness repair. The final
+candidate additionally requires at least twelve consecutive, individually
+180-second-bounded exact runs from one isolated Cargo target under a deliberately
+deep caller `TMPDIR`/`WG_SMOKE_ROOT`. Each exact run creates its own short smoke
+scratch and passes only after the Rust subreaper's exact-marker cleanup succeeds;
+the loop also checks that the caller-provided scratch remains unused and scans its
+candidate environment for a leaked process. The optional deterministic-validation
+receipt attached to `stabilize-explicit-selection-release-gate`'s completion
+manifest is the authority for that loop and its exit status, not this prose or the
+attended runs.
+
+Residual risk is bounded, not zero: this reconciliation covers the Linux
+subreaper, Unix-domain socket limit, the checked-in terminal scenario, sequential
+runs, and the current candidate only. The historical failure's missing scenario
+output prevents certain causal attribution, and a finite run cannot disprove a
+lower-frequency scheduling defect. A future non-zero exact run remains
+release-blocking; the added stage, command, and captured-output diagnostics are
+intended to make that event actionable rather than erasable.
+
 ## Stable CI-equivalent checks
 
 The following passed on the integrated tree (warnings from existing dead/unused code were visible and not promoted to failures):

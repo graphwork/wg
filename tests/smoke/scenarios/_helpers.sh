@@ -756,6 +756,17 @@ wg_smoke_sweep() {
 }
 
 # ── Single EXIT/ERR/INT/TERM/HUP trap installed by this file ─────────
+# Keep the command and source line that triggered `set -e`. Without this,
+# silent assertions such as `grep -q` collapse to a bare `exit 1` after the
+# fixture is safely removed, making an intermittent failure impossible to
+# distinguish from an ownership or daemon collision.
+wg_smoke_command_failed() {
+    local rc="${1:-1}" line="${2:-?}" command="${3:-?}"
+    printf 'SMOKE COMMAND FAILED: scenario=%s line=%s command=%q\n' \
+        "${WG_SMOKE_SCENARIO:-adhoc}" "$line" "$command" >&2
+    wg_smoke_cleanup "$rc"
+}
+
 wg_smoke_cleanup() {
     local rc="${1:-$?}" cleanup_failed=0
     # Disable our own trap so cleanup can't re-enter. `set +e` ensures every
@@ -841,7 +852,7 @@ wg_smoke_cleanup() {
 }
 
 trap 'wg_smoke_cleanup $?' EXIT
-trap 'wg_smoke_cleanup 1' ERR
+trap 'wg_smoke_command_failed "$?" "$LINENO" "$BASH_COMMAND"' ERR
 trap 'wg_smoke_cleanup 130' INT
 trap 'wg_smoke_cleanup 143' TERM
 trap 'wg_smoke_cleanup 129' HUP
