@@ -2039,19 +2039,19 @@ pub fn run_start(
             }
         };
 
-    // Resolve effective config for display (CLI flags override config.toml)
+    // Render the same project-local route snapshot that the daemon admitted.
+    // Legacy --executor/config fields are observation-only and must not make a
+    // successfully selected Pi service look like `claude/default` at startup.
     let eff_max_agents = max_agents.unwrap_or(config.coordinator.max_agents);
     let eff_poll_interval = interval.unwrap_or(config.coordinator.poll_interval);
-    let eff_executor = executor
-        .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| config.effective_dispatcher_executor());
-    let eff_model = model
-        .map(std::string::ToString::to_string)
-        .or_else(|| config.coordinator.model.clone())
-        .or_else(|| {
-            let m = config.agent.model.clone();
-            if m.trim().is_empty() { None } else { Some(m) }
-        });
+    let display_route = config
+        .resolve_execution_route_for_role(worksgood::config::DispatchRole::Default)
+        .ok();
+    let eff_executor = display_route
+        .as_ref()
+        .map(|route| route.handler.clone())
+        .unwrap_or_else(|| "unselected".to_string());
+    let eff_model = display_route.map(|route| route.route);
 
     let log_path_str = log_path.to_string_lossy().to_string();
 

@@ -1,12 +1,161 @@
 # First-user release rehearsal
 
-Date: 2026-09-12 (UTC)
+Initial rehearsal: 2026-09-12 (UTC)
+
+Final deployed-stable rerun: 2026-09-15 (UTC)
 
 Task: `first-user-release-rehearsal`
 
-Result: **completed with onboarding defects and two small checked-in smoke repairs**
+Result: **the installed stable path completed one useful, reviewed, locally landed change; cancellation/restart cleanup passed; missing-auth admission remains misleading; three directly exercised fixtures and one startup summary were repaired candidate-locally**
 
-## Scope and safety boundary
+## Final deployed-stable rerun (2026-09-15)
+
+This is the release decision evidence. The 2026-09-12 run below is retained as historical context, not presented as current-version evidence.
+
+### Exact installed identity and boundary
+
+| Item | Exact value |
+|---|---|
+| Operator-deployed source | `1f33c4e407feb29a0c05d0ca5ab0a1b4fa75844a` |
+| Required CI | GitHub run `34914083289`, operator-reported successful required jobs |
+| Installed binary | `/home/bot/.cargo/bin/wg` |
+| `wg --version` | `wg 0.1.0` |
+| Installed SHA-256 | `56c70833ba52c3899671d3ca28b6a8e96faa606c3c11260b96feea5f7417d750` |
+| Installed size | 86,735,608 bytes |
+| Pi | `/home/bot/.nvm/versions/node/v25.4.0/bin/pi`, `0.84.4` |
+| Selected stable route | `pi:openai-codex:gpt-5.6-sol`, reasoning `high` |
+| Experimental flags | `WG_EXPERIMENTAL_OPAQUE_ASSIGNMENT` absent; `WG_PI_PROCESS_WAKE_EXTENSION` absent |
+| Disposable root | `/tmp/wg-first-user-release-rehearsal-agent108-final` |
+
+The operator had already installed and restarted this exact build. This worker did **not** install globally or touch the production daemon. All commands used explicit `/home/bot/.cargo/bin/wg`, disposable `--dir` graphs, isolated `WG_GLOBAL_DIR`/XDG directories, and `--no-supervise`. `HOME` remained the existing user home only for the approved Pi-owned authentication lookup; no auth file or secret value was read, copied, exported, or logged.
+
+### Terminal setup, isolation, and route inheritance
+
+The real setup action was driven under `script -qec` from the disposable project:
+
+```sh
+/home/bot/.cargo/bin/wg --dir "$P/.wg" setup \
+  --route pi --scope local --yes \
+  --model pi:openai-codex:gpt-5.6-sol
+```
+
+It took 23 ms and wrote only `project-useful/worksgood.toml`. The setup output truthfully said that Pi auth/model were **not verified**, Pi owns `/login`, Console settings were unchanged, and worker spawn would use hermetic JIT. The now-deprecated `--scope local` spelling produced a warning but still selected project scope. `wg config --models` showed default, strong, weak, task agent, both FLIP lanes, evaluator, and every other role inheriting the same exact route. Unlike the historical run, no manual per-role override was needed.
+
+The project setup scaffolding was inspected for credential assignments and committed before dispatch. The control project had no `worksgood.toml`; the isolated global directory had no `config.toml`; setup/execution in the useful project did not create either. The useful repository had no Git remote.
+
+A fresh route-less project with a published task started a graph daemon but consumed no attempt. `wg status` exposed:
+
+```text
+Admission deferred: 1 task(s), no attempt or retry budget charged
+WG-EXEC-ROUTE-MISSING ...
+corrective_action=`wg setup --route pi --yes --model pi:<provider>:<model>`
+```
+
+That is actionable and correctly non-consuming. The immediate `wg service start` summary was not: it said `executor=claude, model=default` even for the selected Pi project. The candidate-local onboarding fix now renders the same project route snapshot admitted by the daemon; the updated real terminal scenario passes. This fix is not claimed deployed.
+
+An empty-`HOME`, credential-free probe remained `Open` for 120.892 s with no attempt and no owned process after stop. WG classified the absent Pi login as `WG-PI-PROVIDER-UNSUPPORTED` and suggested changing the model, which is misleading. Direct Pi 0.84.4 against the same provider/model failed immediately and correctly with:
+
+```text
+No API key found for openai-codex.
+Use /login to log into a provider via OAuth or API key.
+```
+
+Thus login is demonstrably Pi-owned and requires no WG secret, while WG's new admission diagnostic still needs to preserve the login-vs-unsupported distinction. This probe is a **blocked onboarding case**, not a successful auth integration test. The successful case below is the separate real-auth evidence.
+
+### First useful reviewed change through real Pi
+
+The PTY-added task was neutral POSIX shell work: make `hello.sh` accept an optional name, document both invocations, and add `tests/test_hello.sh`. Its instructions explicitly rejected Cargo/WG-smoke overreach and asked the worker to use the supported optional evidence interface:
+
+```sh
+wg done useful-greeting --check './tests/test_hello.sh'
+```
+
+Actions and observations:
+
+1. PTY: `wg add ... --id useful-greeting`, then `wg publish useful-greeting --only`.
+2. Terminal: start the disposable service with one worker and no coordinator/supervisor.
+3. Real tmux PTY (`180x44`): launch `wg tui`; observe `useful-greeting (in-progress)`.
+4. Kill only that tmux session, restart the same TUI, and observe the same persisted in-progress row.
+5. Stop/restart the disposable daemon while `agent-1` remained alive under its original process/session identity. The restarted daemon saw one live agent, the task retained generation 0 / attempt `attempt-0-1` / fence 1, and no second agent directory appeared.
+6. Observe immutable baseline evidence `b3:02e8f034...` and worker-selected optional evidence `b3:591a3dda...` enter manifest `b3:21fc7624...` **before** review.
+7. Observe two-phase FLIP pass `b3:b01eff33...`, Eval pass `b3:9f1799be...`, one local publication receipt `b3:e33e5d23...`, and `Done/Landed`.
+8. TUI: observe `useful-greeting (done)`.
+
+Service start to Done took 126 s (`01:02:04Z`–`01:04:10Z`). There was one source worker, no retry, no semantic repair round, and no landing rescue. The source task reported 32,229 input, 1,774 output, 34,003 total tokens, and `$0.3762`; the separate two-review lane reported 18,299 tokens and `$0.1155` (`$0.0626` FLIP, `$0.0528` Eval). The task's default review policy was advisory, but both reviewers actually passed; this run does not relabel advisory as strict.
+
+The local integration checkout landed exactly `e1c1955d48f3265a12823e6848c4cc65399eaa10` with only:
+
+```text
+README.md           | 14 +++++++++++++-
+hello.sh            |  3 ++-
+tests/test_hello.sh | 18 ++++++++++++++++++
+```
+
+Post-landing checks produced `Hello, World!`, `Hello, Ada!`, `hello tests passed`, and a clean `sh -n`. The checkout was clean and `git remote -v` was empty. Therefore tests passed, semantic review passed, and local landing occurred; **remote publication did not occur**.
+
+### Cancellation, restart, and direct-Pi control
+
+A second real stable-path task asked Pi to run foreground `sleep 300`. When the tool was live, `agent-2` and owned sleep PID `2869184` were observed. `wg agents kill agent-2 --force` removed the owned sleep; reconciliation recorded the deliberate probe as `Failed/Lost` with retry count 1. After disposable daemon stop/start, it remained failed, no `agent-3` appeared, and the command was not revived. This is a cancellation test, not a useful-task success.
+
+For a comparable current direct-Pi control, Pi ran `sleep 3; printf DIRECT_PI_WAIT_OK` through its bash tool and returned the marker once. Wall time was 10.229 s; Pi reported 1,186 tokens and `$0.00613`. This proves the provider/runtime could execute and wait for the neutral command; it does **not** prove WG's optional managed wake adapter.
+
+The accepted `prove-pi-process-wakeup` evidence integrated into this deployed source remains the managed-wake evidence: one registered operation, automatic continuation in the same live RPC session/handle, deduplicated wake, and targeted cancellation that reaped its managed command while an unrelated process survived. The adapter is opt-in and was deliberately absent here. `verify-pi-execution-boundary` remains **NO-GO** for opaque Pi: selector dialect, incomplete pinned invocation, and managed-wake integration are unresolved. Neither experiment was enabled or treated as a stable-path requirement.
+
+Final teardown stopped all disposable daemons, killed the disposable tmux server, and found no process whose command line contained the disposable root. The useful checkout remained clean. No global configuration, Pi Console setting, release ref, origin/main ref, or production service was changed.
+
+### Concrete final onboarding defects
+
+1. **Missing login is mislabeled before Pi can explain it.** Empty Pi state becomes `WG-PI-PROVIDER-UNSUPPORTED`, stays Open indefinitely, and suggests changing the configured model. Setup and direct Pi correctly point to `/login`.
+2. **Installed service-start summary lies about a selected route (fixed candidate-locally).** It printed `executor=claude, model=default` while the daemon and worker used `pi:openai-codex:gpt-5.6-sol`. The startup renderer now uses the authoritative project snapshot; no deployment is implied.
+3. **Admission help is one command away from first output.** A missing route is visible in `wg status`, but `wg service start` says “started and ready” without naming the deferred task or `wg status` as the next action.
+4. **Stopped-service launch settings can confuse rehearsal changes.** Reusing a graph first started with `--max-agents 0`, then starting with `--max-agents 1`, produced a start summary claiming 1 while the daemon retained 0. The clean control avoided relying on that graph, and this larger settings-authority issue is only recorded.
+5. **Unrelated registry refresh noise remains.** Exact Pi-route daemons logged missing OpenRouter native-registry credentials even though the source and review route stayed on Pi/openai-codex and completed. It did not change routing, but it makes first-run diagnosis less credible.
+6. **Explicit cancellation is projected as Lost/retry.** The requested kill correctly reaped the tree and did not revive, but user-facing lifecycle says `Failed/Lost` and increments retry count rather than naming deliberate cancellation.
+7. **Optional execution experiments remain incomplete by design.** Opaque assignment is NO-GO, and managed wake remains an opt-in adapter. The flags were absent; no universal rollout is authorized.
+
+The exact-route/login findings were sent to downstream `fix-first-user-exact-route`. Larger settings/cancellation projection work is recorded rather than silently expanded here.
+
+### Release-level matrix
+
+| Case | Final evidence and outcome |
+|---|---|
+| Ordinary useful task / neutral non-Rust work | **PASS, real Pi**: one shell change, optional evidence, FLIP+Eval pass, one local landing, no rescue |
+| Same-worker deterministic repair | **PASS, controlled fixture**: `completion_repair_loop`; unchanged and changed candidates preserve owner/attempt/fence and exhaust at a visible decision |
+| Semantic help / contract correction | **PASS, controlled fixture**: `completion_semantic_help`; receipt-bound rejection, idempotent attention across restart, explicit correction invalidates stale binding; not live semantic proof |
+| Managed wait/wake | **REUSED accepted current-source evidence**, optional adapter only; direct Pi current control passed; adapter absent from stable rehearsal |
+| Cancellation race | **PASS, real stable path** plus process-ownership harness: owned sleep reaped, no revival/duplicate after restart |
+| Bounded provider outage | **PASS, controlled fixture** after adding the current offline-registry response to its fake Pi; initial+3 bound, exclusions, pause/cancel, route drift, and at-most-one publication |
+| Route change | **PASS, controlled fixture**: `unified_project_route_authority`; inherited new attempts follow the project revision while active bindings are not rewritten |
+| Restart | **PASS, real stable path**: TUI and daemon restarted around the same useful attempt; one worker and one publication |
+| Cyclic/downstream blocker visibility | **PASS, real tmux controlled fixture** after correcting stale split-pane keystrokes; root blocker and one safe action are visible and traversal is deduplicated |
+| Runtime upgrade | **PASS for installed identity and actual useful path**; CLI/source/operator daemon digest agreement is the deployment checkpoint, not re-proven by this worker |
+| Opaque Pi rollout | **NO-GO / intentionally excluded**, not a failed stable requirement |
+
+The controlled fixtures use the exact candidate binary but do not prove provider login or model semantics. The real useful and cancellation runs do.
+
+### Current checks, failures, and directly observed repairs
+
+The final passing results were:
+
+- `completion_repair_loop`: 1.985 s through the Linux Rust subreaper.
+- `completion_semantic_help`: 2.543 s through the same harness.
+- `unified_project_route_authority`: 13.404 s.
+- `source_provider_bounded_recovery`: 72.960 s after fixture repair.
+- `smoke_process_ownership_cleanup_real_entry_point`: 80.110 s (104.861 s including build/harness overhead).
+- `setup_route_activation_preflight`: 0.780 s.
+- focused `service::tests::kill_process_force_tree_reaps_descendants`: 0.410 s (121.063 s including build), one pass under pinned Rust 1.96.0.
+
+The non-blocking nightly warning did not reproduce in this single focused run, and the real cancellation also left no process. One pass does not erase the recorded GitHub nightly failure; it remains a flake warning, not an invented hard gate.
+
+Failures were preserved and repaired rather than called passes:
+
+1. `completion_repair_loop` initially failed because its old `Enter End` sequence selected the last graph row under the current split-pane TUI. The fixture now opens each row and pages Detail; the real tmux assertion sees `ROOT BLOCKER` and `one safe action`.
+2. `source_provider_bounded_recovery` initially never admitted its fake route after current Pi offline preflight was integrated. Its fake Pi now answers `--list-models` for both exact fixture routes. Intermediate reruns exposed the route-drift response mismatch; the final original fail-closed expectation passes.
+3. The installed `explicit_execution_selection` exposed both its obsolete “service start must fail” expectation and the real `claude/default` startup-summary bug. The scenario now tests non-consuming admission via human `wg status`; the candidate-local startup display uses the authoritative project route. Candidate SHA `e0254430ff46a728540dbcb4f6e50de27d31dacebdac420aa439b57cb14c589d` passed the updated 2.000 s terminal scenario. This is fix evidence, not evidence that the already-installed binary changed.
+
+Manual interventions in the useful path were limited to committing setup scaffolding before dispatch and deliberately driving TUI/service interruption. No contract edit, retry, worktree edit, forced dependency removal, or lifecycle-state edit was needed. The cancellation task was intentionally killed. Fixture diagnosis/repairs are test maintenance, not unattended product success.
+
+## Historical 2026-09-12 scope and safety boundary
 
 This was a candidate-scoped rehearsal, not a release and not a production-daemon exercise.
 
@@ -23,7 +172,7 @@ This was a candidate-scoped rehearsal, not a release and not a production-daemon
 
 The real-model section below used that existing Pi-owned authentication. The missing-auth and completion-repair sections used isolated/credential-free fixtures and are **not** evidence of model or authentication integration.
 
-## Candidate identity
+## Initial candidate identity (historical)
 
 | Item | Exact value |
 |---|---|
@@ -40,7 +189,7 @@ The real-model section below used that existing Pi-owned authentication. The mis
 | Pi version | `0.84.4` |
 | Install elapsed | 219 s (17:36:10Z–17:39:49Z) |
 
-## Commands and human-flow actions
+## Initial commands and human-flow actions (historical)
 
 The command pattern below was used throughout. Inherited worker/graph variables were removed; `WG_GLOBAL_DIR`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` pointed into the disposable root.
 
@@ -369,7 +518,7 @@ At completion:
 7. Rerun the process test through the required subreaper harness after its direct-execution refusal.
 8. Repair and rerun two stale project-local setup/service smoke fixtures; use the harness's supported short smoke root to avoid the Linux Unix-socket path limit.
 
-## Concrete onboarding defects
+## Initial-run onboarding defects (historical)
 
 1. **Exact setup model does not mean one usable auth route.** `wg setup --model pi:openai-codex:...` still projected weak/reviewer roles onto DeepSeek/OpenRouter. A new user with only the selected Pi provider login can execute the worker but fail review/agency. Setup should either keep all first-run roles on the exact selected route or explicitly obtain approval for a second provider.
 2. **`--dir` and project-config target disagree.** `wg --dir /tmp/project/.wg setup ...` wrote `worksgood.toml` in the process CWD, not beside `--dir`. The command should resolve one project target or refuse this mismatch loudly.

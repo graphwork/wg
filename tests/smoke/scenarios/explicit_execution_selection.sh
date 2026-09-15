@@ -34,26 +34,28 @@ grep -q 'graph-only' "$scratch/init.out"
 
 # 2. Graph CRUD is credential-free.
 run_wg add 'graph-only task' >/dev/null 2>"$scratch/add.err"
+run_wg publish graph-only-task --only >/dev/null
 run_wg list | grep -q 'graph-only-task'
 
-# 3. service start refuses without explicit selection: structured
-#    WG-EXEC-UNSELECTED error naming the supported route, and NO daemon state
-#    (state.json / socket / claim / worktree) is created.
-if run_wg service start --no-coordinator-agent >"$scratch/unselected.out" 2>&1; then
-  echo 'FAIL: service start succeeded without explicit execution selection' >&2
+# 3. A graph-only daemon may run, but a ready LLM task is refused at admission
+#    before any attempt/claim/worktree. Human status names the exact missing
+#    route and the supported project-local setup action.
+run_wg service start --max-agents 1 --no-coordinator-agent --no-supervise \
+  >"$scratch/unselected.out" 2>&1
+for _ in $(seq 1 100); do
+  run_wg status >"$scratch/unselected-status.out" 2>&1
+  grep -q 'WG-EXEC-ROUTE-MISSING' "$scratch/unselected-status.out" && break
+  sleep 0.05
+done
+grep -q 'WG-EXEC-ROUTE-MISSING' "$scratch/unselected-status.out"
+grep -q 'wg setup --route pi' "$scratch/unselected-status.out"
+if grep -qi 'falling back to claude\|falling back to pi\|default.*claude' "$scratch/unselected-status.out"; then
+  echo 'FAIL: unselected status recommended an implicit fallback handler' >&2
   exit 1
 fi
-grep -q 'WG-EXEC-UNSELECTED' "$scratch/unselected.out"
-# The unselected block must name the supported (Pi) route and never recommend
-# a different handler as an automatic repair.
-grep -q 'wg setup --route pi' "$scratch/unselected.out"
-grep -q 'wg profile select pi' "$scratch/unselected.out"
-if grep -qi 'falling back to claude\|falling back to pi\|default.*claude' "$scratch/unselected.out"; then
-  echo 'FAIL: unselected error recommended an implicit fallback handler' >&2
-  exit 1
-fi
-[[ ! -e "$scratch/project/.wg/service/state.json" ]]
-[[ ! -e "$scratch/project/.wg/service/daemon.sock" ]]
+run_wg show graph-only-task | grep -q 'Status: open'
+[[ ! -d "$scratch/project/.wg/agents" ]]
+run_wg service stop --force >/dev/null
 
 # 4. Manual worker spawn refuses without selection: the task stays open and no
 #    agent worktree is created. `--executor pi` is a valid value that reaches

@@ -210,16 +210,21 @@ capture_tui | grep -Fq 'repair-budget' \
   || loud_fail "TUI did not render the stalled task list: $(capture_tui | tr '\n' '|')"
 found_blocker=0
 for row in $(seq 0 8); do
+  # Open the selected row's Detail pane, then page through it. Sending End
+  # here changes the graph selection in the current split-pane layout.
   tmux send-keys -t "$session" Home
   for _ in $(seq 1 "$row"); do tmux send-keys -t "$session" Down; done
-  tmux send-keys -t "$session" Enter End
-  sleep 0.1
-  if capture_tui | grep -Fq 'ROOT BLOCKER: repair-budget' \
-      && capture_tui | grep -Fq 'one safe action:'; then
-    found_blocker=1
-    capture_tui >"$scratch/tui-blocker.txt"
-    break
-  fi
+  tmux send-keys -t "$session" Enter
+  for _ in $(seq 1 6); do
+    sleep 0.1
+    if capture_tui | grep -Fq 'ROOT BLOCKER: repair-budget' \
+        && capture_tui | grep -Fq 'one safe action:'; then
+      found_blocker=1
+      capture_tui >"$scratch/tui-blocker.txt"
+      break 2
+    fi
+    tmux send-keys -t "$session" PageDown
+  done
   tmux send-keys -t "$session" Escape
   sleep 0.025
 done

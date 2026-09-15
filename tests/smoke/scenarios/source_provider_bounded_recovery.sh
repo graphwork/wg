@@ -34,6 +34,16 @@ cat >"$fakebin/pi" <<'SH'
 set -eu
 : "${WG_FAKE_PROVIDER_STATE:?}"
 : "${WG_FAKE_PROJECT:?}"
+args="$*"
+if [[ " $args " == *" --list-models "* ]]; then
+  printf 'provider model context max-out thinking images\n'
+  if [[ "$args" == *changed-route* ]]; then
+    printf 'test changed-route 128K 16K yes no\n'
+  else
+    printf 'test bounded-smoke 128K 16K yes no\n'
+  fi
+  exit 0
+fi
 if [[ "${WG_HANDLER_QUIESCENT:-0}" == "1" ]]; then
   task_id="${WG_TASK_ID:-unknown}"
   printf '%s\n' "$task_id" >>"$WG_FAKE_PROVIDER_STATE/review-calls.txt"
