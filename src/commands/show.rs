@@ -181,6 +181,8 @@ struct TaskDetails {
     verify_timeout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     token_usage: Option<TokenUsage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    source_attempt_usage: Vec<worksgood::graph::SourceAttemptUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -718,7 +720,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     // Resolve token usage: stored data first, then live data for in-progress tasks.
     // Check output.log first (works for both Claude CLI and native executor formats),
     // then fall back to stream.jsonl (native executor writes usage there directly).
-    let token_usage = task.token_usage.clone().or_else(|| {
+    let current_token_usage = task.token_usage.clone().or_else(|| {
         let agent_id = task.assigned.as_deref()?;
         let agent_dir = dir.join("agents").join(agent_id);
         // Try output.log (handles both Claude CLI and native executor formats)
@@ -743,6 +745,12 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     });
 
     let (actual_executor, actual_model, native_compaction) = gather_task_runtime_info(dir, task);
+    let token_usage = task.total_source_usage_with(current_token_usage.as_ref());
+    let source_attempt_usage = task.source_attempt_usage_with(
+        current_token_usage.as_ref(),
+        actual_executor.as_deref(),
+        actual_model.as_deref(),
+    );
     let resolved_reasoning = task
         .reasoning
         .or_else(|| {
@@ -937,6 +945,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         timeout: task.timeout.clone(),
         verify_timeout: task.verify_timeout.clone(),
         token_usage,
+        source_attempt_usage,
         session_id: task.session_id.clone(),
         wait_condition: task.wait_condition.clone(),
         checkpoint: task.checkpoint.clone(),
@@ -2170,6 +2179,20 @@ fn print_human_readable(details: &TaskDetails) {
         if usage.cost_usd > 0.0 {
             println!("Cost: ${:.2}", usage.cost_usd);
         }
+        if details.source_attempt_usage.len() > 1 {
+            println!(
+                "Source attempts: {} (episode cumulative; review lane excluded)",
+                details.source_attempt_usage.len()
+            );
+            for attempt in &details.source_attempt_usage {
+                println!(
+                    "  {}: ${:.2}, {} tokens",
+                    attempt.attempt_id,
+                    attempt.usage.cost_usd,
+                    format_tokens(attempt.usage.total_tokens())
+                );
+            }
+        }
     }
 
     // Evaluation data
@@ -2655,6 +2678,7 @@ mod tests {
             verify_timeout: None,
             cycle_config: None,
             token_usage: None,
+            source_attempt_usage: Vec::new(),
             session_id: None,
             wait_condition: None,
             checkpoint: None,

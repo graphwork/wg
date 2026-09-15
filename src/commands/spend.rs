@@ -24,6 +24,7 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
     let mut total_input_tokens = 0u64;
     let mut total_output_tokens = 0u64;
     let mut tasks_with_usage = 0usize;
+    let mut source_attempts_with_usage = 0usize;
     let mut review_cost = 0.0;
     let mut review_input_tokens = 0u64;
     let mut review_output_tokens = 0u64;
@@ -87,11 +88,19 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
         if task.status != Status::Done && task.status != Status::Failed {
             continue;
         }
-        let Some(usage) = &task.token_usage else {
+        let Some(usage) = task.total_source_usage() else {
             continue;
         };
 
         tasks_with_usage += 1;
+        source_attempts_with_usage += task
+            .source_attempt_usage_with(
+                task.token_usage.as_ref(),
+                task.actual_executor.as_deref(),
+                task.actual_model.as_deref(),
+            )
+            .len()
+            .max(usize::from(task.token_usage.is_some()));
         total_cost += usage.cost_usd;
         total_input_tokens += usage.input_tokens;
         total_output_tokens += usage.output_tokens;
@@ -139,7 +148,8 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                         "total_input_tokens": d.total_input_tokens,
                         "total_output_tokens": d.total_output_tokens,
                         "task_count": d.task_count,
-                        "accounting_scope": "source-workers-only",
+                        "source_attempt_count": source_attempts_with_usage,
+                        "accounting_scope": "source-workers-only-episode-cumulative",
                         "completion_review_lane": {
                             "total_cost": review_cost,
                             "total_input_tokens": review_input_tokens,
@@ -156,7 +166,8 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                     "total_input_tokens": 0,
                     "total_output_tokens": 0,
                     "task_count": 0,
-                    "accounting_scope": "source-workers-only",
+                    "source_attempt_count": source_attempts_with_usage,
+                    "accounting_scope": "source-workers-only-episode-cumulative",
                     "completion_review_lane": {
                         "total_cost": review_cost,
                         "total_input_tokens": review_input_tokens,
@@ -172,8 +183,9 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                 "total_input_tokens": total_input_tokens,
                 "total_output_tokens": total_output_tokens,
                 "task_count": tasks_with_usage,
+                "source_attempt_count": source_attempts_with_usage,
                 "daily_breakdown": days,
-                "accounting_scope": "source-workers-only",
+                "accounting_scope": "source-workers-only-episode-cumulative",
                 "completion_review_lane": {
                     "total_cost": review_cost,
                     "total_input_tokens": review_input_tokens,
@@ -199,6 +211,10 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
                 format_number(spend.total_output_tokens)
             );
             println!("  Tasks: {}", spend.task_count);
+            println!(
+                "  Source attempts: {} (episode cumulative)",
+                source_attempts_with_usage
+            );
             println!(
                 "  Internal review lane (separate): ${:.4}, {} tokens, {} attempts",
                 review_cost,
@@ -227,6 +243,10 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
             format_number(total_output_tokens)
         );
         println!("Tasks with usage: {}", tasks_with_usage);
+        println!(
+            "Source attempts with usage: {} (episode cumulative)",
+            source_attempts_with_usage
+        );
         println!();
         println!("Internal completion-review lane (separate; not included above):");
         println!(

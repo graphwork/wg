@@ -81,6 +81,34 @@ pub struct AttemptRef {
     pub disposition: Option<AttemptDisposition>,
 }
 
+/// Crash-replayable source accounting retired by a later attempt reservation.
+/// The decimal cost representation keeps lifecycle evidence exactly comparable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetiredSourceAttemptAccounting {
+    pub attempt: AttemptRef,
+    pub accounting: crate::completion_evidence::TerminalAccountingEvidence,
+}
+
+fn build_retired_source_attempt_accounting(
+    task: &Task,
+    attempt: AttemptRef,
+) -> Option<RetiredSourceAttemptAccounting> {
+    let usage = task.token_usage.as_ref()?;
+    Some(RetiredSourceAttemptAccounting {
+        attempt,
+        accounting: crate::completion_evidence::TerminalAccountingEvidence {
+            usage_present: true,
+            provider_cost_usd: usage.cost_usd.to_string(),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_input_tokens: usage.cache_read_input_tokens,
+            cache_creation_input_tokens: usage.cache_creation_input_tokens,
+            actual_executor: task.actual_executor.clone(),
+            actual_model: task.actual_model.clone(),
+        },
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PiAuthorizationState {
@@ -502,6 +530,8 @@ pub struct LifecycleEventProjection {
     pub reopen_intent: Option<ReopenIntent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_accounting: Option<crate::completion_evidence::TerminalAccountingEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_source_attempt_accounting: Option<RetiredSourceAttemptAccounting>,
 }
 
 impl LifecycleEvent {
@@ -560,10 +590,33 @@ impl LifecycleEvent {
             record.cancel("task-abandoned");
         }
 
-        if self.event_kind == "attempt-reserved" {
-            // Runtime accounting is attempt-scoped. A retry must not inherit
-            // the previous attempt's route or usage and block the terminal
-            // successful attempt from becoming authoritative.
+        // Runtime accounting stays attempt-scoped, but retry must retain the
+        // prior attempt in the source episode ledger. The lifecycle event
+        // carries the exact retired bytes so graph replacement and ledger
+        // replay converge without double charging.
+        if let Some(retired) = self.projection.retired_source_attempt_accounting.as_ref()
+            && retired.accounting.usage_present
+        {
+            task.retain_source_attempt_usage(crate::graph::SourceAttemptUsage {
+                attempt_id: retired.attempt.id.clone(),
+                generation: retired.attempt.generation,
+                fence: retired.attempt.fence,
+                disposition: retired.attempt.disposition,
+                usage: crate::graph::TokenUsage {
+                    cost_usd: retired.accounting.provider_cost_usd.parse().unwrap_or(0.0),
+                    input_tokens: retired.accounting.input_tokens,
+                    output_tokens: retired.accounting.output_tokens,
+                    cache_read_input_tokens: retired.accounting.cache_read_input_tokens,
+                    cache_creation_input_tokens: retired.accounting.cache_creation_input_tokens,
+                },
+                actual_executor: retired.accounting.actual_executor.clone(),
+                actual_model: retired.accounting.actual_model.clone(),
+            });
+        }
+        if matches!(
+            self.event_kind.as_str(),
+            "attempt-reserved" | "generation-created" | "reopen-owner-released"
+        ) {
             task.token_usage = None;
             task.actual_executor = None;
             task.actual_model = None;
@@ -691,6 +744,7 @@ impl LifecycleKernel {
         let mut projection = task.lifecycle.clone();
         let mut completion_receipt = None;
         let mut terminal_accounting = None;
+        let mut retired_source_attempt_accounting = None;
         let kind = &request.kind;
 
         match kind {
@@ -708,6 +762,10 @@ impl LifecycleKernel {
                         "attempt_active",
                         "a nonterminal attempt already owns the task",
                     ));
+                }
+                if let Some(attempt) = projection.current_attempt.clone() {
+                    retired_source_attempt_accounting =
+                        build_retired_source_attempt_accounting(task, attempt);
                 }
                 projection.attempt_sequence += 1;
                 projection.fence += 1;
@@ -1013,6 +1071,10 @@ impl LifecycleKernel {
                         attempt.disposition = Some(AttemptDisposition::Cancelled);
                     }
                 }
+                if let Some(attempt) = projection.current_attempt.clone() {
+                    retired_source_attempt_accounting =
+                        build_retired_source_attempt_accounting(task, attempt);
+                }
                 projection.generation += 1;
                 projection.current_attempt = None;
                 projection.pi_process_epoch = 0;
@@ -1088,6 +1150,10 @@ impl LifecycleKernel {
                         "stale_reopen_source",
                         "owner release belongs to a superseded reopen intent",
                     ));
+                }
+                if let Some(attempt) = projection.current_attempt.clone() {
+                    retired_source_attempt_accounting =
+                        build_retired_source_attempt_accounting(task, attempt);
                 }
                 projection.generation = projection.generation.saturating_add(1);
                 projection.current_attempt = None;
@@ -1479,6 +1545,7 @@ impl LifecycleKernel {
                 pi_terminal_reservation: projection.pi_terminal_reservation,
                 reopen_intent: projection.reopen_intent,
                 terminal_accounting,
+                retired_source_attempt_accounting,
             },
         };
 
@@ -1903,6 +1970,100 @@ mod tests {
         );
         reserve.idempotency_key = format!("reserve:{generation}");
         apply(task, reserve).unwrap();
+    }
+
+    #[test]
+    fn retry_archives_failed_source_usage_and_totals_success_once() {
+        let mut task = task("retry-accounting", Status::Open);
+        reserve(&mut task);
+        task.token_usage = Some(crate::graph::TokenUsage {
+            cost_usd: 1.35,
+            input_tokens: 100,
+            output_tokens: 11,
+            cache_read_input_tokens: 1_400,
+            cache_creation_input_tokens: 0,
+        });
+        task.actual_executor = Some("pi".into());
+        task.actual_model = Some("openai-codex:first".into());
+        apply(
+            &mut task,
+            request(
+                TransitionKind::AttemptFailed { class: None },
+                ActorKind::Operator,
+                "first-failed",
+            ),
+        )
+        .unwrap();
+        let failed_snapshot = task.clone();
+        let retry_event = apply(
+            &mut task,
+            request(
+                TransitionKind::GenerationCreated,
+                ActorKind::Operator,
+                "retry-generation",
+            ),
+        )
+        .unwrap();
+        let retired = retry_event
+            .projection
+            .retired_source_attempt_accounting
+            .as_ref()
+            .expect("retry event carries crash-replayable source accounting");
+        assert_eq!(retired.attempt.id, "attempt-0-1");
+        assert_eq!(retired.accounting.provider_cost_usd, "1.35");
+        let mut replayed = failed_snapshot;
+        retry_event.apply_projection(&mut replayed);
+        assert_eq!(replayed.prior_source_attempt_usage.len(), 1);
+        assert!(replayed.token_usage.is_none());
+
+        reserve(&mut task);
+        assert!(task.token_usage.is_none());
+        assert_eq!(task.prior_source_attempt_usage.len(), 1);
+        let failed = &task.prior_source_attempt_usage[0];
+        assert_eq!(failed.attempt_id, "attempt-0-1");
+        assert_eq!(failed.disposition, Some(AttemptDisposition::Failed));
+        assert_eq!(failed.actual_model.as_deref(), Some("openai-codex:first"));
+
+        task.token_usage = Some(crate::graph::TokenUsage {
+            cost_usd: 0.23,
+            input_tokens: 27_144,
+            output_tokens: 1_082,
+            cache_read_input_tokens: 114_000,
+            cache_creation_input_tokens: 0,
+        });
+        task.actual_model = Some("openai-codex:retry".into());
+        apply(
+            &mut task,
+            request(
+                TransitionKind::AttemptSucceeded {
+                    acceptance_ref: None,
+                    manual_review: false,
+                },
+                ActorKind::Operator,
+                "retry-succeeded",
+            ),
+        )
+        .unwrap();
+
+        let total = task.total_source_usage().unwrap();
+        assert!((total.cost_usd - 1.58).abs() < 1e-9);
+        assert_eq!(total.input_tokens, 27_244);
+        assert_eq!(total.output_tokens, 1_093);
+        assert_eq!(total.cache_read_input_tokens, 115_400);
+        assert_eq!(
+            task.source_attempt_usage_with(
+                task.token_usage.as_ref(),
+                task.actual_executor.as_deref(),
+                task.actual_model.as_deref(),
+            )
+            .len(),
+            2
+        );
+
+        // Replaying the generation event cannot charge the failed attempt a
+        // second time because the source attempt tuple is the stable key.
+        retry_event.apply_projection(&mut replayed);
+        assert_eq!(replayed.prior_source_attempt_usage.len(), 1);
     }
 
     #[test]

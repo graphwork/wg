@@ -1138,9 +1138,16 @@ pub struct Task {
     /// - "full" (default): full Claude Code session with all tools
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_mode: Option<String>,
-    /// Token usage and cost data extracted from the exact source worker attempt.
+    /// Token usage and cost data extracted from the current (or terminal)
+    /// source worker attempt. Prior retry attempts are retained separately and
+    /// folded into user-facing task/spend totals without charging review calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<TokenUsage>,
+    /// Completed source attempts retired by a later attempt reservation. The
+    /// attempt tuple is the deduplication key; completion-review calls never
+    /// enter this source-worker ledger.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prior_source_attempt_usage: Vec<SourceAttemptUsage>,
     /// Actual handler retained at terminal projection time. Unlike the live
     /// registry this survives agent cleanup and service restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1370,6 +1377,7 @@ impl Default for Task {
             context_scope: None,
             exec_mode: None,
             token_usage: None,
+            prior_source_attempt_usage: Vec::new(),
             actual_executor: None,
             actual_model: None,
             completion_review_activity: Vec::new(),
@@ -1420,6 +1428,84 @@ impl Default for Task {
 }
 
 impl Task {
+    /// Retain a source-attempt accounting record exactly once. Lifecycle
+    /// replay uses this path with the accounting bytes carried by the event.
+    pub fn retain_source_attempt_usage(&mut self, record: SourceAttemptUsage) {
+        if !self.prior_source_attempt_usage.iter().any(|existing| {
+            existing.attempt_id == record.attempt_id && existing.fence == record.fence
+        }) {
+            self.prior_source_attempt_usage.push(record);
+        }
+    }
+
+    /// Episode-cumulative source-worker usage. The optional value is the
+    /// caller's fresher view of the current attempt (for example a live output
+    /// stream); archived attempts are always included exactly once.
+    pub fn total_source_usage_with(&self, current: Option<&TokenUsage>) -> Option<TokenUsage> {
+        let mut total: Option<TokenUsage> = None;
+        for record in &self.prior_source_attempt_usage {
+            if let Some(existing) = total.as_mut() {
+                existing.accumulate(&record.usage);
+            } else {
+                total = Some(record.usage.clone());
+            }
+        }
+        let current_already_archived =
+            self.lifecycle
+                .current_attempt
+                .as_ref()
+                .is_some_and(|attempt| {
+                    self.prior_source_attempt_usage.iter().any(|record| {
+                        record.attempt_id == attempt.id && record.fence == attempt.fence
+                    })
+                });
+        if !current_already_archived && let Some(current) = current.or(self.token_usage.as_ref()) {
+            if let Some(existing) = total.as_mut() {
+                existing.accumulate(current);
+            } else {
+                total = Some(current.clone());
+            }
+        }
+        total
+    }
+
+    pub fn total_source_usage(&self) -> Option<TokenUsage> {
+        self.total_source_usage_with(self.token_usage.as_ref())
+    }
+
+    /// Attempt-labeled source accounting for `wg show --json`. Historical
+    /// records plus the current attempt are returned in execution order.
+    pub fn source_attempt_usage_with(
+        &self,
+        current: Option<&TokenUsage>,
+        current_executor: Option<&str>,
+        current_model: Option<&str>,
+    ) -> Vec<SourceAttemptUsage> {
+        let mut records = self.prior_source_attempt_usage.clone();
+        if let (Some(attempt), Some(usage)) = (
+            self.lifecycle.current_attempt.as_ref(),
+            current.or(self.token_usage.as_ref()),
+        ) && !records
+            .iter()
+            .any(|record| record.attempt_id == attempt.id && record.fence == attempt.fence)
+        {
+            records.push(SourceAttemptUsage {
+                attempt_id: attempt.id.clone(),
+                generation: attempt.generation,
+                fence: attempt.fence,
+                disposition: attempt.disposition,
+                usage: usage.clone(),
+                actual_executor: current_executor
+                    .map(str::to_string)
+                    .or_else(|| self.actual_executor.clone()),
+                actual_model: current_model
+                    .map(str::to_string)
+                    .or_else(|| self.actual_model.clone()),
+            });
+        }
+        records
+    }
+
     /// Receipt-backed successful result, with a narrow compatibility bridge
     /// for historical `Done` source rows written before typed completion.
     /// Receipt-backed v2 completion projection. Unlike
@@ -1662,6 +1748,22 @@ pub fn user_board_handle(task_id: &str) -> Option<&str> {
 pub fn user_board_seq(task_id: &str) -> Option<u32> {
     let rest = task_id.strip_prefix(".user-")?;
     rest.rsplit('-').next().and_then(|s| s.parse::<u32>().ok())
+}
+
+/// Immutable accounting for one source attempt that was retired before a
+/// retry. Review/evaluation lanes have their own ledgers and never appear here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SourceAttemptUsage {
+    pub attempt_id: String,
+    pub generation: u64,
+    pub fence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<crate::lifecycle::AttemptDisposition>,
+    pub usage: TokenUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_executor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_model: Option<String>,
 }
 
 /// Token usage and cost data from a Claude CLI agent run.
@@ -2575,6 +2677,8 @@ struct TaskHelper {
     #[serde(default)]
     token_usage: Option<TokenUsage>,
     #[serde(default)]
+    prior_source_attempt_usage: Vec<SourceAttemptUsage>,
+    #[serde(default)]
     actual_executor: Option<String>,
     #[serde(default)]
     actual_model: Option<String>,
@@ -2758,6 +2862,7 @@ impl<'de> Deserialize<'de> for Task {
             context_scope: helper.context_scope,
             exec_mode: helper.exec_mode,
             token_usage: helper.token_usage,
+            prior_source_attempt_usage: helper.prior_source_attempt_usage,
             actual_executor: helper.actual_executor,
             actual_model: helper.actual_model,
             completion_review_activity: helper.completion_review_activity,

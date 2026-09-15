@@ -153,6 +153,7 @@ pub(crate) fn defer_self_mutation(
         context_scope: None,
         cycle_config: None,
         token_usage: None,
+        prior_source_attempt_usage: Vec::new(),
         actual_executor: None,
         actual_model: None,
         completion_review_activity: Vec::new(),

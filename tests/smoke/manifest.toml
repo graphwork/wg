@@ -3276,3 +3276,10 @@ script = "scenarios/build_baseline_admission_refresh.sh"
 owners = ["refresh-build-baseline-admission"]
 description = "Candidate-binary disposable daemon/terminal regression for exact Cargo baseline admission: a generic non-Rust shell task runs concurrently with exactly one real cold reusable-key Cargo builder; a second exact-key Cargo task remains Open and unattempted; human status names the active builder task/agent/key and bounded next action rather than a missing route; validated layer manifests prove non-Cargo work has no baseline identity; killing the exact builder releases its stale ownership and admits the follower on a live daemon tick with unchanged PID. The assigned integration_dispatcher_config_roundtrip target executes this owned smoke through the Rust subreaper and supplies the production cleanup READY-publication half, including replay idempotence, safe expired-lease/dead-owner publication, unchanged daemon PID, and no capacity over-admission."
 timeout_seconds = 60
+
+[[scenario]]
+name = "retry_episode_usage"
+script = "scenarios/retry_episode_usage.sh"
+owners = ["fix-retry-episode-usage"]
+description = "Candidate-binary real terminal accounting regression: a source exec records provider usage and fails, explicit retry reserves a new attempt and succeeds with more usage, then show/spend report both attempt-labeled source costs exactly once as an episode-cumulative total while the completion-review lane remains separately labeled and excluded."
+timeout_seconds = 45
