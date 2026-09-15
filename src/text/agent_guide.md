@@ -179,9 +179,8 @@ Wrong vs right:
     while the TUI keystroke handler is the broken caller.
   - Right (human flow): start `wg tui` inside tmux, drive keystrokes
     via `tmux send-keys`, then read `last_interaction_at` from the
-    chat file. This is exactly what the
-    `tests/smoke/scenarios/tui_chat_pty_last_interaction.sh` scenario
-    does.
+    chat file. Add this to the repository's existing human-flow test
+    harness when it has one.
 
 - Bug: a button in a web app fails to submit.
   - Wrong: POST directly to the form endpoint.
@@ -198,16 +197,18 @@ Validation checklist for user-visible fixes:
 - [ ] Reproducer is a live or scripted simulation of the real human
       flow (TUI via tmux/PTY, browser via headless driver, terminal
       via `expect` or equivalent), not only a CLI / unit substitute
-- [ ] The reproducer fails on `main` and passes after the fix
-- [ ] A scenario is added to `tests/smoke/scenarios/` and listed in
-      `owners` of `tests/smoke/manifest.toml` so future regressions
-      are caught by the smoke gate (the manifest is grow-only)
+- [ ] The reproducer fails on the base revision and passes after the fix
+- [ ] The reproducer is added to the repository's existing checked-in
+      human-flow or smoke harness when one exists
+- [ ] WorksGood's own `tests/smoke/` layout is used only when changing
+      the WorksGood repository; do not create it in ordinary projects
 
 If you are tempted to validate a user-visible fix with only a CLI or
 unit test "because it exercises the same code", stop. The
 `fix-chat-tasks` regression shipped green for exactly this reason: the
 CLI path was already correct and the TUI caller was the broken one.
-Add the human-flow simulation.
+Add the human-flow simulation to the project's native test structure;
+never invent WorksGood-specific smoke scaffolding in another repository.
 
 ## Cycles
 

@@ -35,7 +35,12 @@ printf 'setup activation fixture\n' >"$scratch/project/README.md"
 git -C "$scratch/project" add README.md
 git -C "$scratch/project" commit -qm init
 base_env=(env -i HOME="$scratch/home" WG_GLOBAL_DIR="$scratch/home/.wg" XDG_CACHE_HOME="$scratch/home/.cache" USER=test TERM=xterm PATH="$scratch/fake-bin:/usr/bin:/bin" PI_INVOCATION_LOG="$scratch/pi-invocations.log" WG_SMOKE_RUN_ID="$WG_SMOKE_RUN_ID" WG_SMOKE_SCENARIO="$WG_SMOKE_SCENARIO")
-"${base_env[@]}" "$W" --dir "$scratch/project/.wg" init --no-agency >/dev/null
+init_cmd="cd '$scratch/project' && env -i HOME='$scratch/home' WG_GLOBAL_DIR='$scratch/home/.wg' XDG_CACHE_HOME='$scratch/home/.cache' USER=test TERM=xterm PATH='$scratch/fake-bin:/usr/bin:/bin' WG_SMOKE_RUN_ID='$WG_SMOKE_RUN_ID' WG_SMOKE_SCENARIO='$WG_SMOKE_SCENARIO' '$W' --dir '$scratch/project/.wg' init --no-agency"
+script -qec "$init_cmd" "$scratch/init.typescript" >/dev/null
+grep -qF "Before publishing the first task, commit the WG project scaffolding." "$scratch/init.typescript" \
+    || loud_fail "PTY init omitted the clean-checkout prerequisite: $(cat "$scratch/init.typescript")"
+grep -qF "git add -- .gitignore AGENTS.md CLAUDE.md && git commit -m 'chore: initialize WorksGood'" "$scratch/init.typescript" \
+    || loud_fail "PTY init omitted its exact surgical commit action: $(cat "$scratch/init.typescript")"
 cleanup_service() {
     "${base_env[@]}" "$W" --dir "$scratch/project/.wg" service stop --force >/dev/null 2>&1 || true
 }
@@ -64,6 +69,15 @@ grep -q 'run `pi`, use `/login`' "$scratch/setup.typescript" \
     || loud_fail "terminal output omitted actionable Pi-owned login check"
 grep -q 'no cross-provider fallback' "$scratch/setup.typescript" \
     || loud_fail "terminal output omitted exact-route/no-fallback boundary"
+grep -qF "git add -- .gitignore AGENTS.md CLAUDE.md worksgood.toml && git commit -m 'chore: initialize WorksGood'" "$scratch/setup.typescript" \
+    || loud_fail "PTY setup omitted the exact pre-dispatch commit action: $(cat "$scratch/setup.typescript")"
+(
+    cd "$scratch/project"
+    git add -- .gitignore AGENTS.md CLAUDE.md worksgood.toml
+    git commit -qm 'chore: initialize WorksGood'
+)
+[[ -z $(git -C "$scratch/project" status --porcelain --untracked-files=all) ]] \
+    || loud_fail "documented first-run action did not produce a clean integration checkout"
 [[ ! -s "$scratch/pi-invocations.log" ]] \
     || loud_fail "setup invoked Pi/provider while claiming a bounded preflight: $(cat "$scratch/pi-invocations.log")"
 if grep -Eq 'sa_family=AF_INET6?|sin6?_family=AF_INET6?' "$scratch/network.trace"; then
@@ -155,4 +169,4 @@ grep -q 'Pi auth/model: NOT VERIFIED' "$scratch/missing.typescript" \
 grep -q 'no fallback was chosen' "$scratch/missing.typescript" \
     || loud_fail "unavailable Pi output omitted no-fallback guarantee"
 
-echo "PASS: setup terminal flow keeps every first-task/review role on one exact Pi route, rejects --dir/CWD project disagreement before writes, and reports bounded readiness without provider access or fallback"
+echo "PASS: real-PTY init/setup prints and exercises the exact surgical pre-dispatch commit action, leaving a clean first integration checkout; setup also keeps every first-task/review role on one exact Pi route, rejects --dir/CWD project disagreement before writes, and reports bounded readiness without provider access or fallback"

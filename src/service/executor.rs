@@ -60,10 +60,10 @@ unless a human explicitly exports `WG_SMOKE_AGENT_OVERRIDE=1`.
    - If a scenario emits SKIP (loud banner, exit 77 — endpoint unreachable, missing \
 credential), the gate does not block, but the SKIP is surfaced — verify the gap is \
 acceptable for your change.
-   - If you fixed a regression that should have been caught earlier, **add a permanent \
-scenario** to `tests/smoke/manifest.toml` listing your task id in `owners`. The manifest \
-is grow-only.
-   - Local dry run before `wg done`:
+   - If this repository already has `tests/smoke/manifest.toml` and its checked-in policy \
+uses WG smoke ownership, add a permanent owned scenario there. Otherwise use the project's \
+existing test structure; do not create WorksGood-specific smoke scaffolding in an ordinary project.
+   - When the WG smoke manifest exists, its local full-suite entry point is:
      ```bash
      wg done {{task_id}} --full-smoke    # runs every scenario, not just owned
      ```
@@ -269,7 +269,7 @@ For any task that fixes a **user-visible behavior** (anything a human notices in
 Wrong vs right examples:
 - TUI typing should bump `last_interaction_at`. \
   Wrong: `wg msg send <chat>` then assert mtime advanced (CLI path only). \
-  Right: drive `wg tui` via tmux + `tmux send-keys`, read `last_interaction_at` from the chat file (see `tests/smoke/scenarios/tui_chat_pty_last_interaction.sh`).
+  Right: drive `wg tui` via tmux + `tmux send-keys`, read `last_interaction_at` from the chat file, and use the repository's existing human-flow harness when it has one.
 - Web button submit fails. \
   Wrong: POST the form endpoint directly. \
   Right: drive the click via a headless browser.
@@ -287,9 +287,11 @@ wg add 'Fix: <user-visible bug>' --after {{task_id}} \
 - [ ] Reproducer is a live or scripted simulation of the real human flow
       (TUI via tmux/PTY, browser via headless driver, terminal via expect),
       not only a CLI / unit substitute
-- [ ] Reproducer fails on main and passes after the fix
-- [ ] Scenario added to tests/smoke/scenarios/ and listed in owners of
-      tests/smoke/manifest.toml so the smoke gate catches future regressions
+- [ ] Reproducer fails on the base revision and passes after the fix
+- [ ] Reproducer is added to the repository's existing checked-in human-flow
+      or smoke harness when one exists
+- [ ] WorksGood's tests/smoke layout is used only when changing WorksGood;
+      do not create it in ordinary projects
 - [ ] Relevant checks from checked-in repository policy are run and reported'
 ```
 
@@ -547,7 +549,7 @@ pub fn build_decomposition_guidance(
          Example contrast (TUI typing should bump `last_interaction_at`):\n\
          - Wrong (CLI-only): `wg msg send <chat>` then assert mtime advanced.\n\
          - Right (human flow): drive `wg tui` via tmux + `tmux send-keys`, read `last_interaction_at` \
-         from the chat file (see `tests/smoke/scenarios/tui_chat_pty_last_interaction.sh`).\n\n\
+         from the chat file, and use the repository's existing human-flow harness when it has one.\n\n\
          For user-visible fixes, write the `## Validation` section in this shape:\n\
          ```bash\n\
          wg add 'Fix: <user-visible bug>' --after {task_id} \\\n  \
@@ -556,9 +558,11 @@ pub fn build_decomposition_guidance(
          - [ ] Reproducer is a live or scripted simulation of the real human flow\n  \
                  (TUI via tmux/PTY, browser via headless driver, terminal via expect),\n  \
                  not only a CLI / unit substitute\n\
-         - [ ] Reproducer fails on main and passes after the fix\n\
-         - [ ] Scenario added to tests/smoke/scenarios/ and listed in owners of\n  \
-                 tests/smoke/manifest.toml so the smoke gate catches future regressions\n\
+         - [ ] Reproducer fails on the base revision and passes after the fix\n\
+         - [ ] Reproducer is added to the repository's existing checked-in human-flow\n  \
+                 or smoke harness when one exists\n\
+         - [ ] WorksGood's tests/smoke layout is used only when changing WorksGood;\n  \
+                 do not create it in ordinary projects\n\
          - [ ] Relevant checks from checked-in repository policy are run and reported'\n\
          ```",
     ));
@@ -851,8 +855,8 @@ the `## Validation` section MUST require a live or scripted simulation of the *a
 not only CLI / unit / library paths. A passing CLI test does not prove the TUI keystroke handler \
 or browser click handler works — the CLI path is often already correct while the user-facing caller \
 is the broken one. Drive the real surface (e.g., `wg tui` via tmux + `tmux send-keys`, headless browser, \
-`expect`) and add a scenario under `tests/smoke/scenarios/` listed in `tests/smoke/manifest.toml` \
-`owners` so the smoke gate catches future regressions.
+`expect`) and add it to the repository's existing checked-in human-flow or smoke harness when one exists. \
+WorksGood's `tests/smoke/` layout is only for the WorksGood repository; do not create it in ordinary projects.
 
 ### When to Decompose vs Implement Directly
 - **Implement directly** if the task is small, well-scoped, and touches ≤ 2-3 files
@@ -3349,6 +3353,11 @@ args = ["--custom-flag"]
         assert!(REQUIRED_WORKFLOW_SECTION.contains("--converged"));
         assert!(REQUIRED_WORKFLOW_SECTION.contains("git commit"));
         assert!(REQUIRED_WORKFLOW_SECTION.contains("git push"));
+        assert!(
+            REQUIRED_WORKFLOW_SECTION.contains(
+                "do not create WorksGood-specific smoke scaffolding in an ordinary project"
+            )
+        );
 
         assert!(GRAPH_PATTERNS_SECTION.contains("Golden rule"));
         assert!(GRAPH_PATTERNS_SECTION.contains("pipeline"));
@@ -3627,6 +3636,8 @@ args = ["--custom-flag"]
             guidance.contains("Guardrails"),
             "Both types should include guardrails"
         );
+        assert!(guidance.contains("do not create it in ordinary projects"));
+        assert!(!guidance.contains("Scenario added to tests/smoke/scenarios/"));
     }
 
     #[test]

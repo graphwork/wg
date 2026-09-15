@@ -10,6 +10,7 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use worksgood::config::{Config, EndpointConfig, ModelRegistryEntry, Tier};
 use worksgood::config_defaults::{RouteParams, SetupRoute, config_for_route};
 use worksgood::models::ModelRegistry;
@@ -485,6 +486,47 @@ pub fn configure_project_agent_guides(project_dir: &Path) -> Result<(String, boo
     }
 
     Ok((statuses.join("\n"), changed))
+}
+
+fn first_dispatch_commit_action(include_route: bool) -> &'static str {
+    if include_route {
+        "git add -- .gitignore AGENTS.md CLAUDE.md worksgood.toml && git commit -m 'chore: initialize WorksGood'"
+    } else {
+        "git add -- .gitignore AGENTS.md CLAUDE.md && git commit -m 'chore: initialize WorksGood'"
+    }
+}
+
+/// Explain the clean-checkout prerequisite at the moment WG creates tracked
+/// project scaffolding. Completion deliberately refuses to overwrite user
+/// changes, so leaving this implicit turns the first accepted candidate into a
+/// surprising LandingPending hold.
+pub(crate) fn print_first_dispatch_commit_action(project_dir: &Path, include_route: bool) {
+    if !project_dir.join(".git").exists() {
+        return;
+    }
+
+    let mut paths = vec![".gitignore", "AGENTS.md", "CLAUDE.md"];
+    if include_route {
+        paths.push("worksgood.toml");
+    }
+    let has_uncommitted_scaffolding = Command::new("git")
+        .args(["status", "--porcelain", "--"])
+        .args(&paths)
+        .current_dir(project_dir)
+        .output()
+        .is_ok_and(|output| output.status.success() && !output.stdout.is_empty());
+    if !has_uncommitted_scaffolding {
+        return;
+    }
+
+    println!();
+    println!("Before publishing the first task, commit the WG project scaffolding.");
+    println!(
+        "An uncommitted integration checkout safely pauses an accepted landing instead of overwriting your changes."
+    );
+    println!("From the project root, review the files and then run:");
+    println!("  git diff -- .gitignore AGENTS.md CLAUDE.md worksgood.toml");
+    println!("  {}", first_dispatch_commit_action(include_route));
 }
 
 /// Shared implementation for configuring a CLAUDE.md at a specific path.
@@ -1596,6 +1638,12 @@ fn run_route(args: &SetupArgs, graph_dir: &Path) -> Result<()> {
     println!(
         "The first WG LLM-backed task will retain the exact configured `pi:` route; no cross-provider fallback is selected."
     );
+    print_first_dispatch_commit_action(
+        project_path
+            .parent()
+            .expect("project worksgood.toml has a parent"),
+        true,
+    );
     Ok(())
 }
 
@@ -2233,6 +2281,12 @@ pub fn run(graph_dir: &Path) -> Result<()> {
     );
     println!(
         "The first WG LLM-backed task will retain the exact configured `pi:` route; no cross-provider fallback is selected."
+    );
+    print_first_dispatch_commit_action(
+        target_path
+            .parent()
+            .expect("project worksgood.toml has a parent"),
+        true,
     );
     println!();
     println!("Next verification commands:");
@@ -3853,6 +3907,20 @@ mod tests {
         let claude_md = std::fs::read(project_dir.join("CLAUDE.md")).unwrap();
         let agents_md = std::fs::read(project_dir.join("AGENTS.md")).unwrap();
         assert_eq!(claude_md, agents_md);
+    }
+
+    #[test]
+    fn first_dispatch_action_is_surgical_and_includes_project_route_after_setup() {
+        let init = first_dispatch_commit_action(false);
+        assert_eq!(
+            init,
+            "git add -- .gitignore AGENTS.md CLAUDE.md && git commit -m 'chore: initialize WorksGood'"
+        );
+        assert!(!init.contains("git add ."));
+
+        let setup = first_dispatch_commit_action(true);
+        assert!(setup.contains("worksgood.toml"));
+        assert!(!setup.contains("git add -A"));
     }
 
     #[test]

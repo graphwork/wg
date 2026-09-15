@@ -220,6 +220,7 @@ pub fn run_with_route(
             println!();
             println!("{}", status);
         }
+        super::setup::print_first_dispatch_commit_action(project_dir, false);
     }
 
     if route == SetupRoute::Openrouter {
@@ -271,6 +272,7 @@ fn run_graph_only(dir: &Path, no_agency: bool) -> Result<()> {
         if changed {
             println!("\n{}", status);
         }
+        super::setup::print_first_dispatch_commit_action(project_dir, false);
     }
     println!("\nNo LLM execution system selected. Graph commands are ready.");
     println!("Run `wg setup --route pi` or `wg profile select pi` before LLM dispatch.");
@@ -563,6 +565,7 @@ pub fn run(
             println!();
             println!("{}", status);
         }
+        super::setup::print_first_dispatch_commit_action(project_dir, false);
     }
 
     // Record this invocation so future `wg setup`, the TUI new-coordinator

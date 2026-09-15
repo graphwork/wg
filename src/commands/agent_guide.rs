@@ -68,6 +68,16 @@ mod tests {
     }
 
     #[test]
+    fn universal_guidance_does_not_export_works_good_smoke_scaffolding() {
+        assert!(
+            AGENT_GUIDE_TEXT.contains("repository's existing")
+                && AGENT_GUIDE_TEXT.contains("human-flow or smoke harness")
+                && AGENT_GUIDE_TEXT.contains("do not create it in ordinary projects")
+        );
+        assert!(!AGENT_GUIDE_TEXT.contains("A scenario is added to `tests/smoke/scenarios/`"));
+    }
+
+    #[test]
     fn guide_text_documents_quality_pass() {
         assert!(
             AGENT_GUIDE_TEXT.contains("quality pass") || AGENT_GUIDE_TEXT.contains("Quality pass")

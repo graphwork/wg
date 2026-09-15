@@ -3092,8 +3092,8 @@ timeout_seconds = 180
 [[scenario]]
 name = "setup_route_activation_preflight"
 script = "scenarios/setup_route_activation_preflight.sh"
-owners = ["setup-route-activation-ux", "fix-first-user-exact-route"]
-description = "Candidate-binary real PTY terminal regression: from clean isolated HOME/project fixtures, one `wg setup --route pi --yes --model <exact>` command leaves every first-task/review role on that one approved route without changing legacy global routing; a split-brain terminal invocation from project A with `--dir` for project B fails before either project is written; fake/absent Pi fixtures prove bounded executable discovery makes no provider/model call, reports auth/model NOT VERIFIED with `/login` action, and never selects a fallback."
+owners = ["setup-route-activation-ux", "fix-first-user-exact-route", "fix-first-user-landing-ux"]
+description = "Candidate-binary real PTY terminal regression: from clean isolated HOME/project fixtures, `wg init` and `wg setup --route pi --yes --model <exact>` print the exact surgical pre-dispatch commit action and exercising it leaves a clean integration checkout; setup leaves every first-task/review role on that one approved route without changing legacy global routing; a split-brain terminal invocation from project A with `--dir` for project B fails before either project is written; fake/absent Pi fixtures prove bounded executable discovery makes no provider/model call, reports auth/model NOT VERIFIED with `/login` action, and never selects a fallback."
 timeout_seconds = 60
 
 [[scenario]]
@@ -3172,6 +3172,13 @@ script = "scenarios/completion_landing_reconciliation.sh"
 owners = ["fix-completion-landing-maze", "integrate-maze-free-recovery"]
 description = "Candidate-binary credential-free terminal/Fake-Pi regression for the supported composed recovery flow: WG creates its isolated .wg-worktrees runtime without requiring a committed .gitignore entry; a reviewed candidate parks on real user dirtiness and releases its worker; a PTY drives an immediate service stop/start and requires readiness-confirmed success while that exact candidate remains parked; main then advances by one independent descendant commit; explicit wg resume (idempotent with the replacement finalizer) performs a deterministic merge, reruns configured plus baseline target-dependent validation, records immutable renewed target-binding evidence and a merge-resolution status record, then lands and completes without reset/retry/requeue/unclaim, Git history surgery, or another source/reviewer invocation."
 timeout_seconds = 120
+
+[[scenario]]
+name = "first_user_landing_pending_tui"
+script = "scenarios/first_user_landing_pending_tui.sh"
+owners = ["fix-first-user-landing-ux"]
+description = "Candidate-binary credential-free first-landing regression: a real daemon/Fake-Pi source produces and reviews one retained candidate while user bytes dirty the attached integration checkout, parking it as Waiting/LandingPending with the source released; a tmux-driven real TUI opens the task Detail pane and shows the concise exact safe `wg resume first-landing --only` action before any recovery mutation."
+timeout_seconds = 90
 
 [[scenario]]
 name = "project_local_pi_core"
