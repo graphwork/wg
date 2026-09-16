@@ -1754,7 +1754,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
             "  {:<18} {:<8} {:<42} {:<9} {:<10} SOURCE",
             "ROLE", "HANDLER", "EXACT ROUTE", "REASON", "PROVENANCE"
         );
-        for (role, route) in roles {
+        for (role, route) in &roles {
             println!(
                 "  {:<18} {:<8} {:<42} {:<9} {:<10} {}",
                 role,
@@ -1769,150 +1769,52 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
             );
         }
         println!();
+        // Catalog-backed block (design: docs/design-retire-model-registry.md
+        // §3 D6): what Pi's models-store.json knows about the models actually
+        // routed. Rendered from PiCatalog only — no registry read.
+        let catalog = worksgood::pi_catalog::load();
+        if catalog.is_empty() {
+            println!(
+                "  catalog: no Pi catalog entries ({}) — model rates/context unavailable",
+                worksgood::pi_catalog::agent_dir()
+                    .map(|d| d.join("models-store.json").display().to_string())
+                    .unwrap_or_else(|| "Pi agent dir not found".to_string())
+            );
+        } else {
+            println!("  Pi catalog (models-store.json):");
+            let mut seen = std::collections::BTreeSet::new();
+            for (_, route) in &roles {
+                let Some((provider, model)) = worksgood::pi_catalog::split_pi_spec(&route.route)
+                else {
+                    continue;
+                };
+                if !seen.insert((provider.clone(), model.clone())) {
+                    continue;
+                }
+                match catalog.find(&provider, &model) {
+                    Some(entry) => {
+                        let rates = match (entry.cost_input_per_mtok, entry.cost_output_per_mtok) {
+                            (Some(i), Some(o)) => format!("${:.2}/${:.2} per MTok", i, o),
+                            _ => "rates unknown".to_string(),
+                        };
+                        let context = entry
+                            .context_window
+                            .map(|c| format!(", context {c} tokens"))
+                            .unwrap_or_default();
+                        println!("    {provider}/{model}: {rates}{context}");
+                    }
+                    None => {
+                        println!("    {provider}/{model}: catalog: no entry");
+                    }
+                }
+            }
+        }
+        println!();
         println!(
             "Pi owns its provider authentication/discovery/endpoints; Codex CLI owns its login and native model IDs."
         );
         println!("WG owns only exact per-role execution routes and inherited reasoning.");
     }
-    Ok(())
-}
-
-#[allow(dead_code)]
-fn show_model_routing_legacy(dir: &Path, json: bool) -> Result<()> {
-    use worksgood::config::DispatchRole;
-
-    let config = Config::load_merged(dir)?;
-
-    // Render a model route in its canonical **handler-first** form and the
-    // handler it actually resolves to. A bare provider prefix
-    // (`openrouter:z-ai/glm-5.2`) is shown as `nex:openrouter:z-ai/glm-5.2`,
-    // and the HANDLER column echoes `handler_for_model` so a silent mis-route
-    // (the 14h-401 incident) is visible at a glance rather than only when an
-    // agent dies.
-    let canonical = |model: &str| -> String {
-        worksgood::config::handler_first_rewrite(model).unwrap_or_else(|| model.to_string())
-    };
-    let handler_of =
-        |model: &str| -> &'static str { worksgood::dispatch::handler_for_model(model).as_str() };
-
-    if json {
-        let mut entries = serde_json::Map::new();
-        let insert_role = |entries: &mut serde_json::Map<String, serde_json::Value>,
-                           name: &str,
-                           resolved: &worksgood::config::ResolvedModel,
-                           tier: String,
-                           source: &str| {
-            // `model`/`provider` keep their original split representation (the
-            // bare model id + resolved provider) for back-compat. `route` is
-            // the full `provider:model` spec, `canonical` renders it
-            // handler-first, and `handler` echoes the resolved handler so a
-            // mis-route is machine-visible.
-            let spec = resolved.spawn_model_spec();
-            entries.insert(
-                name.to_string(),
-                serde_json::json!({
-                    "model": resolved.model,
-                    "route": spec,
-                    "canonical": canonical(&spec),
-                    "handler": handler_of(&spec),
-                    "provider": resolved.provider,
-                    "reasoning": resolved.reasoning.map(|r| r.as_str()),
-                    "endpoint": resolved.endpoint,
-                    "tier": tier,
-                    "source": source,
-                }),
-            );
-        };
-        // Show default
-        let resolved = config.resolve_model_for_role(DispatchRole::Default);
-        let source = config.resolve_model_source(DispatchRole::Default);
-        insert_role(
-            &mut entries,
-            "default",
-            &resolved,
-            DispatchRole::Default.default_tier().to_string(),
-            source,
-        );
-        for role in DispatchRole::ALL {
-            let resolved = config.resolve_model_for_role(*role);
-            let source = config.resolve_model_source(*role);
-            insert_role(
-                &mut entries,
-                &role.to_string(),
-                &resolved,
-                role.default_tier().to_string(),
-                source,
-            );
-        }
-        println!("{}", serde_json::to_string_pretty(&entries)?);
-    } else {
-        println!("Model Routing Configuration");
-        println!("===========================");
-        println!();
-        println!(
-            "  {:<18} {:<9} {:<32} {:<9} {:<12} {:<9} {:<14} SOURCE",
-            "ROLE", "TIER", "MODEL", "HANDLER", "PROVIDER", "REASON", "ENDPOINT"
-        );
-        println!("  {}", "-".repeat(122));
-
-        let print_row =
-            |role: &str, tier: &str, resolved: &worksgood::config::ResolvedModel, source: &str| {
-                let provider_display = resolved
-                    .provider
-                    .as_deref()
-                    .map(worksgood::config::native_provider_to_prefix)
-                    .unwrap_or("(not set)");
-                // `spawn_model_spec` reattaches the provider into a full
-                // `provider:model` route; `canonical` then renders it
-                // handler-first and `handler_of` resolves the real handler.
-                let spec = resolved.spawn_model_spec();
-                println!(
-                    "  {:<18} {:<9} {:<32} {:<9} {:<12} {:<9} {:<14} {}",
-                    role,
-                    tier,
-                    canonical(&spec),
-                    handler_of(&spec),
-                    provider_display,
-                    resolved.reasoning.map(|r| r.as_str()).unwrap_or("(omit)"),
-                    resolved.endpoint.as_deref().unwrap_or(""),
-                    source,
-                );
-            };
-
-        // Default
-        let resolved = config.resolve_model_for_role(DispatchRole::Default);
-        let source = config.resolve_model_source(DispatchRole::Default);
-        print_row(
-            "default",
-            &DispatchRole::Default.default_tier().to_string(),
-            &resolved,
-            &source,
-        );
-
-        // Per-role
-        for role in DispatchRole::ALL {
-            let resolved = config.resolve_model_for_role(*role);
-            let source = config.resolve_model_source(*role);
-            print_row(
-                &role.to_string(),
-                &role.default_tier().to_string(),
-                &resolved,
-                &source,
-            );
-        }
-        println!();
-        println!("HANDLER is the subprocess that runs the model (handler_for_model): a bare");
-        println!("provider prefix resolves to `native` — the canonical form is shown in MODEL.");
-        println!("Sources: explicit = user-set model, tier-default = from default_tier(),");
-        println!("         tier-override = from [models.role].tier, legacy = from agency.*_model,");
-        println!("         fallback = from [models.default] or agent.model");
-        println!();
-        println!("Use --set-model <role> <model> to override a role.");
-        println!("Use --set-reasoning <role> <level> to override structured reasoning.");
-        println!("Use --set-provider <role> <provider> to set a provider.");
-        println!("Use --set-endpoint <role> <endpoint-name> to bind an endpoint.");
-    }
-
     Ok(())
 }
 
@@ -1938,7 +1840,9 @@ fn apply_tier_updates(
         if registry_config.registry_lookup(model_id).is_none() {
             eprintln!(
                 "Warning: '{}' is not in the model registry. \
-                 Tier will resolve to it as a bare model name.",
+                 Note: [[model_registry]] is deprecated and inert (Pi's \
+                 models-store.json is the catalog source of truth); the tier \
+                 will resolve to it as a bare model name.",
                 model_id
             );
         }
@@ -2190,23 +2094,39 @@ pub fn update_model_routing(
     Ok(())
 }
 
-/// Show all model registry entries (built-in + user-defined).
+/// Show the model catalog — now rendered from Pi's `models-store.json` (the
+/// single catalog source of truth) instead of the retired, inert
+/// `[[model_registry]]` config tables (design:
+/// `docs/design-retire-model-registry.md` §3 D5).
 pub fn show_registry(dir: &Path, json: bool) -> Result<()> {
-    let config = Config::load_merged(dir)?;
-    let entries = config.effective_registry();
+    let catalog = worksgood::pi_catalog::load();
+
+    if catalog.is_empty() {
+        let where_note = worksgood::pi_catalog::agent_dir()
+            .map(|d| d.join("models-store.json").display().to_string())
+            .unwrap_or_else(|| "the Pi agent dir".to_string());
+        if json {
+            println!("[]");
+        } else {
+            println!(
+                "No Pi catalog entries ({}) — Pi maintains this file itself; \
+                 WG performs no catalog fetches.",
+                where_note
+            );
+        }
+        return Ok(());
+    }
 
     if json {
-        let val: Vec<serde_json::Value> = entries
-            .iter()
-            .map(|e| {
+        let val: Vec<serde_json::Value> = catalog
+            .models()
+            .map(|m| {
                 serde_json::json!({
-                    "id": e.id,
-                    "provider": e.provider,
-                    "model": e.model,
-                    "tier": e.tier.to_string(),
-                    "context_window": e.context_window,
-                    "cost_per_input_mtok": e.cost_per_input_mtok,
-                    "cost_per_output_mtok": e.cost_per_output_mtok,
+                    "provider": m.provider,
+                    "model": m.id,
+                    "context_window": m.context_window,
+                    "cost_per_input_mtok": m.cost_input_per_mtok,
+                    "cost_per_output_mtok": m.cost_output_per_mtok,
                 })
             })
             .collect();
@@ -2214,36 +2134,37 @@ pub fn show_registry(dir: &Path, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    if entries.is_empty() {
-        println!("No model registry entries.");
-        return Ok(());
-    }
-
     println!(
-        "  {:<12} {:<12} {:<30} {:<10} COST (in/out per MTok)",
-        "ID", "PROVIDER", "MODEL", "TIER"
+        "  {:<14} {:<34} {:<12} COST (in/out per MTok)",
+        "PROVIDER", "MODEL", "CONTEXT"
     );
     println!("  {}", "-".repeat(85));
 
-    for entry in &entries {
-        let cost = if entry.cost_per_input_mtok > 0.0 || entry.cost_per_output_mtok > 0.0 {
-            format!(
-                "${:.2}/${:.2}",
-                entry.cost_per_input_mtok, entry.cost_per_output_mtok
-            )
-        } else {
-            "-".to_string()
+    for entry in catalog.models() {
+        let cost = match (entry.cost_input_per_mtok, entry.cost_output_per_mtok) {
+            (Some(i), Some(o)) => format!("${:.2}/${:.2}", i, o),
+            _ => "-".to_string(),
         };
+        let context = entry
+            .context_window
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "-".to_string());
         println!(
-            "  {:<12} {:<12} {:<30} {:<10} {}",
-            entry.id, entry.provider, entry.model, entry.tier, cost,
+            "  {:<14} {:<34} {:<12} {}",
+            entry.provider, entry.id, context, cost,
         );
     }
 
+    let _ = dir;
     Ok(())
 }
 
 /// Add a new model entry to the registry.
+///
+/// DEPRECATED WRITER (design: `docs/design-retire-model-registry.md` §3 D5):
+/// `[[model_registry]]` is inert — entries no longer feed pricing, spawn
+/// resolution, or tier mapping. Still writes for one release so existing
+/// scripts don't break; the entry is dead weight `wg migrate config` removes.
 #[allow(clippy::too_many_arguments)]
 pub fn add_registry_entry(
     dir: &Path,
@@ -2276,6 +2197,12 @@ pub fn add_registry_entry(
         ConfigScope::Local => Config::load(dir)?,
     };
 
+    eprintln!(
+        "warning: [[model_registry]] is deprecated and inert (Pi's models-store.json \
+         is the catalog source of truth); the entry will be written but has no effect. \
+         Run `wg migrate config` to remove deprecated registry tables."
+    );
+
     // Check for duplicate ID and update if exists
     let existing_idx = config.model_registry.iter().position(|e| e.id == id);
     if let Some(idx) = existing_idx {
@@ -2294,6 +2221,9 @@ pub fn add_registry_entry(
 }
 
 /// Remove a registry entry by ID. Warns about dependents unless --force is set.
+///
+/// DEPRECATED WRITER — see `add_registry_entry` (design:
+/// `docs/design-retire-model-registry.md` §3 D5).
 pub fn remove_registry_entry(
     dir: &Path,
     scope: ConfigScope,
@@ -2928,10 +2858,15 @@ fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
                 .parse::<u64>()
                 .map_err(|_| anyhow::anyhow!("expected positive integer (seconds)"))?;
         }
+        // `coordinator.registry_refresh_interval` was retired with the daemon
+        // registry-refresh path (design: docs/design-retire-model-registry.md
+        // §3 D4). It is a deprecated key: `wg migrate config` removes it.
         "coordinator.registry_refresh_interval" => {
-            config.coordinator.registry_refresh_interval = v.parse::<u64>().map_err(|_| {
-                anyhow::anyhow!("expected non-negative integer (seconds; 0 disables refresh)")
-            })?;
+            anyhow::bail!(
+                "'coordinator.registry_refresh_interval' is deprecated: the daemon \
+                 model-registry refresh path was removed (Pi's models-store.json is the \
+                 catalog source of truth). Run `wg migrate config` to remove the key."
+            );
         }
         "coordinator.archive_retention_days" => {
             config.coordinator.archive_retention_days = v.parse::<u64>().map_err(|_| {
@@ -3367,16 +3302,8 @@ fn validate_dotted_value(key: &str, raw: &str, typed: &toml::Value) -> Result<()
         })?;
         return Ok(());
     }
-    // coordinator.registry_refresh_interval must be a non-negative integer.
-    if matches!(key, "dispatcher.registry_refresh_interval") {
-        match typed {
-            toml::Value::Integer(i) if *i >= 0 => {}
-            other => anyhow::bail!(
-                "dispatcher.registry_refresh_interval expects a non-negative integer (seconds; 0 disables); got '{}'",
-                other
-            ),
-        }
-    }
+    // (deprecated-key handling lives in the set path — see
+    // `coordinator.registry_refresh_interval` above.)
     Ok(())
 }
 

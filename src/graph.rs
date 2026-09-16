@@ -1,4 +1,4 @@
-use crate::config::{Config, ModelRegistryEntry, ReasoningLevel};
+use crate::config::ReasoningLevel;
 use crate::dispatch::plan::ExecutorKind;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -1827,7 +1827,6 @@ impl TokenUsage {
 pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage> {
     let content = std::fs::read_to_string(output_log_path).ok()?;
     let model_spec = infer_agent_model_spec(output_log_path);
-    let model_pricing = infer_model_pricing(output_log_path, model_spec.as_deref());
 
     // Prefer the final result object when present.
     for line in content.lines().rev() {
@@ -1869,9 +1868,7 @@ pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage
             Err(_) => continue,
         };
         if val.get("type").and_then(|v| v.as_str()) == Some("turn.completed") {
-            if let Some(usage) =
-                extract_codex_token_usage(&val, model_spec.as_deref(), model_pricing.as_ref())
-            {
+            if let Some(usage) = extract_codex_token_usage(&val, model_spec.as_deref()) {
                 found_codex = true;
                 codex_total.accumulate(&usage);
             }
@@ -1886,9 +1883,7 @@ pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage
     // field names ({input, output, cacheRead, cacheWrite, cost}). The SAME
     // snapshot also appears on `message_update`/`message_end`, so sum
     // `turn_end` ONCE per turn to avoid double-counting.
-    if let Some(usage) =
-        extract_pi_token_usage(&content, model_spec.as_deref(), model_pricing.as_ref())
-    {
+    if let Some(usage) = extract_pi_token_usage(&content) {
         return Some(usage);
     }
 
@@ -1899,7 +1894,7 @@ pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage
     if raw_stream_path != output_log_path
         && let Ok(raw_stream) = std::fs::read_to_string(raw_stream_path)
     {
-        return extract_pi_token_usage(&raw_stream, model_spec.as_deref(), model_pricing.as_ref());
+        return extract_pi_token_usage(&raw_stream);
     }
 
     None
@@ -1908,11 +1903,7 @@ pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage
 /// Sum Pi `turn_end` usage across an `output.log` / `raw_stream.jsonl` body.
 /// Returns `None` when no `turn_end` event is present. Cost is Pi-reported
 /// only; a missing/zero Pi cost remains zero and is never estimated by WG.
-fn extract_pi_token_usage(
-    content: &str,
-    _model_spec: Option<&str>,
-    _pricing: Option<&ModelRegistryEntry>,
-) -> Option<TokenUsage> {
+fn extract_pi_token_usage(content: &str) -> Option<TokenUsage> {
     let mut total = TokenUsage {
         cost_usd: 0.0,
         input_tokens: 0,
@@ -1981,7 +1972,6 @@ fn extract_result_token_usage(val: &serde_json::Value) -> Option<TokenUsage> {
 fn extract_codex_token_usage(
     val: &serde_json::Value,
     model_spec: Option<&str>,
-    pricing: Option<&ModelRegistryEntry>,
 ) -> Option<TokenUsage> {
     let usage = val.get("usage")?;
     let total_input_tokens = usage_u64(usage, &["input_tokens", "inputTokens"]);
@@ -2007,13 +1997,7 @@ fn extract_codex_token_usage(
         .or_else(|| val.get("cost_usd"))
         .and_then(|v| v.as_f64())
         .unwrap_or_else(|| {
-            estimate_model_cost_usd(
-                model_spec,
-                pricing,
-                input_tokens,
-                output_tokens,
-                cached_input_tokens,
-            )
+            estimate_model_cost_usd(model_spec, input_tokens, output_tokens, cached_input_tokens)
         });
 
     Some(TokenUsage {
@@ -2055,9 +2039,10 @@ fn infer_agent_model_spec(output_log_path: &std::path::Path) -> Option<String> {
         .and_then(|task| task.model.clone())
 }
 
-/// Explicitly estimate USD cost for an agent's token usage using model-registry
-/// per-token rates, inferring the model spec + pricing from the agent's
-/// `output.log` neighbourhood (`metadata.json` / graph).
+/// Explicitly estimate USD cost for an agent's token usage using Pi-catalog
+/// per-token rates (falling back to the static claude/codex native specs),
+/// inferring the model spec from the agent's `output.log` neighbourhood
+/// (`metadata.json` / graph).
 ///
 /// This opt-in helper is not part of `parse_token_usage`: provider-reported Pi
 /// cost is persisted exactly, including zero when the provider supplies no
@@ -2070,37 +2055,55 @@ pub fn estimate_agent_cost_usd(
     cache_read_input_tokens: u64,
 ) -> f64 {
     let model_spec = infer_agent_model_spec(output_log_path);
-    let pricing = infer_model_pricing(output_log_path, model_spec.as_deref());
     estimate_model_cost_usd(
         model_spec.as_deref(),
-        pricing.as_ref(),
         input_tokens,
         output_tokens,
         cache_read_input_tokens,
     )
 }
 
+/// Estimate USD cost from per-MTok rates.
+///
+/// Rate lookup order (design: `docs/design-retire-model-registry.md` §3 D3):
+///
+/// 1. **Pi catalog** (first, `pi:` specs only): the local
+///    `models-store.json` rates; cache-read discount =
+///    `cacheRead / input` when both are known (clamped to `[0, 1]`), else
+///    `0.0` (never over-estimate). A `pi:` model the catalog has no rates
+///    for estimates 0 — that is Pi's reported truth (unknown), not WG's guess.
+/// 2. **Static minimal fallback** (unchanged): `fallback_model_pricing_mtok`
+///    for `claude:` / `codex:` native specs — native CLI routes keep today's
+///    exact handling.
+/// 3. **Else 0.0** (unchanged): unknown model, no rates ⇒ estimate 0. The
+///    legacy `[[model_registry]]` config entries are no longer consulted.
 fn estimate_model_cost_usd(
     model_spec: Option<&str>,
-    pricing: Option<&ModelRegistryEntry>,
     input_tokens: u64,
     output_tokens: u64,
     cached_input_tokens: u64,
 ) -> f64 {
-    let (input_per_mtok, output_per_mtok, cache_read_discount) = if let Some(entry) = pricing {
-        (
-            entry.cost_per_input_mtok,
-            entry.cost_per_output_mtok,
-            if entry.prompt_caching {
-                entry.cache_read_discount
-            } else {
-                0.0
-            },
-        )
-    } else {
-        let Some(model_spec) = model_spec else {
+    let Some(model_spec) = model_spec else {
+        return 0.0;
+    };
+
+    let (input_per_mtok, output_per_mtok, cache_read_discount) = if let Some((provider, model)) =
+        crate::pi_catalog::split_pi_spec(model_spec)
+    {
+        let catalog = crate::pi_catalog::load();
+        let Some(entry) = catalog.find(&provider, &model) else {
             return 0.0;
         };
+        let (Some(input), Some(output)) = (entry.cost_input_per_mtok, entry.cost_output_per_mtok)
+        else {
+            return 0.0;
+        };
+        let discount = match (entry.cost_input_per_mtok, entry.cost_cache_read_per_mtok) {
+            (Some(base), Some(read)) if base > 0.0 => (read / base).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        (input, output, discount)
+    } else {
         let Some((input, output)) = fallback_model_pricing_mtok(model_spec) else {
             return 0.0;
         };
@@ -2131,27 +2134,6 @@ fn infer_workgraph_dir(output_log_path: &std::path::Path) -> Option<std::path::P
         .map(std::path::Path::to_path_buf)
 }
 
-fn infer_model_pricing(
-    output_log_path: &std::path::Path,
-    model_spec: Option<&str>,
-) -> Option<ModelRegistryEntry> {
-    let workgraph_dir = infer_workgraph_dir(output_log_path)?;
-    let config = Config::load_or_default(&workgraph_dir);
-    let model_spec = model_spec?;
-    let model_without_provider = model_spec
-        .split_once(':')
-        .map(|(_, model)| model)
-        .unwrap_or(model_spec);
-
-    config.effective_registry().into_iter().find(|entry| {
-        entry.id == model_spec
-            || entry.id == model_without_provider
-            || entry.model == model_spec
-            || entry.model == model_without_provider
-            || format!("{}:{}", entry.provider, entry.model) == model_spec
-    })
-}
-
 /// Parse token usage from an agent output.log, including mid-run data.
 ///
 /// First tries to find a `type=result` line (completed runs). If none exists,
@@ -2170,7 +2152,6 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
     // Fall back: sum per-turn usage from assistant/turn messages
     let content = std::fs::read_to_string(output_log_path).ok()?;
     let model_spec = infer_agent_model_spec(output_log_path);
-    let model_pricing = infer_model_pricing(output_log_path, model_spec.as_deref());
 
     let mut total_input = 0u64;
     let mut total_output = 0u64;
@@ -2204,9 +2185,7 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
             Some("assistant") => val.get("message").and_then(|m| m.get("usage")),
             Some("turn") => val.get("usage"),
             Some("turn.completed") => {
-                if let Some(codex_usage) =
-                    extract_codex_token_usage(&val, model_spec.as_deref(), model_pricing.as_ref())
-                {
+                if let Some(codex_usage) = extract_codex_token_usage(&val, model_spec.as_deref()) {
                     found_any = true;
                     total_input += codex_usage.input_tokens;
                     total_output += codex_usage.output_tokens;
@@ -5069,51 +5048,96 @@ mod tests {
         assert!(usage.cost_usd > 0.0);
     }
 
+    /// Registry entries no longer feed cost estimation — the Pi catalog does
+    /// (design: docs/design-retire-model-registry.md §3 D3). A lunaroute
+    /// fixture `models-store.json` with non-zero rates must produce a
+    /// non-zero estimate for a `pi:lunaroute/...` model; an unknown model and
+    /// a missing catalog must still estimate 0 without erroring.
     #[test]
-    fn test_parse_token_usage_codex_uses_registry_pricing() {
+    fn test_estimate_agent_cost_uses_pi_catalog_rates() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path().join(".wg");
+        let agent_dir = wg_dir.join("agents").join("agent-test");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
+        // The .wg config still carries a legacy [[model_registry]] entry —
+        // it must be inert: the estimate comes from the Pi catalog only.
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            r#"
+[[model_registry]]
+id = "test-model"
+provider = "lunaroute"
+model = "test-model"
+tier = "standard"
+cost_per_input_mtok = 99.0
+cost_per_output_mtok = 99.0
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            agent_dir.join("metadata.json"),
+            r#"{"agent_id":"agent-test","executor":"pi","model":"pi:lunaroute/test-model","task_id":"t"}"#,
+        )
+        .unwrap();
+
+        // Fixture Pi catalog with non-zero lunaroute rates + cache-read.
+        let pi_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            pi_dir.path().join("models-store.json"),
+            r#"{"lunaroute":{"models":[{"id":"test-model","cost":{"input":2.0,"output":10.0,"cacheRead":0.2},"contextWindow":131072}]}}"#,
+        )
+        .unwrap();
+
+        // PI_CODING_AGENT_DIR is process-global: take the crate-wide env lock
+        // so sibling env-sensitive tests (and other catalog tests) can't
+        // observe a foreign catalog mid-flight.
+        let _env_guard = crate::test_helpers::env_lock();
+        let saved = std::env::var_os("PI_CODING_AGENT_DIR");
+        unsafe { std::env::set_var("PI_CODING_AGENT_DIR", pi_dir.path()) };
+        let cost = estimate_agent_cost_usd(&agent_dir.join("output.log"), 1_000_000, 100_000, 0);
+        let cached_cost =
+            estimate_agent_cost_usd(&agent_dir.join("output.log"), 900_000, 100_000, 100_000);
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+                None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+            }
+        }
+
+        // 1M input @ $2/MTok + 0.1M output @ $10/MTok = 2 + 1 = $3.
+        assert!((cost - 3.0).abs() < 1e-9, "got {cost}");
+        // Cache-read discount = cacheRead/input = 0.2/2.0 = 0.1:
+        // 0.9M*2 + 0.1M output*10 + 0.1M cached*2*0.1 = 1.8 + 1 + 0.02.
+        assert!((cached_cost - 2.82).abs() < 1e-9, "got {cached_cost}");
+    }
+
+    #[test]
+    fn test_estimate_agent_cost_zero_for_unknown_model_and_missing_catalog() {
         let dir = tempfile::tempdir().unwrap();
         let wg_dir = dir.path().join(".wg");
         let agent_dir = wg_dir.join("agents").join("agent-test");
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
         std::fs::write(
-            wg_dir.join("config.toml"),
-            r#"
-[[model_registry]]
-id = "custom-codex"
-provider = "codex"
-model = "custom-codex"
-tier = "standard"
-cost_per_input_mtok = 7.0
-cost_per_output_mtok = 11.0
-prompt_caching = true
-cache_read_discount = 0.5
-"#,
-        )
-        .unwrap();
-
-        let log_path = agent_dir.join("output.log");
-        std::fs::write(
             agent_dir.join("metadata.json"),
-            r#"{"agent_id":"agent-test","executor":"codex","model":"custom-codex","task_id":"t"}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &log_path,
-            r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":250,"output_tokens":10}}
-"#,
+            r#"{"agent_id":"agent-test","executor":"pi","model":"pi:lunaroute/unknown-model","task_id":"t"}"#,
         )
         .unwrap();
 
-        let usage = parse_token_usage(&log_path).unwrap();
-        assert_eq!(usage.input_tokens, 750);
-        assert_eq!(usage.cache_read_input_tokens, 250);
-        assert_eq!(usage.output_tokens, 10);
-        assert!(
-            (usage.cost_usd - 0.006235).abs() < 0.000001,
-            "expected registry pricing to override fallback, got {}",
-            usage.cost_usd
-        );
+        // Empty catalog dir: no models-store.json at all.
+        let pi_dir = tempfile::tempdir().unwrap();
+        let _env_guard = crate::test_helpers::env_lock();
+        let saved = std::env::var_os("PI_CODING_AGENT_DIR");
+        unsafe { std::env::set_var("PI_CODING_AGENT_DIR", pi_dir.path()) };
+        let cost = estimate_agent_cost_usd(&agent_dir.join("output.log"), 1_000_000, 100_000, 0);
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
+                None => std::env::remove_var("PI_CODING_AGENT_DIR"),
+            }
+        }
+        assert_eq!(cost, 0.0, "unknown model with no catalog must estimate 0");
     }
 
     #[test]

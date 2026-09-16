@@ -282,10 +282,10 @@ pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
         };
     }
 
-    // Add model registry entries
-    if !choices.model_registry_entries.is_empty() {
-        config.model_registry = choices.model_registry_entries.clone();
-    }
+    // The legacy [[model_registry]] write-back is retired (design:
+    // docs/design-retire-model-registry.md §3 D5). Setup persists only the
+    // actual authority — routes, [tiers], [models.<role>] — and never
+    // [[model_registry]] tables; Pi's models-store.json is the catalog.
 
     config.agency.auto_assign = false;
     config.agency.auto_evaluate = choices.agency_enabled;
@@ -439,15 +439,8 @@ pub fn format_summary(choices: &SetupChoices) -> String {
         }
         lines.push("  is_default = true".to_string());
     }
-    if !choices.model_registry_entries.is_empty() {
-        for entry in &choices.model_registry_entries {
-            lines.push(String::new());
-            lines.push("[[model_registry]]".to_string());
-            lines.push(format!("  id = \"{}\"", entry.id));
-            lines.push(format!("  provider = \"{}\"", entry.provider));
-            lines.push(format!("  model = \"{}\"", entry.model));
-        }
-    }
+    // [[model_registry]] blocks are no longer written: the registry is
+    // deprecated and inert (design: docs/design-retire-model-registry.md).
     lines.push(String::new());
     lines.push("[agency]".to_string());
     lines.push("  auto_assign = false".to_string());

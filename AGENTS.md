@@ -220,8 +220,9 @@ accounting surfaces (see `docs`/git history for `fix-pi-handler`):
   (the SAME snapshot is repeated on `message_update`/`message_end` — those are
   ignored, so there is no double-count) via the explicit field-map in
   `stream_event::pi_usage_to_turn` / `pi_usage_cost`. Cost prefers pi's own
-  per-turn `usage.cost.total`; when zero it falls back to model-registry rates
-  (`graph::estimate_agent_cost_usd`). This populates `task.token_usage` exactly
+  per-turn `usage.cost.total`; when zero the estimate path falls back to
+  Pi-catalog rates (`graph::estimate_agent_cost_usd` over
+  `~/.pi/agent/models-store.json` — see docs/design-retire-model-registry.md). This populates `task.token_usage` exactly
   like claude/codex, so `wg show` / `wg spend` / `wg stats` reflect the pi task.
 - **Canonical event channel** — the spawn wrapper's `pi` arm
   (`write_wrapper_script` in `src/commands/spawn/execution.rs`) captures pi's

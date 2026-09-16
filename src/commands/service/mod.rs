@@ -2671,177 +2671,6 @@ fn run_automatic_archival(
     }
 }
 
-/// Daemon-side state for the model-registry refresh job: failure count
-/// and an optional cooldown window. After
-/// `REGISTRY_REFRESH_FAILURE_THRESHOLD` consecutive failures the daemon
-/// stops trying for `REGISTRY_REFRESH_COOLDOWN` so a missing API key
-/// doesn't pile 25+ identical errors into the daemon log per hour.
-#[derive(Default)]
-pub(crate) struct RegistryRefreshState {
-    /// Consecutive failure count. Resets on success.
-    pub error_count: u64,
-    /// When set, skip refresh attempts until this instant.
-    pub cooldown_until: Option<std::time::Instant>,
-}
-
-/// Number of consecutive failures that trips the circuit breaker.
-const REGISTRY_REFRESH_FAILURE_THRESHOLD: u64 = 5;
-/// How long the breaker stays open once tripped.
-const REGISTRY_REFRESH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60 * 60);
-
-fn registry_refresh_has_selected_route(config: &worksgood::config::Config) -> bool {
-    match config.project_default_route() {
-        Ok(_) => true,
-        Err(error) => !format!("{error:#}").contains("WG-EXEC-ROUTE-MISSING"),
-    }
-}
-
-/// Run model registry refresh directly from the daemon without graph control tasks.
-///
-/// Time-gated: only fires when at least `registry_refresh_interval` seconds
-/// have elapsed since the last successful refresh (stored in
-/// `model_benchmarks.json`'s `fetched_at` field). Set interval to 0 to disable.
-///
-/// Circuit-breaker: after 5 consecutive failures the breaker opens for 1
-/// hour. Manual `wg config reload` or `wg openrouter status` (i.e. any
-/// path that re-resolves the API key successfully) implicitly clears the
-/// breaker on the next daemon restart; we deliberately keep the breaker
-/// state in-memory so a fresh daemon process always retries once before
-/// re-tripping.
-fn run_registry_refresh(dir: &Path, state: &mut RegistryRefreshState, logger: &DaemonLogger) {
-    let config = worksgood::config::Config::load_or_default(dir);
-    let interval = config.coordinator.registry_refresh_interval;
-    if interval == 0 || !registry_refresh_has_selected_route(&config) {
-        return; // Disabled or no execution route has been selected.
-    }
-
-    // Circuit breaker: after a recent burst of failures, hold off and
-    // don't even attempt the fetch. The instant the cooldown expires we
-    // try once more — success clears the breaker, another failure
-    // starts a fresh cooldown.
-    if let Some(until) = state.cooldown_until
-        && std::time::Instant::now() < until
-    {
-        return;
-    }
-
-    // Time gate: check if enough time has elapsed since the last fetch.
-    {
-        if let Ok(Some(existing)) = worksgood::model_benchmarks::BenchmarkRegistry::load(dir)
-            && let Ok(fetched) = chrono::DateTime::parse_from_rfc3339(&existing.fetched_at)
-        {
-            let age = chrono::Utc::now().signed_duration_since(fetched);
-            if age.num_seconds() < interval as i64 {
-                return; // Not yet time
-            }
-        }
-        // If no existing registry or unparseable date, proceed (initial population).
-    }
-
-    // Run the actual refresh
-    let outcome = do_registry_refresh(dir);
-    record_registry_refresh_outcome(state, outcome, logger);
-}
-
-/// Update circuit-breaker state from a refresh outcome and log
-/// transitions. Extracted so unit tests can drive the state machine
-/// without any IO or daemon plumbing.
-pub(crate) fn record_registry_refresh_outcome(
-    state: &mut RegistryRefreshState,
-    outcome: Result<String>,
-    logger: &DaemonLogger,
-) {
-    match outcome {
-        Ok(summary) => {
-            if state.error_count > 0 {
-                logger.info(&format!(
-                    "Registry refresh recovered after {} consecutive error(s)",
-                    state.error_count
-                ));
-            }
-            state.error_count = 0;
-            state.cooldown_until = None;
-            logger.info(&format!("Registry refresh complete: {}", summary));
-        }
-        Err(e) => {
-            state.error_count += 1;
-            // Log the first error verbatim, then go quiet — we only
-            // surface the *threshold* event after that. This is the
-            // anti-spam guarantee the user asked for.
-            if state.error_count == 1 {
-                logger.error(&format!(
-                    "Registry refresh error (#{} consecutive): {:#}",
-                    state.error_count, e
-                ));
-            } else if state.error_count == REGISTRY_REFRESH_FAILURE_THRESHOLD {
-                state.cooldown_until = Some(std::time::Instant::now() + REGISTRY_REFRESH_COOLDOWN);
-                logger.error(&format!(
-                    "Registry refresh: {} consecutive failures — cooling down for {} minutes. \
-                     Last error: {:#}",
-                    state.error_count,
-                    REGISTRY_REFRESH_COOLDOWN.as_secs() / 60,
-                    e
-                ));
-            }
-        }
-    }
-}
-
-/// Execute the actual registry refresh: fetch from OpenRouter, diff, save.
-/// Returns a human-readable summary string on success.
-fn do_registry_refresh(dir: &Path) -> Result<String> {
-    use worksgood::executor::native::openai_client::{
-        fetch_openrouter_models_blocking, resolve_openai_api_key_from_dir,
-    };
-    use worksgood::model_benchmarks::{self, BenchmarkRegistry, diff_registries, format_changes};
-
-    // Load existing registry (if any) for diffing.
-    let old_registry = BenchmarkRegistry::load(dir)?;
-
-    // Fetch fresh model data from OpenRouter.
-    let api_key = resolve_openai_api_key_from_dir(dir)?;
-    let base_url = std::env::var("OPENAI_BASE_URL")
-        .or_else(|_| std::env::var("OPENROUTER_BASE_URL"))
-        .ok();
-    let or_models = fetch_openrouter_models_blocking(&api_key, base_url.as_deref())?;
-
-    let mut registry = model_benchmarks::build_from_openrouter(&or_models);
-
-    // Preserve existing benchmark scores (manually or externally added).
-    if let Some(ref existing) = old_registry {
-        for (id, existing_model) in &existing.models {
-            if let Some(new_model) = registry.models.get_mut(id) {
-                if existing_model.benchmarks.coding_index.is_some()
-                    || existing_model.benchmarks.intelligence_index.is_some()
-                    || existing_model.benchmarks.agentic.is_some()
-                {
-                    new_model.benchmarks = existing_model.benchmarks.clone();
-                }
-                if existing_model.popularity.provider_count.is_some() {
-                    new_model.popularity = existing_model.popularity.clone();
-                }
-            }
-        }
-    }
-
-    // Compute fitness scores.
-    model_benchmarks::compute_fitness_scores(&mut registry);
-
-    // Diff against the old registry.
-    let diff_summary = if let Some(ref old) = old_registry {
-        let changes = diff_registries(old, &registry, 20, 2.0);
-        format_changes(&changes)
-    } else {
-        "Initial population (no previous registry)".to_string()
-    };
-
-    // Save the new registry.
-    let model_count = registry.models.len();
-    registry.save(dir)?;
-
-    Ok(format!("{} models, diff: {}", model_count, diff_summary))
-}
-
 /// Resolve the effective `max_agents` and its persisted runtime authority at
 /// daemon startup.
 ///
@@ -3517,7 +3346,6 @@ pub fn run_daemon(
     let mut archival_hold_notice: Option<String> = None;
     let archival_build_id = crate::commands::archive::current_build_id()
         .unwrap_or_else(|_| "unverified-build".to_string());
-    let mut registry_refresh_state = RegistryRefreshState::default();
 
     while running {
         // A request is only an in-memory try_send. It never touches a retained
@@ -4077,11 +3905,8 @@ pub fn run_daemon(
                         &logger,
                     );
 
-                    // Registry refresh runs directly in the daemon and is time-gated.
-                    run_registry_refresh(&dir, &mut registry_refresh_state, &logger);
-
                     // Re-arm the self-write quiet window after the tick: the
-                    // archival / registry-refresh phases above can also write
+                    // archival phase above can also write
                     // the graph, and inotify events for any of those writes
                     // arrive ~debounce_ms later. We extend the window from
                     // *now* so the post-tick wake gets absorbed even if the
@@ -6477,65 +6302,6 @@ mod tests {
         assert!(warn_bare_provider_model_arg(Some("claude:opus"), "x").is_none());
         assert!(warn_bare_provider_model_arg(Some("opus"), "x").is_none());
         assert!(warn_bare_provider_model_arg(None, "x").is_none());
-    }
-
-    #[test]
-    fn registry_refresh_is_irrelevant_until_a_project_route_is_selected() {
-        let mut config = worksgood::config::Config::default();
-        assert!(!registry_refresh_has_selected_route(&config));
-
-        config.agent.model = "pi:openai-codex/gpt-5.6-sol".into();
-        assert!(registry_refresh_has_selected_route(&config));
-    }
-
-    /// 5 consecutive failures must trip the circuit breaker (sets
-    /// `cooldown_until`) so the daemon stops re-attempting the registry
-    /// refresh until the cooldown expires. Without this, a missing
-    /// OpenRouter API key fills the daemon log with 25+ identical errors.
-    #[test]
-    fn test_registry_refresh_breaker_trips_after_threshold() {
-        let tmp = TempDir::new().unwrap();
-        let logger = DaemonLogger::open(tmp.path()).unwrap();
-        let mut state = RegistryRefreshState::default();
-        for _ in 0..(REGISTRY_REFRESH_FAILURE_THRESHOLD - 1) {
-            record_registry_refresh_outcome(
-                &mut state,
-                Err(anyhow::anyhow!("no api key")),
-                &logger,
-            );
-        }
-        assert!(
-            state.cooldown_until.is_none(),
-            "breaker must not trip below threshold"
-        );
-        record_registry_refresh_outcome(&mut state, Err(anyhow::anyhow!("no api key")), &logger);
-        assert_eq!(state.error_count, REGISTRY_REFRESH_FAILURE_THRESHOLD);
-        assert!(
-            state.cooldown_until.is_some(),
-            "breaker must trip at threshold"
-        );
-    }
-
-    /// A successful refresh after a streak of failures clears the
-    /// breaker — error count resets, cooldown is removed.
-    #[test]
-    fn test_registry_refresh_breaker_clears_on_success() {
-        let tmp = TempDir::new().unwrap();
-        let logger = DaemonLogger::open(tmp.path()).unwrap();
-        let mut state = RegistryRefreshState {
-            error_count: REGISTRY_REFRESH_FAILURE_THRESHOLD,
-            cooldown_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(60)),
-        };
-        record_registry_refresh_outcome(
-            &mut state,
-            Ok("models: 1234 -> 1235".to_string()),
-            &logger,
-        );
-        assert_eq!(state.error_count, 0);
-        assert!(
-            state.cooldown_until.is_none(),
-            "breaker must clear on a successful refresh"
-        );
     }
 
     #[test]

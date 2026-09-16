@@ -40,6 +40,7 @@ pub fn canonicalize_in_place(doc: &mut toml::Value) -> CanonicalizeReport {
     let mut renamed = Vec::new();
     let mut rewritten = Vec::new();
     drop_deprecated(doc, &mut removed);
+    drop_deprecated_model_registry(doc, &mut removed);
     rename_legacy_fields(doc, &mut renamed);
     fix_stale_model_strings(doc, &mut rewritten);
     drop_orphaned_openrouter(doc, &mut removed);
@@ -78,6 +79,10 @@ const DEPRECATED_KEYS: &[(&str, &str)] = &[
     // Graph depth is structural data, not a guardrail. Deep chains remain valid;
     // resource safety is enforced by iterative/bounded algorithms instead.
     ("guardrails", "max_task_depth"),
+    // The daemon's model-registry background refresh was retired: no daemon
+    // code requests provider API keys for catalog refresh anymore (Pi's
+    // models-store.json is the catalog source of truth).
+    ("coordinator", "registry_refresh_interval"),
 ];
 
 pub(crate) fn drop_deprecated(doc: &mut toml::Value, removed: &mut Vec<String>) {
@@ -98,6 +103,24 @@ pub(crate) fn drop_deprecated(doc: &mut toml::Value, removed: &mut Vec<String>) 
             table.remove(*section);
             removed.push(format!("{} (empty section)", section));
         }
+    }
+}
+
+/// Remove the deprecated top-level `[[model_registry]]` tables.
+///
+/// The legacy WG model registry is inert (design:
+/// `docs/design-retire-model-registry.md` §3 D5): entries no longer feed
+/// pricing, spawn resolution, or tier mapping — Pi's `models-store.json` is
+/// the catalog source of truth. The migration removes the tables, reports
+/// `removed deprecated key: model_registry`, and is backed up + dry-run-able
+/// by the `wg migrate config` file wrapper.
+pub(crate) fn drop_deprecated_model_registry(doc: &mut toml::Value, removed: &mut Vec<String>) {
+    let table = match doc.as_table_mut() {
+        Some(t) => t,
+        None => return,
+    };
+    if table.remove("model_registry").is_some() {
+        removed.push("model_registry".to_string());
     }
 }
 

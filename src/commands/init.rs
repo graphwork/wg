@@ -587,7 +587,7 @@ pub fn run(
 ///
 /// When the executor maps to one of the known routes (claude → claude-cli,
 /// codex → codex-cli, nex/native → openrouter), the route's defaults are
-/// used to populate `[tiers]` and the model registry — fixing the empty
+/// used to populate `[tiers]` — fixing the empty
 /// `[tiers]` bug from the old `wg init -x claude` flow.
 ///
 /// For executors with no matching route (`shell`, custom), only
@@ -613,9 +613,9 @@ fn apply_executor(dir: &Path, executor: &str) -> Result<()> {
         config.coordinator.executor = route_cfg.coordinator.executor.clone();
         config.agent.executor = route_cfg.agent.executor.clone();
         config.tiers = route_cfg.tiers.clone();
-        if !route_cfg.model_registry.is_empty() {
-            config.model_registry = route_cfg.model_registry.clone();
-        }
+        // The legacy [[model_registry]] route side-band is retired (design:
+        // docs/design-retire-model-registry.md §3 D5) — route inheritance no
+        // longer copies registry entries; [tiers] is the authority.
         // Only seed the default model if the existing config doesn't have one
         // (i.e. fresh init). Don't clobber a user-set model.
         if config.coordinator.model.is_none() {

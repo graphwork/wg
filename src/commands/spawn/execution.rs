@@ -5006,18 +5006,17 @@ pub(crate) fn resolve_model_and_provider(
 /// Built-in tier alias IDs that the Claude CLI understands natively.
 const BUILTIN_TIER_ALIASES: &[&str] = &["haiku", "sonnet", "opus"];
 
-/// Resolve a model string through the model registry.
+/// Resolve a model string per executor kind.
 ///
-/// If the model matches a registry entry:
-/// - Built-in tier aliases (haiku/sonnet/opus) are kept as-is (Claude CLI understands them)
-/// - Custom aliases are resolved to their full API model ID
-/// - The entry's provider and endpoint are returned for downstream resolution
+/// - `pi` / `shell`: pass through (Pi owns model identity; shell has none).
+/// - `claude` / `codex` native CLI adapters: strip only the WG handler token
+///   and expand the `fable` alias — the CLI owns its model identity.
+/// - Everything else delegates to `resolve_model_via_registry`, whose legacy
+///   `[[model_registry]]` alias resolution is retired (design:
+///   `docs/design-retire-model-registry.md` §3 D5) — alias resolution now
+///   requires a handler-first full spec.
 ///
-/// If the model is not in the registry:
-/// - If the task explicitly specified it → error (user should register it first)
-/// - Otherwise (from executor/coordinator defaults) → pass through unchanged
-///
-/// Returns `(effective_model, registry_provider, registry_endpoint)`.
+/// Returns `(effective_model, native_provider, endpoint)`.
 fn resolve_spawn_model_via_registry(
     executor_name: &str,
     effective_model: Option<String>,
@@ -5062,6 +5061,24 @@ fn resolve_spawn_model_via_registry(
     resolve_model_via_registry(effective_model, task_model, config, dir)
 }
 
+/// Resolve a model string for executors that don't own their model identity.
+///
+/// The legacy `[[model_registry]]` alias→model/endpoint resolution is retired
+/// (design: `docs/design-retire-model-registry.md` §3 D5): alias resolution
+/// now requires a handler-first full spec (`claude:opus`,
+/// `pi:openrouter:z-ai/glm-5.2`, …). The provider-prefix handling and the
+/// claude alias expansion are preserved byte-for-byte; the registry-lookup
+/// branch is gone.
+///
+/// - Provider-prefixed specs → strip/handle the prefix per executor, pass the
+///   native provider through, no registry endpoint side-band.
+/// - Task-specified bare short ids still resolve against the OpenRouter model
+///   cache (`resolve_short_model_name`); unresolved ones error.
+/// - Anything else (executor/coordinator defaults, full `provider/model` ids)
+///   passes through unchanged.
+///
+/// Returns `(effective_model, native_provider, endpoint)` — the endpoint slot
+/// is always `None` now; it existed only for the retired registry side-band.
 fn resolve_model_via_registry(
     effective_model: Option<String>,
     task_model: Option<&String>,
@@ -5073,135 +5090,83 @@ fn resolve_model_via_registry(
         None => return Ok((None, None, None)),
     };
 
-    // Parse unified provider:model spec. If the model has an explicit provider
-    // prefix (e.g. "openrouter:deepseek/deepseek-v3.2"), extract it and use
-    // the model ID for registry lookup.
+    // Parse unified provider:model spec. A provider prefix is handled per
+    // executor: CLI-backed executors do not understand provider:model format
+    // and get only the bare model ID; native/API-backed executors preserve the
+    // full spec so downstream provider resolution can re-parse the prefix. For
+    // the claude CLI, expand friendly aliases with no CLI shortcut
+    // (`claude:fable` → `claude-fable-5`); opus/sonnet/haiku pass through.
     let spec = worksgood::config::parse_model_spec(&model_str);
     if let Some(ref provider_prefix) = spec.provider {
         let native_provider =
             Some(worksgood::config::provider_to_native_provider(provider_prefix).to_string());
-        // Try registry lookup on the bare model part for endpoint resolution
-        let merged = Config::load_merged(dir).unwrap_or_else(|_| config.clone());
-        let endpoint = merged
-            .registry_lookup(&spec.model_id)
-            .or_else(|| {
-                merged
-                    .effective_registry()
-                    .into_iter()
-                    .find(|e| e.model == spec.model_id)
-            })
-            .and_then(|e| e.endpoint.clone());
-        // CLI-backed executors do not understand provider:model format; pass only
-        // the bare model ID. Native/API-backed executors preserve the full spec
-        // so downstream provider resolution can re-parse the prefix. For the
-        // claude CLI, expand friendly aliases with no CLI shortcut
-        // (`claude:fable` → `claude-fable-5`); opus/sonnet/haiku pass through.
         let effective = match worksgood::config::provider_to_executor(provider_prefix) {
             "claude" => worksgood::config::claude_cli_model_arg(&spec.model_id),
             "codex" => spec.model_id.clone(),
             _ => model_str.clone(),
         };
-        return Ok((Some(effective), native_provider, endpoint));
+        return Ok((Some(effective), native_provider, None));
     }
 
-    // No provider prefix — fall back to existing resolution logic.
-    // Load merged config for registry lookup (includes global + local + builtins)
-    let merged = Config::load_merged(dir).unwrap_or_else(|_| config.clone());
-
-    // Look up by short ID first, then by full model field (e.g., "deepseek/deepseek-chat"
-    // matching a registry entry with model = "deepseek/deepseek-chat").
-    let registry_entry = merged.registry_lookup(&model_str).or_else(|| {
-        merged
-            .effective_registry()
-            .into_iter()
-            .find(|e| e.model == model_str)
-    });
-
-    if let Some(entry) = registry_entry {
-        // Found in registry
-        let is_builtin = BUILTIN_TIER_ALIASES.contains(&model_str.as_str());
-        let resolved_model = if is_builtin {
-            // Keep tier alias as-is for backward compat with Claude CLI
-            model_str
-        } else {
-            // Custom alias → use actual API model ID
-            entry.model.clone()
-        };
-        Ok((
-            Some(resolved_model),
-            Some(entry.provider.clone()),
-            entry.endpoint.clone(),
-        ))
-    } else if task_model.is_some() && task_model.map(|s| s.as_str()) == effective_model.as_deref() {
-        // Task explicitly specified a model that's not in the registry.
+    // No provider prefix — the retired registry no longer resolves bare
+    // aliases to a model/endpoint. A task-specified short id may still
+    // resolve against the OpenRouter model cache; everything else passes
+    // through unchanged.
+    if task_model.is_some() && task_model.map(|s| s.as_str()) == effective_model.as_deref() {
         if model_str.contains('/') {
             // Full provider/model ID (e.g., "deepseek/deepseek-chat") — pass through.
             // The native executor's create_provider_ext() auto-detects the provider
             // from the slash in the model name.
-            Ok((effective_model, None, None))
-        } else {
-            // Short alias that's not registered — try resolving against model cache.
-            let resolution = worksgood::executor::native::openai_client::resolve_short_model_name(
-                &model_str, dir,
-            );
-            if let Some(resolved_id) = resolution.resolved {
-                eprintln!(
-                    "[spawn] Resolved short model name '{}' → 'openrouter:{}'",
-                    model_str, resolved_id
-                );
-                // Re-resolve with the full provider:model format
-                let full_spec = format!("openrouter:{}", resolved_id);
-                let spec = worksgood::config::parse_model_spec(&full_spec);
-                let native_provider = Some(
-                    worksgood::config::provider_to_native_provider(
-                        spec.provider.as_deref().unwrap_or("openrouter"),
-                    )
-                    .to_string(),
-                );
-                let merged = Config::load_merged(dir).unwrap_or_else(|_| config.clone());
-                let endpoint = merged
-                    .registry_lookup(&spec.model_id)
-                    .or_else(|| {
-                        merged
-                            .effective_registry()
-                            .into_iter()
-                            .find(|e| e.model == spec.model_id)
-                    })
-                    .and_then(|e| e.endpoint.clone());
-                Ok((Some(full_spec), native_provider, endpoint))
-            } else {
-                // No resolution possible — error with suggestions.
-                let suggestions = if resolution.suggestions.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "\n  Did you mean one of:\n{}",
-                        resolution
-                            .suggestions
-                            .iter()
-                            .map(|s| format!("    - openrouter:{}", s))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    )
-                };
-                anyhow::bail!(
-                    "Model '{}' not found in config or model cache.{}\n  \
-                     Try: `wg models search {}` to find valid alternatives\n  \
-                     Or:  `wg models list` to see the local registry\n  \
-                     Add: `wg model add {} --provider <provider> --model-id <model-id>` to register it\n  \
-                     Tip: `openrouter/auto` is a safe default that auto-routes to the best model.",
-                    model_str,
-                    suggestions,
-                    model_str,
-                    model_str,
-                );
-            }
+            return Ok((effective_model, None, None));
         }
-    } else {
-        // Model came from executor/coordinator defaults — pass through unchanged.
-        // It may be a direct model ID the executor understands.
-        Ok((effective_model, None, None))
+        // Short alias — try resolving against the model cache.
+        let resolution =
+            worksgood::executor::native::openai_client::resolve_short_model_name(&model_str, dir);
+        if let Some(resolved_id) = resolution.resolved {
+            eprintln!(
+                "[spawn] Resolved short model name '{}' → 'openrouter:{}'",
+                model_str, resolved_id
+            );
+            let full_spec = format!("openrouter:{}", resolved_id);
+            let spec = worksgood::config::parse_model_spec(&full_spec);
+            let native_provider = Some(
+                worksgood::config::provider_to_native_provider(
+                    spec.provider.as_deref().unwrap_or("openrouter"),
+                )
+                .to_string(),
+            );
+            return Ok((Some(full_spec), native_provider, None));
+        }
+        // No resolution possible — error with suggestions.
+        let suggestions = if resolution.suggestions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n  Did you mean one of:\n{}",
+                resolution
+                    .suggestions
+                    .iter()
+                    .map(|s| format!("    - openrouter:{}", s))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
+        anyhow::bail!(
+            "Model '{}' not found in config or model cache.{}\n  \
+             Alias resolution requires a handler-first full model spec \
+             (e.g. 'claude:opus', 'pi:openrouter/z-ai/glm-5.2')\n  \
+             Try: `wg models search {}` to find valid alternatives\n  \
+             Tip: `openrouter/auto` is a safe default that auto-routes to the best model.",
+            model_str,
+            suggestions,
+            model_str,
+        );
     }
+
+    // Model came from executor/coordinator defaults — pass through unchanged.
+    // It may be a direct model ID the executor understands.
+    let _ = config;
+    Ok((effective_model, None, None))
 }
 
 /// Check OpenRouter cost caps before spawning an agent
@@ -6261,33 +6226,36 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_resolves_custom_alias_to_model_id() {
+    fn test_registry_alias_resolution_requires_handler_first_spec() {
+        // The retired [[model_registry]] alias→model/endpoint resolution is
+        // gone (design: docs/design-retire-model-registry.md §3 D5): a bare
+        // custom alias that isn't in the model cache no longer resolves via
+        // registry entries — alias resolution requires a handler-first spec.
         let tmp = setup_registry_dir();
         let dir = tmp.path();
         let config = Config::load_or_default(dir);
 
-        let (model, provider, endpoint) = resolve_model_via_registry(
+        let result = resolve_model_via_registry(
             Some("my-custom".to_string()),
             Some(&"my-custom".to_string()),
             &config,
             dir,
-        )
-        .unwrap();
+        );
 
-        assert_eq!(
-            model,
-            Some("anthropic/claude-3.5-sonnet".to_string()),
-            "Custom alias should resolve to actual model ID"
+        assert!(
+            result.is_err(),
+            "Bare custom alias must no longer resolve via the retired registry"
         );
-        assert_eq!(
-            provider,
-            Some("openrouter".to_string()),
-            "Provider should come from registry entry"
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found in config"),
+            "Error should mention 'not found in config': {}",
+            err
         );
-        assert_eq!(
-            endpoint,
-            Some("my-openrouter".to_string()),
-            "Endpoint should come from registry entry"
+        assert!(
+            err.contains("handler-first"),
+            "Error should point at handler-first specs: {}",
+            err
         );
     }
 
@@ -6346,8 +6314,8 @@ mod tests {
             err
         );
         assert!(
-            err.contains("wg model add"),
-            "Error should suggest how to register: {}",
+            err.contains("handler-first"),
+            "Error should point at handler-first specs: {}",
             err
         );
     }
@@ -6521,12 +6489,14 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_non_task_model_matching_alias_still_resolves() {
+    fn test_registry_non_task_model_matching_alias_passes_through() {
         let tmp = setup_registry_dir();
         let dir = tmp.path();
         let config = Config::load_or_default(dir);
 
-        // Model came from executor config but happens to match a registry entry
+        // Model came from executor config and happens to match a (now-retired)
+        // registry entry: without the registry, executor/coordinator-sourced
+        // models pass through unchanged.
         let (model, provider, endpoint) = resolve_model_via_registry(
             Some("my-custom".to_string()),
             None, // not from task
@@ -6537,11 +6507,11 @@ mod tests {
 
         assert_eq!(
             model,
-            Some("anthropic/claude-3.5-sonnet".to_string()),
-            "Should still resolve even if not from task"
+            Some("my-custom".to_string()),
+            "Non-task model passes through even if a retired registry entry matches"
         );
-        assert_eq!(provider, Some("openrouter".to_string()));
-        assert_eq!(endpoint, Some("my-openrouter".to_string()));
+        assert_eq!(provider, None);
+        assert_eq!(endpoint, None);
     }
 
     #[test]
@@ -6627,9 +6597,10 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_lookup_by_model_field() {
-        // If a registry entry has model = "anthropic/claude-3.5-sonnet",
-        // using --model "anthropic/claude-3.5-sonnet" should find it.
+    fn test_registry_full_model_id_passthrough_even_if_registry_entry_matches() {
+        // The retired registry no longer resolves bare/`provider/model` ids:
+        // a task-specified full model ID passes through with no registry
+        // provider/endpoint side-band.
         let tmp = setup_registry_dir();
         let dir = tmp.path();
         let config = Config::load_or_default(dir);
@@ -6642,18 +6613,13 @@ mod tests {
         assert_eq!(
             model,
             Some("anthropic/claude-3.5-sonnet".to_string()),
-            "Should match registry entry by model field"
+            "Full model ID passes through unchanged"
         );
         assert_eq!(
-            provider,
-            Some("openrouter".to_string()),
-            "Should get provider from matched entry"
+            provider, None,
+            "No registry provider — auto-detection will handle it"
         );
-        assert_eq!(
-            endpoint,
-            Some("my-openrouter".to_string()),
-            "Should get endpoint from matched entry"
-        );
+        assert_eq!(endpoint, None, "No registry endpoint side-band");
     }
 
     #[test]
