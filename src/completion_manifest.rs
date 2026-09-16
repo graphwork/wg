@@ -18,6 +18,86 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use thiserror::Error;
 
+/// Maximum number of requirement-named deliverable facts computed per
+/// resolution. Review material stays bounded; extraction is deterministic so
+/// the same requirements bytes always yield the same fact set.
+const MAX_DELIVERABLE_FACTS: usize = 32;
+const MAX_DELIVERABLE_PATH_BYTES: usize = 128;
+
+/// Extract filename-like deliverable tokens from requirements prose. A token
+/// must contain a dot-separated suffix that includes at least one letter (so
+/// version numbers like `1.2` are not deliverables), stay within the bounded
+/// length, and appear before the cap. Deterministic over the input bytes.
+fn extract_deliverable_tokens(requirements: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(requirements);
+    let mut seen = BTreeSet::new();
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut flush = |token: &mut String, seen: &mut BTreeSet<String>, tokens: &mut Vec<String>| {
+        let candidate = token.trim_matches(['.', '-', '_']).to_string();
+        token.clear();
+        if candidate.len() < 3
+            || candidate.len() > MAX_DELIVERABLE_PATH_BYTES
+            || candidate.contains("..")
+            || !candidate.contains('.')
+            || seen.contains(&candidate)
+        {
+            return;
+        }
+        let Some((_, suffix)) = candidate.rsplit_once('.') else {
+            return;
+        };
+        if suffix.is_empty() || suffix.len() > 10 || !suffix.chars().any(char::is_alphabetic) {
+            return;
+        }
+        if seen.insert(candidate.clone()) {
+            tokens.push(candidate);
+        }
+    };
+    for character in text.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '.' | '/' | '-' | '_') {
+            token.push(character);
+        } else {
+            flush(&mut token, &mut seen, &mut tokens);
+        }
+        if tokens.len() >= MAX_DELIVERABLE_FACTS {
+            break;
+        }
+    }
+    flush(&mut token, &mut seen, &mut tokens);
+    tokens
+}
+
+/// Check each requirement-named token against the exact candidate tree via
+/// `git ls-tree`. Any git failure degrades to no facts (the caller already
+/// fails closed on missing evidence); the facts are additive reviewer
+/// evidence, never authority.
+fn compute_deliverable_presence(
+    repository: &Path,
+    tree_oid: &str,
+    requirements: &[u8],
+) -> Vec<DeliverablePresence> {
+    let mut facts = Vec::new();
+    for token in extract_deliverable_tokens(requirements) {
+        let output = Command::new("git")
+            .args(["ls-tree", tree_oid, "--", &token])
+            .current_dir(repository)
+            .output();
+        let present = match output {
+            Ok(output) => {
+                output.status.success()
+                    && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+            }
+            Err(_) => return Vec::new(),
+        };
+        facts.push(DeliverablePresence {
+            path: token,
+            present,
+        });
+    }
+    facts
+}
+
 pub const COMPLETION_MANIFEST_VERSION: u32 = 1;
 pub const COMPLETION_ARTIFACT_STORE_VERSION: u32 = 1;
 
@@ -764,6 +844,19 @@ pub struct ResolvedReviewBundle {
     pub validation_evidence: Vec<ResolvedEvidence>,
     /// Git object IDs and BLAKE3 content digests verified while resolving.
     pub inspected_output_digests: Vec<String>,
+    /// Controller-computed deliverable-presence facts: filename-like tokens
+    /// extracted from the requirements, each checked against the exact
+    /// digest-bound candidate tree. Deterministic over immutable inputs, so a
+    /// reviewer can decide empty-diff idempotence from evidence instead of
+    /// guessing. Empty when there is no Git output or the lookup failed.
+    pub deliverable_presence: Vec<DeliverablePresence>,
+}
+
+/// One requirement-named path and whether the candidate tree contains it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeliverablePresence {
+    pub path: String,
+    pub present: bool,
 }
 
 pub struct ExternalVerification {
@@ -1040,6 +1133,19 @@ impl<'a> ReviewResolver<'a> {
             });
         }
 
+        let deliverable_presence = match (
+            self.repository,
+            outputs.iter().find_map(|output| match output {
+                ResolvedOutput::Git { tree_oid, .. } => Some(tree_oid.clone()),
+                ResolvedOutput::Artifact(_) | ResolvedOutput::External { .. } => None,
+            }),
+        ) {
+            (Some(repository), Some(tree_oid)) => {
+                compute_deliverable_presence(repository, &tree_oid, requirements_bytes)
+            }
+            _ => Vec::new(),
+        };
+
         Ok(ResolvedReviewBundle {
             manifest_digest,
             requirements_digest: manifest.requirements_digest.clone(),
@@ -1050,6 +1156,7 @@ impl<'a> ReviewResolver<'a> {
             outputs,
             validation_evidence,
             inspected_output_digests,
+            deliverable_presence,
         })
     }
 
@@ -1491,4 +1598,80 @@ fn git_text(repository: &Path, args: &[&str]) -> Result<String, IncompleteEviden
 
 fn git_stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+#[cfg(test)]
+mod deliverable_presence_tests {
+    use super::*;
+
+    #[test]
+    fn extraction_is_deterministic_and_filters_non_deliverables() {
+        let requirements =
+            b"Create route-check.txt in the repo root containing 'worker-route-ok'. \
+             Bump to version 1.2 of the tool. See src/main.rs and docs/guide.md. \
+             Ignore pipeline.d and .hidden-dir/x.";
+        let first = extract_deliverable_tokens(requirements);
+        let second = extract_deliverable_tokens(requirements);
+        assert_eq!(first, second, "extraction must be deterministic");
+        assert!(first.contains(&"route-check.txt".to_string()), "{first:?}");
+        assert!(first.contains(&"src/main.rs".to_string()), "{first:?}");
+        assert!(
+            !first.iter().any(|token| token == "1.2"),
+            "version numbers are not deliverables: {first:?}"
+        );
+    }
+
+    #[test]
+    fn presence_is_checked_against_the_exact_candidate_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(temp.path())
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        run(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(temp.path().join("route-check.txt"), b"worker-route-ok\n").unwrap();
+        run(&["add", "route-check.txt"]);
+        run(&["commit", "--quiet", "-m", "deliverable"]);
+        let tree_oid = run(&["rev-parse", "HEAD^{tree}"]);
+
+        let facts = compute_deliverable_presence(
+            temp.path(),
+            &tree_oid,
+            b"create route-check.txt with worker-route-ok",
+        );
+        assert_eq!(
+            facts,
+            vec![DeliverablePresence {
+                path: "route-check.txt".to_string(),
+                present: true,
+            }]
+        );
+
+        let facts = compute_deliverable_presence(
+            temp.path(),
+            &tree_oid,
+            b"create missing-deliverable.txt with content",
+        );
+        assert_eq!(
+            facts,
+            vec![DeliverablePresence {
+                path: "missing-deliverable.txt".to_string(),
+                present: false,
+            }]
+        );
+    }
 }
