@@ -651,7 +651,7 @@ mod tests {
             saved_exec: std::env::var("WG_EXECUTOR_TYPE").ok(),
             saved_model: std::env::var("WG_MODEL").ok(),
             saved_global_dir: std::env::var("WG_GLOBAL_DIR").ok(),
-            _env_lock: crate::test_helpers::env_lock(),
+            _env_lock: worksgood::test_helpers::env_lock(),
         };
         unsafe {
             std::env::set_var("WG_GLOBAL_DIR", global.path());

@@ -1790,7 +1790,7 @@ mod tests {
     /// vars that feed the validation stable-environment projection; serialize
     /// against every other module's env-mutating tests.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        crate::test_helpers::env_lock()
+        worksgood::test_helpers::env_lock()
     }
 
     #[test]

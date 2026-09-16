@@ -8095,7 +8095,7 @@ esac
 
     impl GlobalConfigGuard {
         fn isolated() -> Self {
-            let _env_lock = crate::test_helpers::env_lock();
+            let _env_lock = worksgood::test_helpers::env_lock();
             let global = TempDir::new().unwrap();
             let saved = std::env::var_os("WG_GLOBAL_DIR");
             unsafe { std::env::set_var("WG_GLOBAL_DIR", global.path()) };

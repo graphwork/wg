@@ -551,7 +551,7 @@ mod tests {
     fn with_home<T>(f: impl FnOnce(&Path) -> T) -> T {
         // Crate-wide env lock: serialize against every other module mutating
         // HOME / WG_GLOBAL_DIR, not just this module's tests.
-        let _env_guard = crate::test_helpers::env_lock();
+        let _env_guard = worksgood::test_helpers::env_lock();
         let _guard = HOME_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().to_path_buf();

@@ -4955,7 +4955,7 @@ mod tests {
         // setup --scope global writes only the global file, not the local one.
         // Crate-wide env lock: HOME + CWD are process-global; serialize against
         // every other module's env-mutating tests, not just the setup_scope_env key.
-        let _env_guard = crate::test_helpers::env_lock();
+        let _env_guard = worksgood::test_helpers::env_lock();
         let tmp = TempDir::new().unwrap();
         let fake_home = tmp.path().join("home");
         std::fs::create_dir_all(&fake_home).unwrap();
@@ -5001,7 +5001,7 @@ mod tests {
     #[test]
     #[serial_test::serial(setup_scope_env)]
     fn test_run_route_local_only_writes_local() {
-        let _env_guard = crate::test_helpers::env_lock();
+        let _env_guard = worksgood::test_helpers::env_lock();
         let tmp = TempDir::new().unwrap();
         let fake_home = tmp.path().join("home");
         std::fs::create_dir_all(&fake_home).unwrap();
@@ -5042,7 +5042,7 @@ mod tests {
     #[test]
     #[serial_test::serial(setup_scope_env)]
     fn test_run_route_both_writes_global_and_local() {
-        let _env_guard = crate::test_helpers::env_lock();
+        let _env_guard = worksgood::test_helpers::env_lock();
         let tmp = TempDir::new().unwrap();
         let fake_home = tmp.path().join("home");
         std::fs::create_dir_all(&fake_home).unwrap();
