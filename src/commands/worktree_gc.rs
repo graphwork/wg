@@ -462,6 +462,7 @@ mod tests {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         }
     }
 

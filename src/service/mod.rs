@@ -170,6 +170,139 @@ pub fn collect_process_descendants(_root_pid: u32) -> Vec<u32> {
     Vec::new()
 }
 
+/// Live member PIDs of a process group, by walking `/proc/*/stat`.
+///
+/// Returns an empty vec on non-Linux or if `/proc` is unavailable.
+#[cfg(target_os = "linux")]
+pub fn process_group_members(pgid: u32) -> Vec<u32> {
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut members = Vec::new();
+    for entry in entries.flatten() {
+        let pid: u32 = match entry.file_name().to_string_lossy().parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let stat = match std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        // The `comm` field (2nd) may contain spaces and parentheses, so find
+        // the final `)` and parse from there. Format after that:
+        //   state(3) ppid(4) pgrp(5) ...
+        let comm_end = match stat.rfind(')') {
+            Some(i) => i,
+            None => continue,
+        };
+        let rest = &stat[comm_end + 2..];
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        // fields[0]=state, fields[1]=ppid, fields[2]=pgrp
+        if let Some(pgrp) = fields.get(2)
+            && let Ok(pgrp) = pgrp.parse::<u32>()
+            && pgrp == pgid
+        {
+            members.push(pid);
+        }
+    }
+    members
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn process_group_members(_pgid: u32) -> Vec<u32> {
+    Vec::new()
+}
+
+/// Outcome of an orphaned process-group reap attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessGroupReap {
+    pub pgid: u32,
+    /// Member PIDs observed before signaling.
+    pub found_members: Vec<u32>,
+    /// Whether the group had to be SIGKILLed after SIGTERM failed to
+    /// empty it within the wait budget.
+    pub force_killed: bool,
+}
+
+/// Safety guard for signaling a process group by negative PID.
+///
+/// Refuses pgid 0 ("every process in OUR group" — the exact accident this
+/// guard exists to prevent), pid 1, our own process group, our own session
+/// (the leader's pid equals the session id), and our own PID.
+#[cfg(unix)]
+fn process_group_signal_is_safe(pgid: u32) -> bool {
+    if pgid == 0 || pgid == 1 {
+        return false;
+    }
+    let pgid_i = pgid as i32;
+    // SAFETY: plain getters, no side effects.
+    unsafe {
+        let own_pid = libc::getpid();
+        let own_pgid = libc::getpgid(0);
+        let own_sid = libc::getsid(0);
+        pgid_i != own_pid && pgid_i != own_pgid && pgid_i != own_sid
+    }
+}
+
+/// Kill + reap an orphaned descendant process group.
+///
+/// When a detached agent (spawned with `setsid()`, recorded in the agent
+/// registry as `pgid`) dies, its descendants keep running as orphans in the
+/// agent's process group. A per-PID tree walk from the agent's PID finds
+/// nothing — the root is gone — so the group id is the only handle left.
+/// This signals the whole surviving group: SIGTERM first, then SIGKILL for
+/// anything that survived `wait_secs`.
+///
+/// Refuses to touch our own group/session (see
+/// [`process_group_signal_is_safe`]) and returns `None` when the group has
+/// no live members (nothing to reap) or the target is refused.
+#[cfg(unix)]
+pub fn reap_orphaned_process_group(pgid: u32, wait_secs: u64) -> Option<ProcessGroupReap> {
+    use std::time::{Duration, Instant};
+
+    if !process_group_signal_is_safe(pgid) {
+        return None;
+    }
+    let members = process_group_members(pgid);
+    if members.is_empty() {
+        return None;
+    }
+    let reap = ProcessGroupReap {
+        pgid,
+        found_members: members,
+        force_killed: false,
+    };
+    // SAFETY: negative-PID kill signals the process group; the guard above
+    // proved the group is not ours.
+    unsafe {
+        libc::kill(-(pgid as i32), libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_secs(wait_secs);
+    while Instant::now() < deadline && !process_group_members(pgid).is_empty() {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if !process_group_members(pgid).is_empty() {
+        // SAFETY: same group-safety argument as the SIGTERM above.
+        unsafe {
+            libc::kill(-(pgid as i32), libc::SIGKILL);
+        }
+        return Some(ProcessGroupReap {
+            force_killed: true,
+            ..reap
+        });
+    }
+    Some(reap)
+}
+
+#[cfg(windows)]
+pub fn reap_orphaned_process_group(_pgid: u32, _wait_secs: u64) -> Option<ProcessGroupReap> {
+    // Windows has no POSIX process groups; the CREATE_NEW_PROCESS_GROUP
+    // flag gives a console group that `taskkill /T` handles per-PID. The
+    // pgid registry is recorded but not group-signaled on this platform.
+    None
+}
+
 /// Send `signal` to `pid`, swallowing ESRCH (process already gone).
 #[cfg(unix)]
 fn signal_pid(pid: u32, signal: libc::c_int) -> anyhow::Result<()> {
@@ -512,6 +645,80 @@ pub fn verify_process_identity(pid: u32, expected_start_epoch: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spawn a `sleep` in its own process group (mimics the agent wrapper's
+    /// `setsid()` detachment) and return (child, pgid). The child is a
+    /// direct child of this test, so it must be waited on to avoid zombies.
+    #[cfg(unix)]
+    fn spawn_own_group(sleep_secs: u32) -> (std::process::Child, u32) {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg(sleep_secs.to_string());
+        // SAFETY-free: std's process_group(0) puts the child at the root of
+        // its own process group — the same effect as the wrapper's setsid().
+        cmd.process_group(0);
+        let child = cmd.spawn().expect("spawn sleep in own group");
+        let pgid = child.id();
+        (child, pgid)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_group_members_finds_own_group_child() {
+        let (mut child, pgid) = spawn_own_group(30);
+        let members = process_group_members(pgid);
+        assert!(
+            members.contains(&child.id()),
+            "expected child {} in group {} members {:?}",
+            child.id(),
+            pgid,
+            members
+        );
+        let _ = child.kill();
+        child.wait().ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reap_orphaned_process_group_kills_group_members() {
+        let (mut child, pgid) = spawn_own_group(300);
+        let child_pid = child.id();
+        // Let the group settle.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let reap = reap_orphaned_process_group(pgid, 2)
+            .expect("reap should fire for a live foreign group");
+        assert_eq!(reap.pgid, pgid);
+        assert!(reap.found_members.contains(&child_pid));
+        // The child must be gone (wait returns quickly after the kill).
+        let status = child.wait().expect("wait child");
+        assert!(!status.success(), "child should have been signaled");
+        // A second reap finds nothing left.
+        assert!(reap_orphaned_process_group(pgid, 1).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reap_orphaned_process_group_refuses_own_group_and_session() {
+        // Our own process group must be refused.
+        let own_pgid = unsafe { libc::getpgid(0) } as u32;
+        assert!(reap_orphaned_process_group(own_pgid, 1).is_none());
+        // Our own session id (== our pgid here, but check explicitly) and
+        // the pgid-0 "whole group" accident must also be refused.
+        let own_sid = unsafe { libc::getsid(0) } as u32;
+        assert!(reap_orphaned_process_group(own_sid, 1).is_none());
+        assert!(reap_orphaned_process_group(0, 1).is_none());
+        assert!(reap_orphaned_process_group(1, 1).is_none());
+        // A live member of a *foreign* group is killable — guard only
+        // blocks self-targeting (covered by the other test).
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reap_orphaned_process_group_noop_when_group_empty() {
+        // A pgid with no live members (e.g. a long-dead agent's group) is a
+        // clean no-op — the reaper must not error or fabricate kills.
+        assert!(reap_orphaned_process_group(0x5FFF_FFFF, 1).is_none());
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

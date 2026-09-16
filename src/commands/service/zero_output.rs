@@ -293,6 +293,7 @@ mod tests {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         };
         // Dead agents should be ignored
         assert!(check_zero_output(&agent).is_none());
@@ -322,6 +323,7 @@ mod tests {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         };
         // Has content, so should return None
         assert!(check_zero_output(&agent).is_none());
@@ -351,6 +353,7 @@ mod tests {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         };
         // Too young, should return None
         assert!(check_zero_output(&agent).is_none());
@@ -380,6 +383,7 @@ mod tests {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         };
         // Old with zero output, should return Some
         let result = check_zero_output(&agent);

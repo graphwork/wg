@@ -2990,6 +2990,7 @@ mod tests {
                 model: None,
                 completed_at: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
         registry.agents.insert(
@@ -3006,6 +3007,7 @@ mod tests {
                 model: None,
                 completed_at: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
         registry.save(&wg_dir).unwrap();
@@ -3082,6 +3084,7 @@ mod tests {
                 model: None,
                 completed_at: None,
                 worktree_path: worktree_path.map(|p| p.to_string_lossy().to_string()),
+                pgid: None,
             },
         );
         registry.save(wg_dir).unwrap();
@@ -3875,6 +3878,7 @@ mod tests {
                 model: None,
                 completed_at: None,
                 worktree_path: Some(worktrees.join("agent-000").to_string_lossy().to_string()),
+                pgid: None,
             },
         );
         registry.save(&wg_dir).unwrap();

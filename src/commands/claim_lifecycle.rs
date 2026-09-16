@@ -281,6 +281,7 @@ mod tests {
                 output_file: "/tmp/output.log".to_string(),
                 model: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
         reg.save(dir).unwrap();
@@ -396,6 +397,7 @@ mod tests {
                 output_file: "/tmp/output.log".to_string(),
                 model: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
         reg.save(dir.path()).unwrap();

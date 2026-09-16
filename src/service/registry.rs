@@ -89,6 +89,20 @@ pub struct AgentEntry {
     /// agent — see `reaper-edge-case`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    /// Process-group id (pgid) of the agent's detached session.
+    ///
+    /// Spawn detaches every agent with `setsid()`, so the wrapper becomes
+    /// the session/group leader and its pgid equals its own PID. Descendant
+    /// processes (handler CLIs, smoke-harness children) inherit that group
+    /// unless they explicitly create their own session. When the agent
+    /// reaches a terminal state, the recorded group lets the reaper signal
+    /// the *whole* orphaned descendant group (`kill(-pgid)`) — the direct
+    /// PID is already gone at that point, so a per-PID tree walk finds
+    /// nothing. Without this, orphaned descendants keep the
+    /// disk-sentinel's "live process/cwd/open file" guard tripping forever
+    /// and stale owned caches are never reaped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pgid: Option<u32>,
 }
 
 impl AgentEntry {
@@ -363,6 +377,7 @@ impl AgentRegistry {
             model: model.map(std::string::ToString::to_string),
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         };
 
         self.agents.insert(agent_id.clone(), entry);
@@ -379,6 +394,23 @@ impl AgentRegistry {
     pub fn set_worktree_path(&mut self, agent_id: &str, worktree_path: &Path) -> bool {
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.worktree_path = Some(worktree_path.to_string_lossy().to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Record the process-group id (pgid) of the agent's detached session.
+    /// Idempotent — overwrites.
+    ///
+    /// Called by spawn right after `register_agent_*`: the wrapper was
+    /// launched with `setsid()` in `pre_exec`, so once it has exec'd the
+    /// child is its own session/group leader and its pgid equals its PID.
+    /// The orphan-reaper uses this on terminal agents to signal the whole
+    /// surviving descendant group (`kill(-pgid)`).
+    pub fn set_process_group_id(&mut self, agent_id: &str, pgid: u32) -> bool {
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.pgid = Some(pgid);
             true
         } else {
             false
@@ -650,6 +682,7 @@ mod tests {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         };
         assert!(!entry.is_live(300), "Done status should not be live");
 
@@ -666,6 +699,7 @@ mod tests {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         };
         assert!(
             entry.is_live(300),
@@ -687,6 +721,7 @@ mod tests {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         };
         assert!(
             !entry.is_live(300),
@@ -707,6 +742,7 @@ mod tests {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         };
         assert!(
             !entry.is_live(300),
@@ -728,6 +764,7 @@ mod tests {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         };
         assert!(
             !entry.is_live(0),
@@ -748,6 +785,33 @@ mod tests {
         assert_eq!(agent.task_id, "task-1");
         assert_eq!(agent.executor, "claude");
         assert_eq!(agent.status, AgentStatus::Working);
+    }
+
+    /// The recorded spawn pgid round-trips through the registry file and is
+    /// absent-by-default for older entries (serde default keeps legacy
+    /// registry JSON loadable).
+    #[test]
+    fn process_group_id_round_trips_and_defaults_absent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut registry = AgentRegistry::new();
+        let agent_id = registry.register_agent(12345, "task-1", "claude", "/tmp/output.log");
+        assert!(registry.get_agent(&agent_id).unwrap().pgid.is_none());
+        assert!(registry.set_process_group_id(&agent_id, 4242));
+        assert_eq!(registry.get_agent(&agent_id).unwrap().pgid, Some(4242));
+        registry.save(temp.path()).unwrap();
+
+        let reloaded = AgentRegistry::load(temp.path()).unwrap();
+        assert_eq!(reloaded.get_agent(&agent_id).unwrap().pgid, Some(4242));
+
+        // Legacy registry JSON without the pgid key loads with pgid=None.
+        let legacy = temp.path().join("service/registry.json");
+        let raw = std::fs::read_to_string(&legacy).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        value["agents"][&agent_id]["pgid"] = serde_json::Value::Null;
+        std::fs::write(&legacy, value.to_string()).unwrap();
+        let mut legacy_loaded = AgentRegistry::load(temp.path()).unwrap();
+        assert_eq!(legacy_loaded.get_agent(&agent_id).unwrap().pgid, None);
+        assert!(!legacy_loaded.set_process_group_id("missing-agent", 1));
     }
 
     #[test]
