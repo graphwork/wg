@@ -268,21 +268,17 @@ pub fn resolve_strong_route(config: &Config) -> Result<ResolutionRouteSnapshot> 
     if !matches!(reasoning, ReasoningLevel::High | ReasoningLevel::Xhigh) {
         bail!("MR_ROUTE_WEAK: merger reasoning must be high or xhigh");
     }
-    let registry = config.model_registry.iter().find(|entry| {
-        entry.id == route || entry.model == route || entry.id == inner || entry.model == inner
-    });
-    let tier = role.tier.or_else(|| registry.map(|r| r.tier));
-    let strong_descriptor = registry.is_some_and(|r| {
-        r.descriptors
-            .iter()
-            .any(|d| d.eq_ignore_ascii_case("strong"))
-    });
-    let declared_class = if tier == Some(Tier::Premium) {
+    // The retired [[model_registry]] tier/descriptor side-band is gone
+    // (design: docs/design-retire-model-registry.md §3 D5): the merger
+    // route's strength comes ONLY from the role's explicit `tier`.
+    // Fail-closed — never inferred from a dead registry.
+    let declared_class = if role.tier == Some(Tier::Premium) {
         RouteStrength::Premium
-    } else if strong_descriptor {
-        RouteStrength::Strong
     } else {
-        bail!("MR_ROUTE_WEAK: route lacks snapshotted strong/premium assertion");
+        bail!(
+            "MR_ROUTE_WEAK: set tier = \"premium\" on the merger role \
+             (the retired model-registry tier side-band no longer supplies strength)"
+        );
     };
     let (provider, model) = if handler == "pi" {
         inner
@@ -294,7 +290,10 @@ pub fn resolve_strong_route(config: &Config) -> Result<ResolutionRouteSnapshot> 
     };
     let config_bytes = serde_json::to_vec(config)?;
     let config_revision_cid = cid(&config_bytes);
-    let catalog_entry_cid = cid(&serde_json::to_vec(&registry)?);
+    // The retired registry supplied catalog entries; with Pi's
+    // models-store.json as the single catalog source of truth, the snapshot
+    // pins the exact resolved (provider, model) pair it was authorized for.
+    let catalog_entry_cid = cid(&serde_json::to_vec(&(handler, inner))?);
     let budget = ResolutionBudget::default();
     let mut snapshot = ResolutionRouteSnapshot {
         schema_version: SCHEMA_VERSION,

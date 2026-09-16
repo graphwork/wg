@@ -7329,68 +7329,25 @@ impl Config {
             }
         }
 
-        // Rule 3: [models.*] model value doesn't match registry AND doesn't contain '/'
-        let registry = self.effective_registry();
-        let registry_ids: std::collections::HashSet<&str> =
-            registry.iter().map(|e| e.id.as_str()).collect();
-
-        // Check models.default and per-role model values
-        let role_configs: Vec<(String, &RoleModelConfig)> = {
-            let mut pairs = Vec::new();
-            if let Some(ref cfg) = self.models.default {
-                pairs.push(("default".to_string(), cfg));
-            }
-            for role in DispatchRole::ALL {
-                if let Some(cfg) = self.models.get_role(*role) {
-                    pairs.push((role.to_string(), cfg));
-                }
-            }
-            pairs
-        };
-
-        for (role_name, role_cfg) in &role_configs {
-            if let Some(ref m) = role_cfg.model {
-                // Parse provider:model format to get the registry lookup ID
-                let model_spec = parse_model_spec(m);
-                let lookup_id = &model_spec.model_id;
-                if !registry_ids.contains(lookup_id.as_str()) && !lookup_id.contains('/') {
-                    result.warnings.push(ConfigDiagnostic {
-                        rule: "unresolved-model-id".into(),
-                        message: format!(
-                            "models.{}.model = '{}' doesn't match any registry entry \
-                             and doesn't look like a provider/model path. \
-                             May be an unresolved short ID.",
-                            role_name, m
-                        ),
-                        fix: format!(
-                            "Add a [[model_registry]] entry for '{}', use a known ID \
-                             ({}), or use a tier name (e.g., 'haiku', 'sonnet', 'opus').",
-                            m,
-                            registry_ids.iter().copied().collect::<Vec<_>>().join(", ")
-                        ),
-                    });
-                }
-            }
-        }
-
-        // Rule 4: model_registry entry's 'model' field doesn't contain '/'
-        // (should be a full provider-qualified model name for non-Anthropic providers)
-        for entry in &self.model_registry {
-            if entry.provider != "anthropic" && !entry.model.contains('/') {
-                result.warnings.push(ConfigDiagnostic {
-                    rule: "registry-model-format".into(),
-                    message: format!(
-                        "model_registry entry '{}' (provider: '{}') has model = '{}' \
-                         which doesn't contain '/'. OpenRouter and similar providers \
-                         typically use 'provider/model' format.",
-                        entry.id, entry.provider, entry.model
-                    ),
-                    fix: format!(
-                        "Use the full model path, e.g., '{}/{}'.",
-                        entry.provider, entry.model
-                    ),
-                });
-            }
+        // Rule: [[model_registry]] is deprecated — entries are inert (design:
+        // docs/design-retire-model-registry.md §3 D5). Pi's models-store.json
+        // is the catalog source of truth; migrate removes the tables.
+        if !self.model_registry.is_empty() {
+            result.warnings.push(ConfigDiagnostic {
+                rule: "deprecated-model-registry".into(),
+                message: format!(
+                    "[[model_registry]] is deprecated and inert: {} entr{} no longer feed \
+                     pricing, spawn resolution, or tier mapping (Pi's models-store.json \
+                     is the catalog source of truth).",
+                    self.model_registry.len(),
+                    if self.model_registry.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    }
+                ),
+                fix: "Run `wg migrate config` to remove the deprecated tables.".to_string(),
+            });
         }
 
         // Rule 5: llm_endpoints has api_key_file that doesn't exist or is empty
@@ -9777,7 +9734,7 @@ model = "claude:haiku"
     }
 
     #[test]
-    fn test_validate_config_unresolved_model_short_id() {
+    fn test_validate_config_unresolved_model_short_id_no_registry_warning() {
         let mut config = Config::default();
         config.models.default = Some(RoleModelConfig {
             model: Some("unknown-model-xyz".to_string()),
@@ -9788,8 +9745,14 @@ model = "claude:haiku"
         });
         let v = config.validate_config();
         assert!(v.is_ok()); // warnings don't block
-        assert!(!v.warnings.is_empty());
-        assert!(v.warnings.iter().any(|w| w.rule == "unresolved-model-id"));
+        // Rule 3 ("add a [[model_registry]] entry") was deleted with the
+        // registry retirement: short ids are no longer flagged against
+        // registry entries.
+        assert!(
+            v.warnings.iter().all(|w| w.rule != "unresolved-model-id"),
+            "unresolved-model-id rule is retired: {:?}",
+            v.warnings
+        );
     }
 
     #[test]
@@ -9823,7 +9786,7 @@ model = "claude:haiku"
     }
 
     #[test]
-    fn test_validate_config_registry_entry_non_anthropic_no_slash() {
+    fn test_validate_config_registry_entry_flags_deprecation() {
         let mut config = Config::default();
         config.model_registry.push(ModelRegistryEntry {
             id: "my-local".into(),
@@ -9834,7 +9797,15 @@ model = "claude:haiku"
         });
         let v = config.validate_config();
         assert!(v.is_ok());
-        assert!(v.warnings.iter().any(|w| w.rule == "registry-model-format"));
+        // Rule 4 (registry-model-format) died with the registry retirement;
+        // remaining [[model_registry]] tables are flagged as deprecated.
+        assert!(
+            v.warnings
+                .iter()
+                .any(|w| w.rule == "deprecated-model-registry"),
+            "expected deprecated-model-registry warning, got {:?}",
+            v.warnings
+        );
     }
 
     #[test]
@@ -9849,6 +9820,11 @@ model = "claude:haiku"
         });
         let v = config.validate_config();
         assert!(v.warnings.iter().all(|w| w.rule != "registry-model-format"));
+        assert!(
+            v.warnings
+                .iter()
+                .any(|w| w.rule == "deprecated-model-registry")
+        );
     }
 
     #[test]

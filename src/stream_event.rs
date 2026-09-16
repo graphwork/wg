@@ -437,7 +437,7 @@ pub fn pi_usage_to_turn(usage: &serde_json::Value) -> TurnUsage {
 
 /// Per-turn cost in USD from a pi `usage` object (`usage.cost.total`).
 /// Returns 0.0 when the provider did not report a cost (caller may then fall
-/// back to model-registry per-token rates).
+/// back to Pi-catalog per-token rates).
 pub fn pi_usage_cost(usage: &serde_json::Value) -> f64 {
     usage
         .get("cost")
@@ -462,7 +462,7 @@ pub struct PiTranslation {
     /// Canonical stream events in order: `Init`, per-step events, final `Result`.
     pub events: Vec<StreamEvent>,
     /// Summed usage across all turns (cost from pi's own per-turn `cost.total`;
-    /// callers apply a registry fallback when it is zero).
+    /// callers apply a Pi-catalog fallback when it is zero).
     pub total: TotalUsage,
     /// Number of `turn_end` events summed (the turn count).
     pub turn_count: u32,

@@ -86,6 +86,7 @@ pub mod nex_runtime;
 pub mod notify;
 pub mod obs;
 pub mod parser;
+pub mod pi_catalog;
 pub mod pi_plugin;
 pub mod pi_watchdog;
 pub mod plan_validator;

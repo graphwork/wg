@@ -546,13 +546,18 @@ pub fn validate_project_payload(value: &toml::Value, path: &Path) -> Result<()> 
         bail!("project config {} must be a TOML table", path.display());
     };
 
+    // `model_registry` is deliberately NOT in the machine-owned forbidden
+    // list: the registry is deprecated and inert (design:
+    // docs/design-retire-model-registry.md §3 D5) — legacy project files with
+    // `[[model_registry]]` tables load (accepted-but-flagged by
+    // `wg config lint`), they just never affect behavior. `wg migrate config`
+    // removes the tables.
     for forbidden in [
         "auth",
         "secrets",
         "llm_endpoints",
         "native_executor",
         "openrouter",
-        "model_registry",
         "tag_routing",
     ] {
         if root.contains_key(forbidden) {
@@ -587,6 +592,8 @@ pub fn validate_project_payload(value: &toml::Value, path: &Path) -> Result<()> 
                 | "bash"
                 | "mcp"
                 | "profile"
+                // Deprecated and inert; accepted-but-flagged (lint + migrate).
+                | "model_registry"
         ) {
             bail!(
                 "error[WG-CONFIG-UPGRADE-REQUIRED]: unknown top-level project setting `{key}` in {}; upgrade WG before this setting can affect execution",

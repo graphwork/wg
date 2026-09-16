@@ -1753,6 +1753,76 @@ mod config_migrate_tests {
     }
 
     #[test]
+    fn strips_deprecated_model_registry_tables_and_refresh_interval() {
+        // The registry-retirement transition (design:
+        // docs/design-retire-model-registry.md §3 D4/D5): the daemon refresh
+        // key and the inert [[model_registry]] tables are removed, everything
+        // else survives, and the run is idempotent.
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "claude:opus"
+
+[coordinator]
+registry_refresh_interval = 3600
+
+[[model_registry]]
+id = "my-custom"
+provider = "openrouter"
+model = "anthropic/claude-3.5-sonnet"
+tier = "standard"
+
+[[model_registry]]
+id = "second"
+provider = "openrouter"
+model = "z-ai/glm-5.2"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.removed_keys.iter().any(|k| k == "model_registry"),
+            "should remove model_registry; got {:?}",
+            r.removed_keys,
+        );
+        assert!(
+            r.removed_keys
+                .iter()
+                .any(|k| k == "coordinator.registry_refresh_interval"),
+            "should remove coordinator.registry_refresh_interval; got {:?}",
+            r.removed_keys,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !migrated.contains("model_registry"),
+            "migrated config should not contain model_registry; got:\n{}",
+            migrated
+        );
+        assert!(
+            !migrated.contains("registry_refresh_interval"),
+            "migrated config should not contain registry_refresh_interval; got:\n{}",
+            migrated
+        );
+        assert!(
+            migrated.contains("model = \"claude:opus\""),
+            "migrated config should keep the agent model; got:\n{}",
+            migrated
+        );
+        assert!(
+            r.backup_path.is_some(),
+            "pre-migration backup must be written"
+        );
+        // Idempotent: a second run is a no-op.
+        let r2 = migrate_one(&path, false).unwrap();
+        assert!(
+            r2.is_noop(),
+            "second migrate run must be a no-op; got {:?}",
+            r2
+        );
+    }
+
+    #[test]
     fn strips_deprecated_agent_executor() {
         let tmp = TempDir::new().unwrap();
         let path = write_config(

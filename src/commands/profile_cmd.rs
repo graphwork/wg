@@ -127,11 +127,24 @@ fn apply_tier_pins(
 ///
 /// Loads the registry, runs the popularity-weighted ranking, writes the top picks
 /// into config tiers, and saves the full ranked lists to a sidecar JSON file.
+///
+/// When no benchmark snapshot exists, falls back to ranking from **Pi-catalog
+/// metadata** (design: `docs/design-retire-model-registry.md` §3 D4): context
+/// window, cost, and cache-read economics — the cheap-to-compute subset.
+/// Benchmark/quality indices stay snapshot-only enrichment. No silent
+/// behavior change when a snapshot *does* exist — the snapshot still wins.
 fn auto_configure_dynamic(dir: &Path, config: &mut Config) -> Result<RankedTiers> {
-    let registry = BenchmarkRegistry::load(dir)?
-        .context("No benchmark registry found. Run `wg models fetch` first to populate it.")?;
-
-    let ranked = model_benchmarks::rank_models_for_profile(&registry);
+    let ranked = match BenchmarkRegistry::load(dir)? {
+        Some(registry) => model_benchmarks::rank_models_for_profile(&registry),
+        None => {
+            eprintln!(
+                "  No benchmark snapshot (.wg/model_benchmarks.json) — ranking from the \
+                 Pi catalog (models-store.json) instead. Run `wg models fetch` for \
+                 benchmark-enriched rankings."
+            );
+            rank_from_pi_catalog()
+        }
+    };
 
     // Write the top pick from each tier into config.tiers (using openrouter: prefix).
     if let Some(top) = ranked.fast.first() {
@@ -148,6 +161,97 @@ fn auto_configure_dynamic(dir: &Path, config: &mut Config) -> Result<RankedTiers
     save_ranked_tiers(dir, &ranked)?;
 
     Ok(ranked)
+}
+
+/// Pi-catalog fallback ranking (design: `docs/design-retire-model-registry.md`
+/// §3 D4). Deterministic, key-free, network-free: bucket by output $/MTok
+/// (same boundaries as the snapshot ranker), score by cost, context window,
+/// and cache-read economics — the cheap-to-compute subset. Benchmark/quality
+/// indices stay snapshot-only enrichment, so the popularity/benchmark
+/// components are 0 here and `composite_score` carries the catalog score.
+fn rank_from_pi_catalog() -> RankedTiers {
+    use worksgood::model_benchmarks::RankedModel;
+
+    // Same pricing-tier boundaries as model_benchmarks' snapshot ranker.
+    const FAST_MAX: f64 = 3.0;
+    const PREMIUM_MIN: f64 = 18.0;
+
+    let catalog = worksgood::pi_catalog::load();
+    let max_context = catalog
+        .models()
+        .filter_map(|m| m.context_window)
+        .max()
+        .unwrap_or(0);
+
+    let mut scored: Vec<(&worksgood::pi_catalog::PiModel, f64)> = catalog
+        .models()
+        .filter_map(|m| {
+            let output = m.cost_output_per_mtok?;
+            // Value score: cheaper output ranks higher.
+            let value_score = (1.0 - (output / (PREMIUM_MIN * 4.0)).min(1.0)) * 100.0;
+            // Context score: log-scaled against the largest known window.
+            let context = m.context_window.unwrap_or(0);
+            let context_score = if max_context > 0 && context > 0 {
+                ((context as f64).ln() / (max_context as f64).ln() * 100.0).min(100.0)
+            } else {
+                0.0
+            };
+            // Cache-read economics: a low read/input ratio means cheap caching.
+            let cache_score = match (m.cost_cache_read_per_mtok, m.cost_input_per_mtok) {
+                (Some(read), Some(base)) if base > 0.0 => {
+                    (1.0 - (read / base).clamp(0.0, 1.0)) * 100.0
+                }
+                _ => 0.0,
+            };
+            let composite = 0.4 * value_score + 0.3 * context_score + 0.3 * cache_score;
+            Some((m, composite))
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
+
+    let mut fast = Vec::new();
+    let mut standard = Vec::new();
+    let mut premium = Vec::new();
+    for (m, score) in scored {
+        let Some(output) = m.cost_output_per_mtok else {
+            continue;
+        };
+        let tier = if output >= PREMIUM_MIN {
+            "premium"
+        } else if output < FAST_MAX {
+            "fast"
+        } else {
+            "standard"
+        };
+        let ranked = RankedModel {
+            id: format!("{}/{}", m.provider, m.id),
+            name: format!("{} ({})", m.id, m.provider),
+            popularity_score: 0.0,
+            benchmark_score: 0.0,
+            composite_score: score,
+            tier: tier.to_string(),
+            input_per_mtok: m.cost_input_per_mtok,
+            output_per_mtok: m.cost_output_per_mtok,
+            context_window: m.context_window,
+            supports_tools: true,
+            is_curated: false,
+        };
+        match tier {
+            "fast" => fast.push(ranked),
+            "standard" => standard.push(ranked),
+            _ => premium.push(ranked),
+        }
+    }
+
+    RankedTiers {
+        fast,
+        standard,
+        premium,
+    }
 }
 
 /// Print the tier selection with score breakdown.
