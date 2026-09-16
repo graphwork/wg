@@ -1,0 +1,26 @@
+## Probe replication (exact admission argv from src/execution_assignment.rs preflight())
+## Worker lane: capability_argv=[--offline -ne --no-skills --no-prompt-templates --no-context-files] + --list-models <opaque_route>
+## opaque_route = parse_opaque_pi_route('pi:lunaroute:glm-5.3-flash') = 'lunaroute:glm-5.3-flash'
+
+$ pi --offline -ne --no-skills --no-prompt-templates --no-context-files --list-models "lunaroute:glm-5.3-flash"
+No models matching "lunaroute:glm-5.3-flash"
+exit=0
+
+$ pi --offline -ne --no-tools --no-context-files --no-skills --no-prompt-templates --no-session --list-models "lunaroute:deepseek-4.1-flash"
+No models matching "lunaroute:deepseek-4.1-flash"
+exit=0
+
+## Slash-form (post-migrate shape):
+$ --list-models "lunaroute/glm-5.3-flash"
+provider   model                     context  max-out  thinking  images
+lunaroute  glm-5.3-flash             524.3K   163.8K   yes       yes   
+lunaroute  glm-5.3-flash-background  524.3K   163.8K   yes       yes   
+
+$ --list-models "lunaroute/deepseek-4.1-flash"
+provider   model                          context  max-out  thinking  images
+lunaroute  deepseek-4.1-flash             1.0M     262.1K   yes       yes   
+lunaroute  deepseek-4.1-flash-background  1.0M     262.1K   yes       yes   
+
+## Runtime resolution (worker lane, --model opaque_route):
+$ pi --offline -ne ... --model "lunaroute:glm-5.3-flash" --print
+Error: Model "lunaroute:glm-5.3-flash" not found. Use --list-models to see available models.
