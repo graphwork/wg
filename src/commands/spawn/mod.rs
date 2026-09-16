@@ -355,6 +355,8 @@ mod tests {
         struct Guard {
             saved: Option<std::ffi::OsString>,
             _tmp: TempDir,
+            // Holds the crate-wide env lock for the whole mutation window.
+            _env_lock: std::sync::MutexGuard<'static, ()>,
         }
         impl Drop for Guard {
             fn drop(&mut self) {
@@ -366,10 +368,15 @@ mod tests {
                 }
             }
         }
+        let _env_lock = crate::test_helpers::env_lock();
         let tmp = TempDir::new().unwrap();
         let saved = std::env::var_os("WG_GLOBAL_DIR");
         unsafe { std::env::set_var("WG_GLOBAL_DIR", tmp.path()) };
-        Guard { saved, _tmp: tmp }
+        Guard {
+            saved,
+            _tmp: tmp,
+            _env_lock,
+        }
     }
 
     fn make_task(id: &str, title: &str) -> Task {

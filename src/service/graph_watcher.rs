@@ -199,8 +199,12 @@ mod tests {
         let c = counter.clone();
 
         // Use a relatively long debounce to make the test deterministic across
-        // FS / scheduler quirks.
-        let _w = GraphWatcher::start(&graph, Duration::from_millis(150), move || {
+        // FS / scheduler quirks. On a loaded host the burst writer thread can
+        // be preempted between write syscalls for longer than a short debounce
+        // window, splitting one logical burst into several notify batches and
+        // inflating the callback count; a 1s window keeps the batching inside
+        // one debounce period even under that preemption.
+        let _w = GraphWatcher::start(&graph, Duration::from_secs(1), move || {
             c.fetch_add(1, Ordering::SeqCst);
         })
         .expect("start watcher");
@@ -214,7 +218,7 @@ mod tests {
 
         // Wait long enough for the debounce window to expire and any followup
         // events to drain.
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(2500));
 
         let count = counter.load(Ordering::SeqCst);
         assert!(

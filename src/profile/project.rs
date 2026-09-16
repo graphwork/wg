@@ -1415,6 +1415,7 @@ mod tests {
 
     struct TestEnv {
         _guard: std::sync::MutexGuard<'static, ()>,
+        _env_guard: std::sync::MutexGuard<'static, ()>,
         root: TempDir,
         global: PathBuf,
         history: PathBuf,
@@ -1422,6 +1423,9 @@ mod tests {
 
     impl TestEnv {
         fn new() -> Self {
+            // Crate-wide env lock first: serialize against every other module
+            // mutating HOME / WG_GLOBAL_DIR (migrate, profile::named, spawn, …).
+            let env_guard = crate::test_helpers::env_lock();
             let guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             let root = tempfile::tempdir().unwrap();
             let global = root.path().join("global");
@@ -1437,6 +1441,7 @@ mod tests {
             }
             Self {
                 _guard: guard,
+                _env_guard: env_guard,
                 root,
                 global,
                 history,

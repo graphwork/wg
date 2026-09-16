@@ -1581,6 +1581,11 @@ mod tests {
     fn test_gh_web_escape_refused_no_side_effect() {
         use std::os::unix::fs::PermissionsExt;
 
+        // Crate-wide env lock: GH_BROWSER is non-volatile and feeds the
+        // validation stable-environment projection; serialize against every
+        // other module's env-mutating tests.
+        let _env_guard = crate::test_helpers::env_lock();
+
         let dir = std::env::temp_dir().join(format!("wg_eval_ghweb_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let proof = dir.join("web_proof");

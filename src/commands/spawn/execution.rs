@@ -8123,16 +8123,20 @@ esac
     struct GlobalConfigGuard {
         saved: Option<std::ffi::OsString>,
         _global: TempDir,
+        // Holds the crate-wide env lock for the whole mutation window.
+        _env_lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl GlobalConfigGuard {
         fn isolated() -> Self {
+            let _env_lock = crate::test_helpers::env_lock();
             let global = TempDir::new().unwrap();
             let saved = std::env::var_os("WG_GLOBAL_DIR");
             unsafe { std::env::set_var("WG_GLOBAL_DIR", global.path()) };
             Self {
                 saved,
                 _global: global,
+                _env_lock,
             }
         }
     }

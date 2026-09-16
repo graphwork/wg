@@ -773,18 +773,49 @@ mod tests {
         // returns a false positive).
         outer.wait().ok();
 
-        // Give the kernel a beat for init to reap the grandchildren.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // On a loaded, process-churn-heavy host a reaped PID can be REUSED
+        // by an unrelated process within the poll window, which makes the
+        // signal-based `is_process_alive` (kill(pid, 0)) report a false
+        // positive forever. Confirm liveness by identity: only a process
+        // whose /proc/<pid>/cmdline still matches the tree we spawned (bash
+        // or sleep) counts as alive.
+        let cmdline_matches = |pid: u32, needle: &str| -> bool {
+            match std::fs::read(format!("/proc/{pid}/cmdline")) {
+                Ok(bytes) => {
+                    let cmd = String::from_utf8_lossy(&bytes);
+                    // A zombie has an empty cmdline — already dead for our
+                    // purposes. A reused PID has a foreign cmdline.
+                    !cmd.is_empty() && cmd.contains(needle)
+                }
+                Err(_) => false,
+            }
+        };
+        let tree_alive =
+            |pid: u32| -> bool { cmdline_matches(pid, "bash") || cmdline_matches(pid, "sleep") };
+
+        // Wait (bounded) for init to reap the descendants instead of a
+        // fixed sleep: the property under test is that the descendants
+        // EVENTUALLY die, not that they die within one scheduler slice.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if descendants_before.iter().all(|pid| !tree_alive(*pid)) && !tree_alive(outer_pid) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
 
         for child in &descendants_before {
             assert!(
-                !is_process_alive(*child),
+                !tree_alive(*child),
                 "descendant PID {} should be dead after tree kill",
                 child
             );
         }
         assert!(
-            !is_process_alive(outer_pid),
+            !tree_alive(outer_pid),
             "root PID {} should be dead after tree kill",
             outer_pid
         );

@@ -978,12 +978,20 @@ mod tests {
     struct EnvRestore {
         key: &'static str,
         previous: Option<std::ffi::OsString>,
+        // Holds the crate-wide env lock for the whole mutation window so no
+        // concurrent test observes our WG_GLOBAL_DIR (or clobbers it).
+        _env_lock: std::sync::MutexGuard<'static, ()>,
     }
     impl EnvRestore {
         fn set(key: &'static str, value: &Path) -> Self {
+            let _env_lock = crate::test_helpers::env_lock();
             let previous = std::env::var_os(key);
             unsafe { std::env::set_var(key, value) };
-            Self { key, previous }
+            Self {
+                key,
+                previous,
+                _env_lock,
+            }
         }
     }
     impl Drop for EnvRestore {

@@ -2259,6 +2259,15 @@ mod tests {
 
     /// Save/override an env var for the duration of a test, restoring on drop.
     /// Tests that use this MUST be `#[serial]` because env is process-global.
+    /// Crate-wide env lock: serialize against every other module mutating
+    /// env vars (HOME, WG_GLOBAL_DIR, OPENAI_API_KEY, PATH, …). EnvGuard
+    /// users hold this for the whole test; the fallback-behavior tests hold
+    /// it too because they READ `experiment_enabled()` / fallback config and
+    /// a concurrent env flip would change the code path under test.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_helpers::env_lock()
+    }
+
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
@@ -2300,6 +2309,7 @@ mod tests {
     #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_weak_tier_deepseek_with_key() {
+        let _env_guard = env_lock();
         // The two-tier setter wrote the handler-first OpenRouter route into
         // tiers.fast. With an OpenRouter key present, agency one-shots route to
         // that DeepSeek model via the native HTTP handler — NOT the old
@@ -2324,6 +2334,7 @@ mod tests {
     #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_weak_tier_key_from_endpoint() {
+        let _env_guard = env_lock();
         // The credential can come from a configured endpoint instead of an env
         // var — same outcome: agency routes to the native DeepSeek model.
         let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
@@ -2356,6 +2367,7 @@ mod tests {
     #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_missing_native_key_does_not_switch_handler() {
+        let _env_guard = env_lock();
         let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
         let _a = EnvGuard::set("OPENAI_API_KEY", None);
         let mut config = Config::default();
@@ -2372,6 +2384,7 @@ mod tests {
     #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_explicit_override_wins_over_weak_tier() {
+        let _env_guard = env_lock();
         // tiers.fast points weak at DeepSeek, but an explicit [models.evaluator]
         // override must still win for that role — explicit overrides beat the
         // tier default. (Covers validation item 2.)
@@ -2402,6 +2415,7 @@ mod tests {
     #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_explicit_codex_override_unaffected_by_weak_tier() {
+        let _env_guard = env_lock();
         // A codex override routes to the codex CLI regardless of the weak tier;
         // codex self-authenticates, so it is not subject to the credential net.
         let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
@@ -2420,6 +2434,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_agency_native_creds_available_matches_provider() {
+        let _env_guard = env_lock();
         // Direct coverage of the credential predicate the dispatch relies on.
         let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
         let _a = EnvGuard::set("OPENAI_API_KEY", None);
@@ -2448,6 +2463,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_native_credentials_never_cross_provider_boundary() {
+        let _env_guard = env_lock();
         let _or = EnvGuard::set("OPENROUTER_API_KEY", None);
         let _oa = EnvGuard::set("OPENAI_API_KEY", Some("sk-openai-only"));
         let config = Config::default();
@@ -2547,6 +2563,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn opaque_reviewer_preflight_and_call_share_unsplit_assignment() {
+        let _env_guard = env_lock();
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let bin = temp.path().join("bin");
@@ -2619,6 +2636,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","content":[{"typ
     #[test]
     #[serial_test::serial]
     fn test_pi_terminal_context_error_is_specific_not_empty_response() {
+        let _env_guard = env_lock();
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -2658,6 +2676,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
     #[test]
     #[serial_test::serial]
     fn test_pi_call_preserves_exact_final_response_text() {
+        let _env_guard = env_lock();
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -2691,6 +2710,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
     #[test]
     #[serial_test::serial]
     fn test_resolve_agency_dispatch_weak_tier_pi_routes_to_pi_handler() {
+        let _env_guard = env_lock();
         // Two-tier Pi profile writes `pi:openrouter:deepseek/deepseek-chat` into
         // tiers.fast. ALL agency one-shot roles must resolve to the Pi handler
         // (NOT claude CLI, NOT native). A `pi:` route self-authenticates via env
@@ -2741,6 +2761,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
     #[test]
     #[serial_test::serial]
     fn test_agency_native_creds_available_handler_first_openrouter() {
+        let _env_guard = env_lock();
         let _o = EnvGuard::set("OPENROUTER_API_KEY", None);
         let _a = EnvGuard::set("OPENAI_API_KEY", None);
         let config = Config::default();
@@ -2767,6 +2788,8 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
 
     #[test]
     fn test_pi_failure_without_fallback_is_loud_and_never_attempts_claude() {
+        // Reader of experiment_enabled(): pin the process env (see env_lock).
+        let _env_guard = env_lock();
         let config = Config::default();
         let primary = agency_dispatch_for_spec("pi:openai-codex:gpt-5.6-terra", None);
         let mut attempted = Vec::new();
@@ -2797,6 +2820,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
     #[ignore = "persisted non-Pi plans are migration data, not executable routes"]
     #[serial_test::serial]
     fn persisted_plan_invokes_exact_codex_pi_and_claude_handlers() {
+        let _env_guard = env_lock();
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -2877,6 +2901,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
     #[test]
     #[serial_test::serial]
     fn test_failing_pi_process_never_executes_claude_process() {
+        let _env_guard = env_lock();
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -2935,6 +2960,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
     #[ignore = "retired non-Pi LLM dispatch compatibility behavior"]
     #[serial_test::serial]
     fn test_generic_lightweight_routes_never_cross_system_and_explicit_claude_still_runs() {
+        let _env_guard = env_lock();
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -3014,6 +3040,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
 
     #[test]
     fn test_explicit_same_system_fallback_runs_in_file_order() {
+        let _env_guard = env_lock();
         let mut config = Config::default();
         config.execution.fallbacks.push(ExecutionFallback {
             primary: "pi:openai-codex:gpt-5.6-terra".into(),
@@ -3048,6 +3075,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
     #[test]
     #[serial_test::serial]
     fn opaque_assignment_experiment_never_expands_role_fallbacks() {
+        let _env_guard = env_lock();
         let _experiment = EnvGuard::set(crate::execution_assignment::EXPERIMENT_ENV, Some("1"));
         let mut config = Config::default();
         config.execution.fallbacks.push(ExecutionFallback {
@@ -3077,6 +3105,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
 
     #[test]
     fn test_duplicate_same_system_fallback_route_is_attempted_once() {
+        let _env_guard = env_lock();
         let mut config = Config::default();
         config.execution.fallbacks.push(ExecutionFallback {
             primary: "codex:gpt-5.5".into(),
@@ -3111,6 +3140,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
 
     #[test]
     fn test_cross_system_fallback_is_rejected_before_any_call() {
+        let _env_guard = env_lock();
         let mut config = Config::default();
         config.execution.fallbacks.push(ExecutionFallback {
             primary: "codex:gpt-5.5".into(),
@@ -3133,6 +3163,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
 
     #[test]
     fn test_every_one_shot_role_obeys_no_cross_system_failure_contract() {
+        let _env_guard = env_lock();
         for (role, route, expected_handler) in [
             (
                 DispatchRole::Evaluator,
@@ -3185,6 +3216,9 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
 
     #[test]
     fn test_production_agency_dispatch_has_no_hardcoded_claude_fallback() {
+        // Reader of experiment_enabled() via run_dispatch_with_same_system_fallback:
+        // pin the process env (see env_lock).
+        let _env_guard = env_lock();
         let source = include_str!("llm.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
         assert!(!production.contains("AGENCY_CLAUDE_HAIKU_SPEC"));
