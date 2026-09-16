@@ -1248,6 +1248,36 @@ fn baseline_is_owned(path: &Path) -> bool {
     fs::read(path.join(BASELINE_OWNED)).ok().as_deref() == Some(b"wg-owned Cargo baseline\n")
 }
 
+/// Unlock read-only WG-owned baseline trees before removal.
+///
+/// WG deliberately publishes baselines with 555 directories (see
+/// `make_baseline_read_only`). When a stale owned cache contains such a
+/// locked tree, `fs::remove_dir_all` fails with EPERM and the cache is
+/// silently preserved forever. The `.wg-owned-baseline` marker is WG's own
+/// ownership proof (private layer clones exclude it, so a marker inside an
+/// owned cache can only be WG baseline state), and it therefore authorizes
+/// re-unlocking exactly the marked subtree's directories before removal.
+/// Returns the number of marked baseline roots that were unlocked.
+pub fn unlock_wg_owned_readonly_baselines(root: &Path) -> Result<usize> {
+    let mut marked = Vec::new();
+    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+        let entry = entry?;
+        if !entry.file_type().is_file() || entry.file_name() != BASELINE_OWNED {
+            continue;
+        }
+        let Some(parent) = entry.path().parent() else {
+            continue;
+        };
+        if baseline_is_owned(parent) {
+            marked.push(parent.to_path_buf());
+        }
+    }
+    for baseline in &marked {
+        make_tree_writable(baseline)?;
+    }
+    Ok(marked.len())
+}
+
 /// Return the baseline key containing an artifact path, if it is inside the
 /// exact owned cache layout. Callers use this to protect registered artifacts
 /// from baseline GC.
