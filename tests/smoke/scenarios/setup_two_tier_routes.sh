@@ -47,6 +47,14 @@ scenario_step() {
 STRONG="pi:openrouter:z-ai/glm-5.2"
 WEAK="pi:openrouter:deepseek/deepseek-chat"
 
+# Concierge Pi-readiness gates (concierge-guided-pi) sit between the route
+# picker and the model wizard. These fixtures isolate $HOME, so live auth
+# probes would report not-ready and stop the wizard; inject the all-green
+# probe results via the sanctioned WORKSGOOD_PI_GATE_JSON bridge (the same
+# convention as WORKSGOOD_PI_MODELS_JSON) so this scenario keeps pinning the
+# two-tier prompt flow, not the host's real auth state.
+GREEN_PI_GATE_PROBES='{"pi_present":true,"providers":["openrouter"],"authenticated":["openrouter"],"models":["pi:openrouter:z-ai/glm-5.2"]}'
+
 scenario_step 1 'interactive wizard: distinct strong + weak routes'
 
 proj1="$scratch/project-two-tier"
@@ -58,7 +66,7 @@ mkdir -p "$proj1/.wg"
 #   $WEAK\n                  → WEAK route prompt
 #   \n \n \n \n              → agency, max-agents, write-confirm, notify skip
 if ! printf '\n%s\n%s\n\n\n\n\n' "$STRONG" "$WEAK" | timeout 90s script -qec \
-  "cd '$proj1' && env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID -u WG_AGENT_ROLE -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER HOME='$fake_home' WG_GLOBAL_DIR='$scratch/global' wg --dir '$proj1/.wg' setup" \
+  "cd '$proj1' && env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID -u WG_AGENT_ROLE -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER HOME='$fake_home' WG_GLOBAL_DIR='$scratch/global' WORKSGOOD_PI_GATE_JSON='$GREEN_PI_GATE_PROBES' wg --dir '$proj1/.wg' setup" \
   "$scratch/wizard-two-tier.typescript" >/dev/null; then
     loud_fail "interactive setup (two-tier) did not return within 90s (prompt drift / stale key sequence)"
 fi
@@ -97,7 +105,7 @@ mkdir -p "$proj2/.wg"
 # \n route default; Enter accepts the STRONG default; Enter at WEAK = reuse
 # strong; then agency / max-agents / write-confirm / notify skip.
 if ! printf '\n\n\n\n\n\n\n' | timeout 90s script -qec \
-  "cd '$proj2' && env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID -u WG_AGENT_ROLE -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER HOME='$fake_home' WG_GLOBAL_DIR='$scratch/global' wg --dir '$proj2/.wg' setup" \
+  "cd '$proj2' && env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID -u WG_AGENT_ROLE -u WG_EXECUTOR_TYPE -u WG_MODEL -u WG_TIER HOME='$fake_home' WG_GLOBAL_DIR='$scratch/global' WORKSGOOD_PI_GATE_JSON='$GREEN_PI_GATE_PROBES' wg --dir '$proj2/.wg' setup" \
   "$scratch/wizard-single.typescript" >/dev/null; then
     loud_fail "interactive setup (single-model) did not return within 90s"
 fi

@@ -2124,6 +2124,19 @@ pub fn run(graph_dir: &Path) -> Result<()> {
     let route = route_choices[route_idx - 1];
 
     debug_assert_eq!(route, SetupRoute::Pi);
+    // Concierge Pi-readiness gates (attended flow): detection → auth →
+    // model resolvability, each fail-clean. A user who explicitly declines
+    // execution above never reaches them; a user continuing into the model
+    // wizard must clear all three first. Every stop prints the exact next
+    // command and exits BEFORE any tier prompt, config write, package
+    // install, or WG-side credential handling — Pi owns auth; WG only
+    // detects readiness.
+    if let Some(stop_lines) = worksgood::setup_pi_gates::run_pi_readiness_gates(true)? {
+        for line in stop_lines {
+            println!("{line}");
+        }
+        return Ok(());
+    }
     let preflight = inspect_pi_setup_readiness();
     let provider = "pi".to_string();
     let executor = "pi".to_string();

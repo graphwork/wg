@@ -3334,3 +3334,12 @@ owners = [
 ]
 description = "Pins setup-collects-strong: interactive `wg setup` (no --yes) collects a STRONG route (workers + heavy generative roles: task_agent, creator, merger, evolver, verification, reasoning high) and then a WEAK route (cheap recoverable one-shots: evaluator, assigner, flip_inference/flip_comparison, triage, placer, compactors, coordinator_eval, reviewer, reasoning low), explains which roles ride which tier, offers Enter=reuse-strong for single-model deployments, shows the resulting role table (like wg config --models) BEFORE writing, and states routes stay re-changeable via wg config / wg profile select because Pi owns the model plane. Distinct answers write distinct [tiers] standard/fast keys with the right reasoning; Enter-at-weak and `--yes` without --weak-model stay single-model (unchanged historical behavior); `--yes --weak-model` gives non-interactive two-tier writes and `wg config --models` resolves task_agent→strong, evaluator→weak."
 timeout_seconds = 120
+
+[[scenario]]
+name = "setup_pi_concierge_gates"
+script = "scenarios/setup_pi_concierge_gates.sh"
+owners = [
+    "concierge-guided-pi",
+]
+description = "Pins concierge-guided-pi: attended interactive `wg setup` walks a brand-new user through Pi readiness FIRST in three fail-clean gates, before any prompt and before any byte is written. Gate 1 (pi missing on PATH, via an empty fake-bin) prints the exact install command (`npm install -g @earendil-works/pi-coding-agent`, Node 20+) and exits cleanly with the rerun instruction; gate 2 (fake `pi` on PATH whose own `pi auth check --provider <P> --json --no-refresh` reports not_ready for every provider exposed by the offline catalog probe) prints the guided `/login <provider>` instruction (Pi owns the OAuth flow; WG never sees keys) and exits cleanly; gate 3 (authenticated but zero resolvable models, via the sanctioned WORKSGOOD_PI_GATE_JSON injectable-probes bridge) stops cleanly pointing at `pi --list-models`. Every stop asserts exit 0, NO worksgood.toml written, and the route prompt never reached; an all-green injected run passes through the gates, prints the readiness summary, and completes the wizard normally."
+timeout_seconds = 120

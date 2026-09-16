@@ -15,7 +15,12 @@ GETTING STARTED
   wg status
 
 Pi is the recommended LLM model plane. Pi owns provider login, model discovery,
-availability, endpoint details, support validation, and reported cost. Native
+availability, endpoint details, support validation, and reported cost. Attended
+interactive `wg setup` is concierge-guided: it runs three fail-clean Pi
+readiness gates (pi installed → a provider authenticated → a model resolvable)
+before the strong/weak tier prompts, printing the exact next command (install
+Pi, `/login` in pi, `pi --list-models`) and exiting cleanly when a gate is not
+yet green. Native
 Claude and Codex CLI workers and live chats are available only by explicit
 handler-first selection; each CLI owns its login and native model IDs. WG owns
 exact routes plus inherited reasoning. Opening a graph or TUI never creates a
