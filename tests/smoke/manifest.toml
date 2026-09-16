@@ -3299,6 +3299,13 @@ description = "Real CLI regression for the 555-protected baseline EPERM bug: a s
 timeout_seconds = 30
 
 [[scenario]]
+name = "reap_orphaned_descendant_group"
+script = "scenarios/reap_orphaned_descendant_group.sh"
+owners = ["reap-orphan-descendant-pgroups"]
+description = "Real CLI regression for orphaned descendant process groups: a terminal agent's recorded spawn pgid (setsid session, registry-recorded at spawn) still holds a live descendant with cwd inside a stale owned cache; the dry run reports the open-file blocker and kills nothing, the --execute pass reaps the orphaned group (kill -pgid, TERM-then-KILL) before the removal guard and reaps the stale layer in the same pass, the ownership row retires idempotently, and a RUNNING agent's live descendant group is never touched (negative half)."
+timeout_seconds = 45
+
+[[scenario]]
 name = "completion_empty_diff_idempotence"
 script = "scenarios/completion_empty_diff_idempotence.sh"
 owners = ["smoke-pin-completion"]

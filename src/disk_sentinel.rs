@@ -200,6 +200,11 @@ pub struct CleanupReport {
     pub compression_bytes_saved: u64,
     pub deduplicated_files: usize,
     pub deduplication_bytes_saved: u64,
+    /// Orphaned descendant process groups reaped before the removal guard
+    /// ran (terminal dead owners whose recorded spawn pgid still had live
+    /// members holding cwd/open files inside the owned path).
+    #[serde(default)]
+    pub reaped_groups: Vec<PreservedPath>,
     #[serde(default)]
     pub eligible: Vec<PreservedPath>,
     #[serde(default)]
@@ -1549,6 +1554,68 @@ fn safe_remove_owned_path(
     Ok(physical_bytes)
 }
 
+/// Reap the orphaned descendant process groups of terminal dead owners.
+///
+/// Spawn records each agent's detached process-group id (`setsid()` makes
+/// the wrapper its own session/group leader, so pgid == wrapper PID). When
+/// the agent is terminal (Done/Failed/Dead/Parked) *and* its exact process
+/// is gone, any remaining members of that group are orphans — the direct
+/// PID is dead, so a per-PID descendant walk finds nothing. Signaling the
+/// recorded group (`kill(-pgid)`) is the only handle left, and it is what
+/// stops the removal guard below from seeing dead agents' stray descendants
+/// holding cwd/open files inside the owned path forever.
+///
+/// Live agents are NEVER touched: the terminal-status + dead-exact-PID
+/// precondition fails closed, so a running agent's descendant groups (even
+/// under an expired lease) are never signaled.
+fn reap_orphaned_owner_groups(
+    owners: &[OwnedCache],
+    registry: &AgentRegistry,
+    report: &mut CleanupReport,
+) {
+    let mut handled: HashSet<u32> = HashSet::new();
+    for cache in owners {
+        let Some(agent) = registry.get_agent(&cache.agent_id) else {
+            continue;
+        };
+        if !matches!(
+            agent.status,
+            AgentStatus::Done | AgentStatus::Failed | AgentStatus::Dead | AgentStatus::Parked
+        ) {
+            continue;
+        }
+        if crate::service::is_process_alive(agent.pid) {
+            continue;
+        }
+        let Some(pgid) = agent.pgid else {
+            continue;
+        };
+        if !handled.insert(pgid) {
+            continue;
+        }
+        if let Some(reap) =
+            crate::service::reap_orphaned_process_group(pgid, ORPHAN_GROUP_REAP_WAIT_SECS)
+        {
+            report.reaped_groups.push(PreservedPath {
+                path: format!("pgid:{pgid}"),
+                reason: format!(
+                    "reaped orphaned descendant process group of terminal agent '{}' ({} live member(s){})",
+                    agent.id,
+                    reap.found_members.len(),
+                    if reap.force_killed {
+                        ", SIGKILL after TERM wait"
+                    } else {
+                        ""
+                    }
+                ),
+            });
+        }
+    }
+}
+
+/// How long the orphan-group reap waits between SIGTERM and SIGKILL.
+const ORPHAN_GROUP_REAP_WAIT_SECS: u64 = 2;
+
 fn terminal_agent_ids(registry: &AgentRegistry) -> HashSet<String> {
     registry
         .all()
@@ -2094,6 +2161,16 @@ pub fn cleanup_owned(
             });
             keep.extend(owners);
             continue;
+        }
+        // The orphan-reap leg: terminal dead owners may still have live
+        // descendant groups (spawn recorded their pgid) holding cwd/open
+        // files inside the owned path. Reap them BEFORE the guard so the
+        // guard sees the post-reap state; without this the guard trips
+        // forever on dead agents' strays and the stale layer is never
+        // reaped. Running agents are structurally excluded — see
+        // `reap_orphaned_owner_groups`.
+        if execute {
+            reap_orphaned_owner_groups(&owners, &registry, &mut report);
         }
         let guard_failure = owners
             .iter()
@@ -2692,6 +2769,7 @@ mod tests {
                 model: None,
                 completed_at: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
         registry.save(&dir).unwrap();
@@ -2749,6 +2827,7 @@ mod tests {
                 model: None,
                 completed_at: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
         registry.save(&dir).unwrap();
@@ -2848,6 +2927,7 @@ mod tests {
                 model: None,
                 completed_at: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
         registry.save(&dir).unwrap();
@@ -3206,6 +3286,7 @@ mod tests {
                 model: None,
                 completed_at: Some(Utc::now().to_rfc3339()),
                 worktree_path: worktree.map(|p| p.display().to_string()),
+                pgid: None,
             },
         );
         registry.save(&dir).unwrap();
@@ -3268,6 +3349,166 @@ mod tests {
             report.preserved
         );
         assert!(!target.exists());
+    }
+
+    /// Fixture for the orphan-group regression: a terminal (or running)
+    /// agent whose registry row carries a recorded spawn pgid, plus a stale
+    /// owned cache owned by that agent.
+    #[cfg(target_os = "linux")]
+    fn pgid_fixture(
+        root: &Path,
+        target: &Path,
+        pgid: Option<u32>,
+        status: AgentStatus,
+        agent_pid: u32,
+    ) -> (PathBuf, ResourceManagementConfig) {
+        let dir = root.join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        save_graph(&WorkGraph::new(), dir.join("graph.jsonl")).unwrap();
+        let mut registry = AgentRegistry::new();
+        registry.agents.insert(
+            "agent-orphan".into(),
+            crate::service::registry::AgentEntry {
+                id: "agent-orphan".into(),
+                pid: agent_pid,
+                task_id: "build".into(),
+                executor: "shell".into(),
+                started_at: Utc::now().to_rfc3339(),
+                last_heartbeat: Utc::now().to_rfc3339(),
+                status,
+                output_file: dir.join("orphan.log").display().to_string(),
+                model: None,
+                completed_at: None,
+                worktree_path: None,
+                pgid,
+            },
+        );
+        registry.save(&dir).unwrap();
+        let mut cache = make_owned_cache(
+            target,
+            CacheKind::CargoTarget,
+            "build",
+            "agent-orphan",
+            // A dead cache PID (with no start-identity evidence) keeps
+            // `owner_is_stale` true even while the *agent* row is alive —
+            // exactly the shape that used to let the open-file guard wedge
+            // the layer forever.
+            999_999,
+            None,
+            0,
+        );
+        cache.lease_expires_at = (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+        register_owned_cache(&dir, cache).unwrap();
+        let cfg = ResourceManagementConfig {
+            compress_terminal_streams: false,
+            ..Default::default()
+        };
+        (dir, cfg)
+    }
+
+    /// Regression for reap-orphan-descendant-pgroups: a terminal agent's
+    /// recorded spawn process group still holds live descendants (cwd
+    /// inside the owned path). Before the fix the open-file guard blocked
+    /// reaping forever; after the fix the execute pass reaps the orphaned
+    /// group first and the stale layer reaps in the same pass. The dry run
+    /// must stay side-effect free.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminal_owner_orphaned_process_group_is_reaped_before_guard() {
+        use std::os::unix::process::CommandExt;
+        let root = tempfile::Builder::new()
+            .prefix("wg-disk-orphan-group-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let target = root.path().join("wg-target-orphan-group");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("blob"), vec![9u8; 4096]).unwrap();
+
+        // A descendant in its own process group (mimicking the setsid'd
+        // agent wrapper's group) with cwd inside the owned path.
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("300").current_dir(&target);
+        cmd.process_group(0);
+        let mut child = cmd.spawn().unwrap();
+        let pgid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let (dir, cfg) = pgid_fixture(root.path(), &target, Some(pgid), AgentStatus::Done, 999_998);
+
+        // Dry run: the guard still sees the live descendant, the report
+        // explains the blocker, and NOTHING is killed or removed.
+        let dry = cleanup_owned(&dir, &cfg, false).unwrap();
+        assert!(child.id() != 0);
+        assert!(dry.reaped_groups.is_empty(), "dry run must not reap");
+        assert!(
+            dry.preserved.iter().any(|p| p.reason.contains("open file")),
+            "dry run should report the orphan-blocked guard: {:?}",
+            dry.preserved
+        );
+        assert!(target.exists(), "dry run must not remove the layer");
+
+        // Execute: the orphaned group is reaped, the guard passes, and the
+        // stale layer is removed in the same pass.
+        let report = cleanup_owned(&dir, &cfg, true).unwrap();
+        assert_eq!(
+            report.reaped_groups.len(),
+            1,
+            "expected exactly one orphaned group reap: {:?}",
+            report.reaped_groups
+        );
+        assert_eq!(
+            report.reaped, 1,
+            "stale layer must reap after the orphan group is gone: {:?}",
+            report.preserved
+        );
+        assert!(!target.exists());
+        // The descendant is gone (SIGTERM'd with its group).
+        let status = child.wait().expect("wait reaped child");
+        assert!(!status.success(), "descendant should have been signaled");
+    }
+
+    /// A RUNNING agent's descendant groups are never reaped — even when the
+    /// owned-cache row itself is stale (expired lease, dead cache PID). The
+    /// terminal-status precondition fails closed, so the guard keeps
+    /// protecting the live agent's layer.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn running_agent_descendant_group_is_never_reaped() {
+        use std::os::unix::process::CommandExt;
+        let root = tempfile::Builder::new()
+            .prefix("wg-disk-running-group-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let target = root.path().join("wg-target-running-group");
+        fs::create_dir_all(&target).unwrap();
+
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("300").current_dir(&target);
+        cmd.process_group(0);
+        let mut child = cmd.spawn().unwrap();
+        let pgid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let (dir, cfg) = pgid_fixture(
+            root.path(),
+            &target,
+            Some(pgid),
+            AgentStatus::Working,
+            std::process::id(), // the agent itself is alive
+        );
+
+        let report = cleanup_owned(&dir, &cfg, true).unwrap();
+        assert!(
+            report.reaped_groups.is_empty(),
+            "a running agent's descendant group must never be reaped: {:?}",
+            report.reaped_groups
+        );
+        assert_eq!(report.reaped, 0, "running owner keeps its layer");
+        assert!(target.exists());
+        // The descendant survives the pass.
+        assert!(unsafe { libc::kill(child.id() as i32, 0) } == 0);
+        let _ = child.kill();
+        child.wait().ok();
     }
 
     #[test]
@@ -3579,6 +3820,7 @@ mod tests {
                 model: None,
                 completed_at: Some(Utc::now().to_rfc3339()),
                 worktree_path: None,
+                pgid: None,
             },
         );
         let base = registry.agents.get("a").unwrap().clone();

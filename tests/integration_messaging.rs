@@ -559,6 +559,7 @@ fn adapter_claude_writes_notification_file() {
         model: None,
         completed_at: None,
         worktree_path: None,
+        pgid: None,
     };
 
     // Deliver message via the full deliver_message path
@@ -614,6 +615,7 @@ fn adapter_shell_writes_notification_file() {
         model: None,
         completed_at: None,
         worktree_path: None,
+        pgid: None,
     };
 
     let (msg_id, delivered) = messages::deliver_message(
@@ -677,6 +679,7 @@ fn adapter_notification_accumulates_multiple_messages() {
         model: None,
         completed_at: None,
         worktree_path: None,
+        pgid: None,
     };
 
     // Deliver 5 messages
@@ -922,6 +925,7 @@ fn coordinator_deliver_message_stores_and_notifies() {
         model: None,
         completed_at: None,
         worktree_path: None,
+        pgid: None,
     };
 
     // Coordinator delivers a message
@@ -970,6 +974,7 @@ fn coordinator_multiple_deliveries_across_tasks() {
         model: None,
         completed_at: None,
         worktree_path: None,
+        pgid: None,
     };
 
     let agent_b = worksgood::service::registry::AgentEntry {
@@ -984,6 +989,7 @@ fn coordinator_multiple_deliveries_across_tasks() {
         model: None,
         completed_at: None,
         worktree_path: None,
+        pgid: None,
     };
 
     // Deliver to both tasks

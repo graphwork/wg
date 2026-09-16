@@ -655,6 +655,7 @@ mod tests {
                 output_file: "/tmp/output.log".to_string(),
                 model: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
 
@@ -962,6 +963,7 @@ mod tests {
                 output_file: "/tmp/output.log".to_string(),
                 model: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
         reg.save(dir).unwrap();
@@ -1017,6 +1019,7 @@ mod tests {
                 output_file: "/tmp/output.log".to_string(),
                 model: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
         reg.save(dir).unwrap();

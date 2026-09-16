@@ -2796,6 +2796,15 @@ fn spawn_agent_inner_authorized_impl(
         if let Some(ref worktree) = worktree_info {
             locked_registry.set_worktree_path(&agent_id, &worktree.path);
         }
+        // Record the agent's detached process group. The wrapper above was
+        // launched with `setsid()` in `pre_exec`, so once it has exec'd the
+        // child is its own session/group leader and its pgid equals its own
+        // PID. Recording it here lets the terminal-state reaper signal the
+        // whole surviving descendant group (`kill(-pgid)`) after the agent
+        // dies — a per-PID tree walk from the (already-gone) wrapper PID
+        // finds nothing at that point.
+        #[cfg(unix)]
+        locked_registry.set_process_group_id(&agent_id, pid);
         // Keep the registry lock held after the atomic write; rollback can
         // remove this exact entry without another dispatcher interleaving.
         locked_registry

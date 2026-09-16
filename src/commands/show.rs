@@ -2791,6 +2791,7 @@ mod tests {
                 model: Some("openrouter/minimax".to_string()),
                 completed_at: None,
                 worktree_path: None,
+                pgid: None,
             },
         );
         registry.save(temp_dir.path()).unwrap();

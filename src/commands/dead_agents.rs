@@ -34,6 +34,11 @@ pub struct DeadAgentInfo {
     pub pid: u32,
     pub last_heartbeat: String,
     pub seconds_since_heartbeat: i64,
+    /// Recorded spawn process-group id, if any. The agent's own process is
+    /// already gone here, so surviving descendants are orphans in that
+    /// group and must be reaped (`kill(-pgid)`) — see `worksgood::service`
+    /// `reap_orphaned_process_group`.
+    pub pgid: Option<u32>,
 }
 
 /// Result of dead agent detection
@@ -128,6 +133,7 @@ pub fn run_cleanup(
                 pid: a.pid,
                 last_heartbeat: a.last_heartbeat.clone(),
                 seconds_since_heartbeat: a.seconds_since_heartbeat()?,
+                pgid: a.pgid,
             })
         })
         .collect();
@@ -139,6 +145,31 @@ pub fn run_cleanup(
 
     // Save registry
     locked_registry.save_ref()?;
+
+    // Reap the orphaned descendant process groups of the newly-dead agents.
+    // The agent's own process is already gone, so surviving members of the
+    // recorded spawn group (handler CLIs, harness children) are orphans —
+    // the group id is the only handle left. Best-effort: a failed reap is
+    // reported but does not block the rest of the cleanup.
+    let mut groups_reaped: Vec<String> = Vec::new();
+    for dead_agent in &dead_info {
+        let Some(pgid) = dead_agent.pgid else {
+            continue;
+        };
+        if let Some(reap) = worksgood::service::reap_orphaned_process_group(pgid, 2) {
+            groups_reaped.push(format!(
+                "{} (pgid {}, {} live member(s){})",
+                dead_agent.agent_id,
+                pgid,
+                reap.found_members.len(),
+                if reap.force_killed {
+                    ", SIGKILL after TERM wait"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
 
     // Fail exact task attempts owned by absent processes.
     let mut tasks_unclaimed = Vec::new();
@@ -244,6 +275,7 @@ pub fn run_cleanup(
             "threshold_minutes": threshold_mins,
             "dead_agents_marked": result.dead_agents.len(),
             "tasks_unclaimed": result.tasks_unclaimed,
+            "process_groups_reaped": groups_reaped,
             "dead_agents": result.dead_agents.iter().map(|a| {
                 serde_json::json!({
                     "id": a.agent_id,
@@ -278,6 +310,17 @@ pub fn run_cleanup(
                 );
                 for task_id in &result.tasks_unclaimed {
                     println!("  {}", task_id);
+                }
+            }
+
+            if !groups_reaped.is_empty() {
+                println!();
+                println!(
+                    "Reaped {} orphaned descendant process group(s):",
+                    groups_reaped.len()
+                );
+                for entry in &groups_reaped {
+                    println!("  {}", entry);
                 }
             }
 
@@ -561,6 +604,92 @@ mod tests {
         // Should find the dead agent
         let result = run_check(temp_dir.path(), Some(1), false);
         assert!(result.is_ok());
+    }
+
+    /// Regression for reap-orphan-descendant-pgroups: when a dead agent is
+    /// marked Dead, its recorded spawn process group must be reaped — the
+    /// agent's own process is gone, so surviving descendants are orphans
+    /// only reachable through `kill(-pgid)`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cleanup_reaps_recorded_orphaned_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let temp_dir = setup_with_agent_and_task();
+        let dir = temp_dir.path();
+
+        // A descendant in its own process group, mimicking the orphaned
+        // leftovers of a dead agent's detached spawn group.
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("300");
+        cmd.process_group(0);
+        let mut child = cmd.spawn().unwrap();
+        let pgid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Dead agent (heartbeat ancient + nonexistent PID) carrying the
+        // recorded spawn pgid.
+        let mut registry = AgentRegistry::load(dir).unwrap();
+        let agent_id = registry.register_agent(999_999_999, "task-1", "shell", "/tmp/orphan-out");
+        if let Some(agent) = registry.get_agent_mut(&agent_id) {
+            agent.last_heartbeat = "2020-01-01T00:00:00Z".to_string();
+            agent.pgid = Some(pgid);
+        }
+        registry.save(dir).unwrap();
+
+        let result = run_cleanup(dir, Some(1), true).unwrap();
+        assert_eq!(result.dead_agents.len(), 2, "both stale agents marked dead");
+
+        // The orphaned descendant group was reaped.
+        let status = child.wait().expect("wait reaped orphan");
+        assert!(!status.success(), "orphaned descendant should be signaled");
+
+        // The agent row is Dead.
+        let registry = AgentRegistry::load(dir).unwrap();
+        assert_eq!(
+            registry.get_agent(&agent_id).unwrap().status,
+            AgentStatus::Dead
+        );
+    }
+
+    /// A RUNNING agent (fresh heartbeat, live PID) with a recorded pgid is
+    /// never reaped by the dead-agent sweep — the descendant group of a
+    /// live agent belongs to the live agent.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cleanup_never_reaps_a_running_agents_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let temp_dir = setup_with_agent_and_task();
+        let dir = temp_dir.path();
+
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("300");
+        cmd.process_group(0);
+        let mut child = cmd.spawn().unwrap();
+        let pgid = child.id();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let mut registry = AgentRegistry::load(dir).unwrap();
+        let agent_id =
+            registry.register_agent(std::process::id(), "task-1", "shell", "/tmp/live-out");
+        if let Some(agent) = registry.get_agent_mut(&agent_id) {
+            agent.pgid = Some(pgid);
+        }
+        registry.save(dir).unwrap();
+
+        let result = run_cleanup(dir, Some(1), true).unwrap();
+        assert_eq!(
+            result.dead_agents.len(),
+            1,
+            "only the stale agent is marked dead; the live agent is untouched"
+        );
+        assert_eq!(result.dead_agents[0].agent_id, "agent-1");
+
+        // The running agent's descendant survived the sweep.
+        assert!(unsafe { libc::kill(child.id() as i32, 0) } == 0);
+        let _ = child.kill();
+        child.wait().ok();
     }
 
     #[test]

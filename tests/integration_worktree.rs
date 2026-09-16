@@ -278,6 +278,7 @@ fn test_cleanup_orphaned_worktrees_skips_live_agents() {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         },
     );
     registry.save(&wg_dir).expect("Failed to save registry");
@@ -328,6 +329,7 @@ fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         },
     );
     registry.save(&wg_dir).expect("Failed to save registry");
@@ -401,6 +403,7 @@ fn test_cleanup_orphaned_worktrees_preserves_unfinished_work() {
             model: None,
             completed_at: None,
             worktree_path: None,
+            pgid: None,
         },
     );
     registry.save(&wg_dir).expect("Failed to save registry");
