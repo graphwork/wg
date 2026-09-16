@@ -9225,6 +9225,10 @@ model = "claude:haiku"
     #[test]
     #[serial]
     fn test_resolve_api_key_env_var_fallback() {
+        // Crate-wide env lock: OPENAI/OPENROUTER key env vars are non-volatile
+        // and feed the validation stable-environment projection; serialize
+        // against every other module's env-mutating tests.
+        let _env_guard = crate::test_helpers::env_lock();
         // Save/clear env
         let saved = std::env::var("OPENAI_API_KEY").ok();
         unsafe { std::env::set_var("OPENAI_API_KEY", "sk-env-test") };
@@ -9252,6 +9256,10 @@ model = "claude:haiku"
     #[test]
     #[serial]
     fn test_resolve_api_key_inline_beats_env_var() {
+        // Crate-wide env lock: OPENAI/OPENROUTER key env vars are non-volatile
+        // and feed the validation stable-environment projection; serialize
+        // against every other module's env-mutating tests.
+        let _env_guard = crate::test_helpers::env_lock();
         let saved = std::env::var("OPENAI_API_KEY").ok();
         unsafe { std::env::set_var("OPENAI_API_KEY", "sk-env-should-lose") };
         let ep = EndpointConfig {
@@ -9277,6 +9285,10 @@ model = "claude:haiku"
     #[test]
     #[serial]
     fn test_resolve_api_key_file_beats_env_var() {
+        // Crate-wide env lock: OPENAI/OPENROUTER key env vars are non-volatile
+        // and feed the validation stable-environment projection; serialize
+        // against every other module's env-mutating tests.
+        let _env_guard = crate::test_helpers::env_lock();
         let saved = std::env::var("OPENAI_API_KEY").ok();
         unsafe { std::env::set_var("OPENAI_API_KEY", "sk-env-should-lose") };
         let dir = tempfile::tempdir().unwrap();
@@ -9305,6 +9317,10 @@ model = "claude:haiku"
     #[test]
     #[serial]
     fn test_resolve_api_key_openrouter_env_var_cascade() {
+        // Crate-wide env lock: OPENAI/OPENROUTER key env vars are non-volatile
+        // and feed the validation stable-environment projection; serialize
+        // against every other module's env-mutating tests.
+        let _env_guard = crate::test_helpers::env_lock();
         let saved_or = std::env::var("OPENROUTER_API_KEY").ok();
         let saved_oai = std::env::var("OPENAI_API_KEY").ok();
         // Clear both, set only OPENAI_API_KEY

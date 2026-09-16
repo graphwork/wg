@@ -884,6 +884,9 @@ provider = "openai"
 
     #[test]
     fn explicit_endpoint_name_can_resolve_from_global_config() {
+        // Crate-wide env lock: WG_GLOBAL_DIR is process-global; serialize
+        // against every other module's env-mutating tests.
+        let _env_guard = crate::test_helpers::env_lock();
         let dir = tempfile::tempdir().unwrap();
         let global_dir = tempfile::tempdir().unwrap();
         let key_file = global_dir.path().join("openrouter.key");

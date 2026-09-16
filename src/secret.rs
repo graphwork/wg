@@ -866,10 +866,27 @@ mod tests {
     static HOME_MUTEX: Mutex<()> = Mutex::new(());
 
     fn with_home(f: impl FnOnce()) -> TempDir {
-        let _guard = HOME_MUTEX.lock().unwrap();
+        // Crate-wide env lock: serialize against every other module mutating
+        // HOME / WG_GLOBAL_DIR, not just this module's tests.
+        let _env_guard = crate::test_helpers::env_lock();
+        let _guard = HOME_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
+        // Restore the previous HOME on exit — leaking the tempdir path into
+        // the process env made every LATER test read a deleted directory.
+        struct RestoreHome(Option<std::ffi::OsString>);
+        impl Drop for RestoreHome {
+            fn drop(&mut self) {
+                unsafe {
+                    match self.0.take() {
+                        Some(home) => std::env::set_var("HOME", home),
+                        None => std::env::remove_var("HOME"),
+                    }
+                }
+            }
+        }
+        let _restore = RestoreHome(std::env::var_os("HOME"));
         unsafe { std::env::set_var("HOME", tmp.path()) };
         f();
         tmp

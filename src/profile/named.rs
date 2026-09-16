@@ -1346,6 +1346,12 @@ mod tests {
     fn with_home<F: FnOnce()>(f: F) -> TempDir {
         // A failed assertion must not poison every later profile test. Retain
         // the original failure while allowing independent coverage to run.
+        // HOME_MUTEX serializes this module's callers with each other; the
+        // crate-wide env lock also serializes us against every OTHER module
+        // that mutates HOME / WG_GLOBAL_DIR (migrate, setup, secret, spawn, …)
+        // — without it, a concurrent module's env guard races our HOME and we
+        // end up reading the real ~/.wg or a foreign tempdir mid-test.
+        let _env_guard = crate::test_helpers::env_lock();
         let _guard = HOME_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());

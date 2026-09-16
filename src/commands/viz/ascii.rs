@@ -1786,12 +1786,20 @@ mod tests {
     /// Serialise tests that mutate process-global colour env vars.
     static COLOR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Crate-wide env lock: NO_COLOR / CLICOLOR_FORCE are non-volatile env
+    /// vars that feed the validation stable-environment projection; serialize
+    /// against every other module's env-mutating tests.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_helpers::env_lock()
+    }
+
     #[test]
     fn test_generate_ascii_paren_decorator_renders_white() {
         // With colour forced on, the parenthetical decorator must be wrapped
         // in `\x1b[37m`/`\x1b[0m` (white) so it reads as foreground info,
         // distinct from the status-coloured task id.
         let _guard = COLOR_ENV_LOCK.lock().unwrap();
+        let _env_guard = env_lock();
         // SAFETY: serialised by COLOR_ENV_LOCK; no other thread reads env here.
         unsafe {
             std::env::remove_var("NO_COLOR");
@@ -1836,6 +1844,7 @@ mod tests {
     fn test_generate_ascii_no_color_strips_ansi() {
         // With NO_COLOR set, no ANSI escapes should appear in the output.
         let _guard = COLOR_ENV_LOCK.lock().unwrap();
+        let _env_guard = env_lock();
         // SAFETY: serialised by COLOR_ENV_LOCK.
         unsafe {
             std::env::remove_var("CLICOLOR_FORCE");

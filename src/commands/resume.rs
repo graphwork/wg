@@ -833,13 +833,16 @@ mod tests {
 
     struct GlobalDirGuard {
         saved: Option<String>,
+        // Holds the crate-wide env lock for the whole mutation window.
+        _env_lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl GlobalDirGuard {
         fn set(path: &Path) -> Self {
+            let _env_lock = crate::test_helpers::env_lock();
             let saved = std::env::var("WG_GLOBAL_DIR").ok();
             unsafe { std::env::set_var("WG_GLOBAL_DIR", path) };
-            Self { saved }
+            Self { saved, _env_lock }
         }
     }
 

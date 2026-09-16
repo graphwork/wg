@@ -48,3 +48,30 @@ pub fn setup_workgraph(dir: &Path, tasks: Vec<Task>) -> PathBuf {
     save_graph(&graph, &path).unwrap();
     path
 }
+
+/// Process-global lock serializing every test that mutates environment
+/// variables production path-resolution reads (`HOME`, `WG_GLOBAL_DIR`,
+/// `WG_PROFILE_USAGE_PATH`, …).
+///
+/// Env vars are process-global state and the lib test harness runs all unit
+/// tests as threads of one process. Before this lock, each module that mutated
+/// `HOME`/`WG_GLOBAL_DIR` either used its own module-local mutex or none at
+/// all, so a test in module A could observe module B's temp dir (or have its
+/// own `HOME` clobbered mid-test) — e.g. a `profile::named` test reading
+/// another module's `WG_GLOBAL_DIR` tempdir, or a `migrate_project_local_pi`
+/// rollback racing a concurrent `HOME` reset. Every env-mutating test guard
+/// (the `EnvRestore` / `GlobalDirGuard` / `with_home`-style helpers) must hold
+/// this lock for the whole mutation window; the guard drops it when it
+/// restores the previous value.
+///
+/// Test-only: this module is compiled under
+/// `#[cfg(any(test, feature = "test-support"))]`.
+pub fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let mutex = ENV_LOCK.get_or_init(|| Mutex::new(()));
+    // A panicked test must not poison every later env-mutating test.
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}

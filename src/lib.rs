@@ -280,8 +280,15 @@ mod tests {
     // Mutex to serialize tests that mutate env vars (process-global state).
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    // Crate-wide env lock: serialize against every other module mutating
+    // env vars production path-resolution reads (HOME, WG_GLOBAL_DIR, USER).
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_helpers::env_lock()
+    }
+
     #[test]
     fn test_current_user_returns_wg_user_when_set() {
+        let _env_guard = env_lock();
         let _lock = ENV_MUTEX.lock().unwrap();
         unsafe {
             let orig_wg = std::env::var("WG_USER").ok();
@@ -304,6 +311,7 @@ mod tests {
 
     #[test]
     fn test_current_user_falls_back_to_user_env() {
+        let _env_guard = env_lock();
         let _lock = ENV_MUTEX.lock().unwrap();
         unsafe {
             let orig_wg = std::env::var("WG_USER").ok();
@@ -327,6 +335,7 @@ mod tests {
 
     #[test]
     fn test_current_user_returns_unknown_when_neither_set() {
+        let _env_guard = env_lock();
         let _lock = ENV_MUTEX.lock().unwrap();
         unsafe {
             let orig_wg = std::env::var("WG_USER").ok();

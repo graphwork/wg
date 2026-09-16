@@ -2437,6 +2437,13 @@ mod tests {
 
     #[test]
     fn stable_environment_survives_process_local_plumbing_changes() {
+        // Crate-wide env lock for the WHOLE capture→verify window: the stable
+        // projection digests every non-volatile env var, so a concurrent
+        // module's env-mutating test (HOME, OPENAI_API_KEY, GH_BROWSER, …)
+        // running between capture and verify would legitimately change the
+        // projection and fail this exact-match assertion. Holding the lock
+        // pins the process env for the duration.
+        let _env_guard = crate::test_helpers::env_lock();
         let (temp, mut task) = fixture();
         task.validation_commands.clear();
         let store = CompletionArtifactStore::open(temp.path().join("store")).unwrap();
