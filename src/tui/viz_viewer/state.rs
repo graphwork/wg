@@ -14145,6 +14145,107 @@ impl VizApp {
         }
     }
 
+    /// Route sections shared by both detail builders (refresh path and
+    /// navigation/drill-down path). Shows the worker route (executor, actual
+    /// vs configured model, resolved reasoning) plus the semantic review
+    /// lanes' own model routes, so one task's full route story is readable in
+    /// the inspector without falling back to `wg show`.
+    fn append_route_sections(
+        workgraph_dir: &std::path::Path,
+        task: &worksgood::graph::Task,
+        lines: &mut Vec<String>,
+    ) {
+        let registry_entry = task.assigned.as_ref().and_then(|aid| {
+            AgentRegistry::load(workgraph_dir)
+                .ok()
+                .and_then(|reg| reg.agents.get(aid).cloned())
+        });
+        let actual_executor = registry_entry
+            .as_ref()
+            .map(|e| e.executor.as_str())
+            .or(task.actual_executor.as_deref());
+        let actual_model = registry_entry
+            .as_ref()
+            .and_then(|e| e.model.as_deref())
+            .or(task.actual_model.as_deref());
+        let configured_model = task.model.as_deref();
+
+        let mut route_lines: Vec<String> = Vec::new();
+        if let Some(exec) = actual_executor {
+            route_lines.push(format!("Executor: {}", exec));
+        }
+        match (configured_model, actual_model) {
+            (Some(cfg), Some(actual)) if cfg != actual => {
+                route_lines.push(format!("Model: {} (configured: {})", actual, cfg));
+            }
+            (_, Some(actual)) => {
+                route_lines.push(format!("Model: {}", actual));
+            }
+            (Some(cfg), None) => {
+                route_lines.push(format!("Model: {} (configured)", cfg));
+            }
+            (None, None) => {}
+        }
+        if let Some(reasoning) = task
+            .reasoning
+            .or_else(|| {
+                Config::load_or_default(workgraph_dir)
+                    .resolve_reasoning_for_role(worksgood::config::DispatchRole::TaskAgent)
+            })
+            .map(|reasoning| reasoning.to_string())
+        {
+            route_lines.push(format!("Reasoning: {}", reasoning));
+        }
+        if !route_lines.is_empty() {
+            lines.push("── Route ──".to_string());
+            lines.extend(route_lines);
+            lines.push(String::new());
+        }
+
+        // The semantic review lanes (FLIP/Eval) run their own model routes,
+        // separate from the worker route above.
+        if !task.completion_review_activity.is_empty() {
+            lines.push("── Review routes ──".to_string());
+            let activities = task.completion_review_activity.len();
+            let skipped = activities.saturating_sub(8);
+            if skipped > 0 {
+                lines.push(format!("  … {} older review receipts omitted", skipped));
+            }
+            for activity in task.completion_review_activity.iter().skip(skipped) {
+                let reviewer = match activity.reviewer_kind {
+                    worksgood::completion_review::ReviewerKind::Flip => "FLIP",
+                    worksgood::completion_review::ReviewerKind::Eval => "Eval",
+                };
+                let verdict = match activity.verdict {
+                    worksgood::simple_land::ReviewVerdict::Pass => "pass",
+                    worksgood::simple_land::ReviewVerdict::Reject => "reject",
+                    worksgood::simple_land::ReviewVerdict::Absent => "absent",
+                    worksgood::simple_land::ReviewVerdict::Unavailable => "unavailable",
+                    worksgood::simple_land::ReviewVerdict::IncompleteEvidence => "incomplete",
+                };
+                let duration = activity
+                    .duration_ms
+                    .map(|ms| format!("{}ms", ms))
+                    .unwrap_or_else(|| "?".to_string());
+                lines.push(format!(
+                    "  {} {} · {} · executor={} · {}",
+                    reviewer,
+                    verdict,
+                    activity
+                        .model_route
+                        .as_deref()
+                        .unwrap_or("route unavailable"),
+                    activity
+                        .executor
+                        .as_deref()
+                        .unwrap_or("executor unavailable"),
+                    duration,
+                ));
+            }
+            lines.push(String::new());
+        }
+    }
+
     fn append_reopen_hold_lines(lines: &mut Vec<String>, task: &worksgood::graph::Task) {
         if let Some(intent) = task.lifecycle.reopen_intent.as_ref() {
             lines.push(format!(
@@ -14164,18 +14265,24 @@ impl VizApp {
     /// Load HUD detail for the currently selected task.
     /// Called when selection changes or trace is toggled on.
     pub fn load_hud_detail(&mut self) {
-        // If an annotation-click pinned a meta-task to the inspector, honor
-        // it as long as the parent it was anchored to is still selected.
-        // Without this, the periodic graph-refresh path (invalidate_hud +
-        // load_hud_detail) flips the inspector back to the parent task,
-        // making `[∴ evaluating]` clicks appear to "open the parent".
+        // If an annotation-click pinned a meta-task to the inspector, keep
+        // showing it. Explicit navigation gestures (select_task_*) clear the
+        // pin themselves, so a selection/anchor mismatch observed here is a
+        // refresh race, not user intent — the pin must survive the periodic
+        // invalidate_hud + load_hud_detail tick instead of flipping the
+        // inspector root under the user. Release only when the anchor parent
+        // no longer exists in the graph.
         let selected = self.selected_task_id().map(|s| s.to_string());
         let pinned = match (&self.hud_pin, &selected) {
             (Some(pin), Some(sel)) if &pin.anchor_parent_id == sel => Some(pin.dot_task_id.clone()),
-            (Some(_), _) => {
-                // Selection drifted away from the anchor — pin is stale.
-                self.hud_pin = None;
-                None
+            (Some(pin), _) => {
+                let anchor_alive = self
+                    .coherent_graph()
+                    .is_some_and(|graph| graph.tasks().any(|task| task.id == pin.anchor_parent_id));
+                if !anchor_alive {
+                    self.hud_pin = None;
+                }
+                self.hud_pin.as_ref().map(|pin| pin.dot_task_id.clone())
             }
             _ => None,
         };
@@ -14282,6 +14389,9 @@ impl VizApp {
         if let Some(ref agent) = task.assigned {
             lines.push(format!("Agent: {}", agent));
         }
+
+        // ── Route + review routes (shared with the drill-down builder) ──
+        Self::append_route_sections(&self.workgraph_dir, &task, &mut lines);
 
         let (registry_entry, compaction_snapshot) =
             load_task_runtime_snapshot(&self.workgraph_dir, &task);
@@ -15463,40 +15573,8 @@ impl VizApp {
             lines.push(format!("Agent: {}", agent));
         }
 
-        // ── Executor & Model ──
-        let registry_entry = task.assigned.as_ref().and_then(|aid| {
-            AgentRegistry::load(&self.workgraph_dir)
-                .ok()
-                .and_then(|reg| reg.agents.get(aid).cloned())
-        });
-        {
-            let actual_executor = registry_entry
-                .as_ref()
-                .map(|e| e.executor.as_str())
-                .or(task.actual_executor.as_deref());
-            let actual_model = registry_entry
-                .as_ref()
-                .and_then(|e| e.model.as_deref())
-                .or(task.actual_model.as_deref());
-            let configured_model = task.model.as_deref();
-
-            if let Some(exec) = actual_executor {
-                lines.push(format!("Executor: {}", exec));
-            }
-
-            match (configured_model, actual_model) {
-                (Some(cfg), Some(actual)) if cfg != actual => {
-                    lines.push(format!("Model: {} (configured: {})", actual, cfg));
-                }
-                (_, Some(actual)) => {
-                    lines.push(format!("Model: {}", actual));
-                }
-                (Some(cfg), None) => {
-                    lines.push(format!("Model: {} (configured)", cfg));
-                }
-                (None, None) => {}
-            }
-        }
+        // ── Route + review routes (shared with the refresh-path builder) ──
+        Self::append_route_sections(&self.workgraph_dir, &task, &mut lines);
 
         // ── Agency identity ──
         if let Some(ref agent_hash) = task.agent {
@@ -27734,25 +27812,50 @@ mod hud_tests {
     }
 
     #[test]
-    fn hud_pin_clears_when_anchor_drifts() {
+    fn hud_pin_survives_anchor_drift_until_explicit_navigation() {
         let (viz, _, _tmp) = build_with_evaluate_meta();
         let mut app = build_app(&viz, "b", _tmp.path());
 
-        // Pin's anchor is "a" but selection is "b" — pin is stale and must be dropped.
+        // A refresh race can observe a selection that differs from the pin's
+        // anchor (explicit navigation clears the pin itself, so this state is
+        // a race, not user intent). The pin must survive and keep the
+        // meta-task in the inspector instead of flipping the root.
         app.hud_pin = Some(HudPin {
             dot_task_id: ".evaluate-b".to_string(),
             anchor_parent_id: "a".to_string(),
         });
 
+        app.invalidate_hud();
+        app.load_hud_detail();
+        assert!(app.hud_pin.is_some(), "Sticky pin survives a refresh race");
+        assert_eq!(
+            app.hud_detail.as_ref().unwrap().task_id,
+            ".evaluate-b",
+            "Inspector keeps showing the pinned meta-task across the race"
+        );
+    }
+
+    #[test]
+    fn hud_pin_releases_when_anchor_vanishes() {
+        let (viz, _, _tmp) = build_with_evaluate_meta();
+        let mut app = build_app(&viz, "b", _tmp.path());
+
+        // Anchor parent no longer exists in the graph — nothing left to
+        // return to, so the pin releases and the inspector follows selection.
+        app.hud_pin = Some(HudPin {
+            dot_task_id: ".evaluate-b".to_string(),
+            anchor_parent_id: "vanished-parent".to_string(),
+        });
+
         app.load_hud_detail();
         assert!(
             app.hud_pin.is_none(),
-            "Stale pin (anchor != selection) must be cleared on load_hud_detail"
+            "Pin must release when its anchor parent no longer exists"
         );
         assert_eq!(
             app.hud_detail.as_ref().unwrap().task_id,
             "b",
-            "Inspector should fall back to the selected task when pin is stale"
+            "Inspector falls back to the selected task after release"
         );
     }
 
@@ -28277,6 +28380,110 @@ mod hud_tests {
             mentions_helper,
             "Evaluation pane must surface the helper's id and status. Got lines:\n{}",
             detail.rendered_lines.join("\n")
+        );
+    }
+
+    /// The Route section must be a labeled section (not bare lines) and the
+    /// semantic review lanes' own model routes must be surfaced in the detail
+    /// pane, so one task's full route story (worker + reviewers) is readable
+    /// in the inspector without falling back to `wg show`.
+    #[test]
+    fn detail_shows_route_section_with_worker_and_review_routes() {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task_with_status("my-task", "My Task", Status::Done);
+        parent.actual_executor = Some("pi".to_string());
+        parent.actual_model = Some("lunaroute:glm-5.3-flash".to_string());
+        parent.completion_review_activity =
+            vec![worksgood::completion_review::CompletionReviewActivity {
+                activity_id: format!("b3:{}", "1".repeat(64)),
+                reviewer_kind: worksgood::completion_review::ReviewerKind::Flip,
+                verdict: worksgood::simple_land::ReviewVerdict::Pass,
+                manifest_digest: worksgood::completion_manifest::ContentDigest::of_bytes(
+                    b"manifest",
+                ),
+                requirements_digest: worksgood::completion_manifest::ContentDigest::of_bytes(
+                    b"requirements",
+                ),
+                binding: None,
+                findings_digest: None,
+                failure_class: None,
+                model_route: Some("pi:lunaroute:deepseek-4.1-flash".to_string()),
+                executor: Some("pi-two-phase".to_string()),
+                usage: None,
+                duration_ms: Some(6443),
+                created_at: "2026-09-16T00:00:00Z".to_string(),
+            }];
+        graph.add_node(Node::Task(parent));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let mut app = build_app(&viz, "my-task", tmp.path());
+        app.load_hud_detail();
+
+        let detail = app.hud_detail.as_ref().expect("detail must load");
+        let lines = &detail.rendered_lines;
+        let route_section = lines
+            .iter()
+            .position(|l| l.contains("── Route ──"))
+            .unwrap_or_else(|| panic!("Route section must exist; got:\n{}", lines.join("\n")));
+        assert!(
+            lines[route_section..]
+                .iter()
+                .take(6)
+                .any(|l| l.contains("Executor: pi")),
+            "Route section must show the executor"
+        );
+        assert!(
+            lines[route_section..]
+                .iter()
+                .take(6)
+                .any(|l| l.contains("Model: lunaroute:glm-5.3-flash")),
+            "Route section must show the worker model route"
+        );
+        let review_section = lines
+            .iter()
+            .position(|l| l.contains("── Review routes ──"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "Review routes section must exist; got:\n{}",
+                    lines.join("\n")
+                )
+            });
+        let review_lines = lines[review_section..]
+            .iter()
+            .take_while(|l| !l.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            review_lines.contains("FLIP pass"),
+            "Review routes must show the reviewer kind and verdict: {review_lines}"
+        );
+        assert!(
+            review_lines.contains("pi:lunaroute:deepseek-4.1-flash"),
+            "Review routes must show the reviewer model route: {review_lines}"
+        );
+        assert!(
+            review_lines.contains("6443ms"),
+            "Review routes must show duration: {review_lines}"
         );
     }
 

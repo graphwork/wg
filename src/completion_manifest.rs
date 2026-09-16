@@ -33,7 +33,7 @@ fn extract_deliverable_tokens(requirements: &[u8]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut tokens = Vec::new();
     let mut token = String::new();
-    let mut flush = |token: &mut String, seen: &mut BTreeSet<String>, tokens: &mut Vec<String>| {
+    let flush = |token: &mut String, seen: &mut BTreeSet<String>, tokens: &mut Vec<String>| {
         let candidate = token.trim_matches(['.', '-', '_']).to_string();
         token.clear();
         if candidate.len() < 3
