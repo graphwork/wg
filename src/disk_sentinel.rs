@@ -1540,6 +1540,11 @@ fn safe_remove_owned_path(
         return Ok(0);
     }
     let physical_bytes = private_cache_bytes(cache, usize::MAX);
+    // A stale owned cache may contain a WG-published baseline locked with
+    // 555 directories. WG wrote the .wg-owned-baseline marker itself, so it
+    // authorizes unlocking exactly those subtrees; without this the removal
+    // fails with EPERM and the stale cache is silently preserved forever.
+    let _unlocked = crate::target_cache::unlock_wg_owned_readonly_baselines(path);
     fs::remove_dir_all(path).map_err(|e| format!("remove failed: {e}"))?;
     Ok(physical_bytes)
 }
@@ -3220,6 +3225,49 @@ mod tests {
             ..Default::default()
         };
         (dir, cfg)
+    }
+
+    /// Reproducer for the 555-protected baseline EPERM bug: a stale owned
+    /// cache that contains a WG-published `.wg-owned-baseline` tree locked
+    /// read-only must be reaped, not silently preserved forever.
+    #[test]
+    fn stale_owned_cache_containing_wg_owned_locked_baseline_is_reaped() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("wg-target-locked-baseline");
+        let baseline = target.join("baselines").join("d".repeat(64));
+        let nested = baseline.join("target").join("debug");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("lib.rmeta"), vec![9u8; 1024]).unwrap();
+        fs::write(
+            baseline.join(".wg-owned-baseline"),
+            b"wg-owned Cargo baseline\n",
+        )
+        .unwrap();
+        // Lock the baseline exactly the way WG publishes it: 555 dirs, 444 files.
+        for entry in walkdir::WalkDir::new(&baseline)
+            .follow_links(false)
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let readonly = if entry.file_type().is_dir() {
+                0o555
+            } else {
+                0o444
+            };
+            fs::set_permissions(entry.path(), fs::Permissions::from_mode(readonly)).unwrap();
+        }
+        let (dir, cfg) = terminal_fixture(root.path(), &target, None);
+        let dry = cleanup_owned(&dir, &cfg, false).unwrap();
+        assert_eq!(dry.eligible.len(), 1);
+        let report = cleanup_owned(&dir, &cfg, true).unwrap();
+        assert_eq!(
+            report.reaped, 1,
+            "WG-owned locked baseline in a stale owned cache must be unlocked and reaped, not silently preserved: {:?}",
+            report.preserved
+        );
+        assert!(!target.exists());
     }
 
     #[test]
