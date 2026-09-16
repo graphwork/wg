@@ -148,12 +148,14 @@ end-to-end under the operator's authority:
    catalog siblings (`glm-5.3-flash-background`) no longer read as
    ambiguity. Six unit tests pin the classification.
 3. **Route spelling:** the project routes were migrated to the executable
-   slash form with `wg migrate opaque-pi-route` (commit `5e960d24` refers to
-   the backup cleanup; the migration itself is in `222154d5`'s tree state),
-   and the strict route validator now accepts `pi:<provider>/<model>` as a
-   first-class exact route (it previously rejected its own migrate output —
-   `WG-EXEC-ROUTE-UNSUPPORTED`). The default spawn path was verified live
-   with slash routes before the trial (`slash-route-probe`, done).
+   slash form with `wg migrate opaque-pi-route`, and the strict route
+   validator now accepts `pi:<provider>/<model>` as a first-class exact route
+   (it previously rejected its own migrate output — `WG-EXEC-ROUTE-UNSUPPORTED`).
+   Commit attribution: `08454814` carried the migration itself (both the
+   `worksgood.toml` rewrite and the validator acceptance); `222154d5` is the
+   separate probe exact-match classification fix; `5e960d24` dropped the
+   migration backup files from the repository. The default spawn path was
+   verified live with slash routes before the trial (`slash-route-probe`, done).
 
 **Live trial evidence (`opaque-trial-probe`, done):**
 
@@ -170,7 +172,15 @@ end-to-end under the operator's authority:
   env in the daemon environment.
 
 **Recommendation:** the experiment is ready for a wider opt-in period on
-this project's real routes. Promotion toward default should wait for the
-three new smoke scenarios (`smoke-pin-completion`) to pin the pipeline,
-including an opaque-path scenario using the fake-pi fixture with
-sibling-ambiguous catalog output.
+this project's real routes. The three smoke scenarios from
+`smoke-pin-completion` are done and pin the completion pipeline (empty-diff
+idempotence, legacy environment-drift renewal, fresh-route receipts), but
+none of them covers the opaque path. **Residual gap before promoting toward
+default:** the sibling-ambiguous classification fix is pinned only by the six
+`execution_assignment` unit tests. The existing
+`pi_opaque_execution_assignment.sh` smoke scenario exercises the opaque
+assignment path through a fake-pi fixture, but that fixture answers
+`--list-models` with a single exact row — never sibling-ambiguous rows — so
+the exact-match-over-fuzzy-siblings behavior has no end-to-end smoke pin.
+An opaque-path smoke case whose fake-pi catalog returns an exact match plus
+a `-background`-style sibling should be added before default promotion.
