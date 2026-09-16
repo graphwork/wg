@@ -19,7 +19,8 @@ Topology B the SDK Node host). See
 | Surface | What |
 |---|---|
 | **Tools** (LLM/human callable) | `wg_capabilities` (effective trusted/scoped/read-only policy), `wg_ready`, `wg_show`, `wg_add` (visible draft), `wg_publish` (explicit release), `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run` |
-| **Commands** | `/wg ready\|graph\|show\|run\|add\|done\|fail`, `/wg-model <provider:id>` (warm in-session swap) |
+| **Commands** | `/wg ready\|graph\|show\|run\|add\|done\|fail`, `/wg-viz` (live work-graph panel), `/wg-model <provider:id>` (warm in-session swap) |
+| **VizView panel** | `/wg-viz` opens a read-only live work-graph panel via `ctx.ui.custom()` (TUI mode only): dependency tree, keyboard selection, expand/collapse, the TUI HUD's selected-task → detail-lines model, log tail; mouse clicks where the host pi-tui dispatches mouse to custom components. A passive widget (`ctx.ui.setWidget("wg-viz")`) shows a one-line in-progress/ready/blocked/done/failed summary. Data comes from the daemon IPC socket (read-only `viz_snapshot` request, bounded poll with change-guard); when the daemon is unavailable the panel falls back to the read-only `wg viz --all --no-tui` ASCII output and the widget silently clears. **Slice boundary (first slice):** deferred — filters, agency lanes UI, chat surfaces, back-edge arc rendering, scrollback search, and HUD-only detail sections (admission waiting, agency identity, route receipts). Read-only by construction: the panel never mutates graph state. |
 | **Model bridge** | `registerProvider(WG endpoints/keys)` + managed-chat `model_select` → WG `CoordinatorState.model_override` write-back |
 
 WG context (`WG_TASK_ID`, `WG_AGENT_ID`, `WG_CHAT_ID`, `WG_CHAT_REF`,
@@ -41,10 +42,31 @@ without touching the tool/command surface.
 src/index.ts          registration entry — default export worksgoodPi(pi)
 src/tools.ts          the wg verb family
 src/commands.ts       /wg and /wg-model (+ autocomplete)
+src/viz-snapshot.ts   daemon-socket client: read-only viz_snapshot + bounded poller + ASCII fallback
+src/viz-readmodel.ts  pure tree/detail/counts read-model (mirrors src/tui/viz_viewer/state.rs vocabulary)
+src/viz-panel.ts      /wg-viz ctx.ui.custom() panel + setWidget live summary (TUI mode only)
 src/model-bridge.ts   registerProvider + model_select write-back
 src/wg-backend.ts     pi.exec("wg", …) client (daemon-IPC later)
 host/wg-pi-host.mjs   Topology B: embed pi as a library with the plugin loaded
 ```
+
+## VizView panel data path
+
+The panel speaks the daemon's IPC protocol directly (`<wg-dir>/service/daemon.sock`;
+one JSON-line `IpcRequest` per connection, one `IpcResponse` back —
+`src/commands/service/mod.rs::send_request_to_socket_with_timeout`). The only
+request it sends is `viz_snapshot` (served by
+`src/commands/service/ipc.rs::handle_viz_snapshot`, projection in
+`src/service/viz_snapshot.rs`), which is read-only and bounded: no descriptions
+beyond a 512-byte head, no transcripts, no receipts, log tail clamped to 20.
+Socket resolution: `WG_DAEMON_SOCKET` → `<WG_DIR>/service/daemon.sock` →
+`<cwd>/.wg/service/daemon.sock`. Older daemons answer `unknown variant` — the
+client treats that as offline and falls back to `wg viz` ASCII, so the panel is
+forward-compatible both ways. The plugin-level test suite pins all of this
+against a fixture daemon socket (`test/viz.test.ts`); the daemon-side contract
+is pinned by the `pi_vizview_embedded_panel_contract` smoke scenario and the
+`test_viz_snapshot_ipc_returns_live_graph_and_tracks_transitions` integration
+test.
 
 ## Develop
 

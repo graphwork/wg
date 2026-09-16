@@ -126,6 +126,16 @@ pub enum IpcRequest {
     },
     /// Query a task's status (cross-repo query)
     QueryTask { task_id: String },
+    /// Read-only graph snapshot for embedded graph viewers (e.g. the pi plugin
+    /// viz panel). Returns a bounded projection of every task — no log bodies,
+    /// no transcripts — plus a per-task log tail. This request NEVER mutates
+    /// graph or control-plane state; it exists so a viewer can poll the same
+    /// daemon IPC lane the TUI family uses instead of reading graph files.
+    VizSnapshot {
+        /// Max log entries per task (bounded; default 20, clamped to 1..=100).
+        #[serde(default)]
+        log_tail: Option<usize>,
+    },
     /// Send a message to a task's message queue
     SendMessage {
         task_id: String,
@@ -1613,6 +1623,10 @@ fn handle_request(
             logger.info(&format!("IPC QueryTask: task_id={}", task_id));
             handle_query_task(dir, &task_id)
         }
+        IpcRequest::VizSnapshot { log_tail } => {
+            logger.info("IPC VizSnapshot (read-only)");
+            handle_viz_snapshot(dir, log_tail)
+        }
         IpcRequest::SendMessage {
             task_id,
             body,
@@ -2707,6 +2721,29 @@ fn handle_query_task(dir: &Path, task_id: &str) -> IpcResponse {
         })),
         None => IpcResponse::error(&format!("Task '{}' not found", task_id)),
     }
+}
+
+/// Handle VizSnapshot IPC request — a read-only projection of the whole graph
+/// for embedded viewers (the pi plugin viz panel). Deliberately bounded: no
+/// descriptions, no transcripts, no receipts; only identity/status/deps/timing
+/// plus a small log tail so a panel can render the graph and its detail lines
+/// without dragging multi-MB payloads across the socket. Never mutates state.
+fn handle_viz_snapshot(dir: &Path, log_tail: Option<usize>) -> IpcResponse {
+    let tail = worksgood::service::viz_snapshot::clamp_log_tail(log_tail);
+    let graph_path = graph_path(dir);
+    let graph = match load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    let tasks: Vec<serde_json::Value> = graph
+        .tasks()
+        .map(|t| worksgood::service::viz_snapshot::viz_snapshot_task(t, tail))
+        .collect();
+
+    IpcResponse::success(serde_json::json!({
+        "tasks": tasks,
+    }))
 }
 
 /// Append a user chat message to a coordinator's inbox.
@@ -6270,5 +6307,41 @@ poll_interval = 60
         let graph2 = worksgood::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let task = graph2.get_task(".coordinator-7").unwrap();
         assert_eq!(task.status, Status::Abandoned);
+    }
+
+    /// End-to-end handler test: VizSnapshot reads the graph through the real
+    /// IPC handler and provably never mutates it. The bounded projection shape
+    /// itself is pinned by `service::viz_snapshot` lib tests.
+    #[test]
+    fn viz_snapshot_handler_is_read_only() {
+        use worksgood::graph::{Node, Status, WorkGraph};
+        use worksgood::test_helpers::make_task_with_status;
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        let mut graph = WorkGraph::new();
+        let parent = make_task_with_status("parent-a", "Parent A", Status::Done);
+        let mut child = make_task_with_status("child-b", "Child B", Status::InProgress);
+        child.after = vec!["parent-a".to_string()];
+        graph.add_node(Node::Task(parent));
+        graph.add_node(Node::Task(child));
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let before = fs::read(dir.join("graph.jsonl")).unwrap();
+        let resp = handle_viz_snapshot(dir, None);
+        assert!(resp.ok, "snapshot should succeed");
+        // Read-only: the graph file is byte-identical after the snapshot.
+        assert_eq!(
+            fs::read(dir.join("graph.jsonl")).unwrap(),
+            before,
+            "VizSnapshot must never mutate the graph"
+        );
+        let tasks = resp.data.unwrap()["tasks"].as_array().unwrap().clone();
+        assert_eq!(tasks.len(), 2);
+
+        // A corrupt graph fails closed with an error, not a panic.
+        fs::write(dir.join("graph.jsonl"), "{not json\n").unwrap();
+        let resp3 = handle_viz_snapshot(dir, None);
+        assert!(!resp3.ok);
     }
 }

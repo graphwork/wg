@@ -16,6 +16,7 @@ pub mod llm;
 pub mod planner;
 pub mod provider_health;
 pub mod registry;
+pub mod viz_snapshot;
 
 pub use convergence::{
     Admission as ConvergenceAdmission, ConvergencePolicy, ConvergenceStage, ConvergenceState,

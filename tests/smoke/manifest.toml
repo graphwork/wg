@@ -3343,3 +3343,12 @@ owners = [
 ]
 description = "Pins concierge-guided-pi: attended interactive `wg setup` walks a brand-new user through Pi readiness FIRST in three fail-clean gates, before any prompt and before any byte is written. Gate 1 (pi missing on PATH, via an empty fake-bin) prints the exact install command (`npm install -g @earendil-works/pi-coding-agent`, Node 20+) and exits cleanly with the rerun instruction; gate 2 (fake `pi` on PATH whose own `pi auth check --provider <P> --json --no-refresh` reports not_ready for every provider exposed by the offline catalog probe) prints the guided `/login <provider>` instruction (Pi owns the OAuth flow; WG never sees keys) and exits cleanly; gate 3 (authenticated but zero resolvable models, via the sanctioned WORKSGOOD_PI_GATE_JSON injectable-probes bridge) stops cleanly pointing at `pi --list-models`. Every stop asserts exit 0, NO worksgood.toml written, and the route prompt never reached; an all-green injected run passes through the gates, prints the readiness summary, and completes the wizard normally."
 timeout_seconds = 120
+
+[[scenario]]
+name = "pi_vizview_embedded_panel_contract"
+script = "scenarios/pi_vizview_embedded_panel_contract.sh"
+owners = [
+    "wg-vizview-inside",
+]
+description = "Pins wg-vizview-inside: the pi plugin's embedded VizView panel reads the live graph through a NEW read-only `viz_snapshot` daemon IPC request (the same one-request/one-response JSON-line protocol the TUI family uses). On a real installed binary + real daemon: the snapshot projects identity/status/edges with a bounded log tail, reflects a `wg log` transition on the next poll without any other drift, the embedded plugin build carries the viz modules with no mutating IPC command and a compat handshake matching `wg pi-plugin compat-version`, and the read-only `wg viz` ASCII fallback renders when the socket is unavailable. Credential-free; the interactive TUI panel (widget + ctx.ui.custom keyboard/mouse) is pinned by worksgood-pi/test/viz.test.ts against a fixture daemon socket."
+timeout_seconds = 180

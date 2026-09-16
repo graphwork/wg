@@ -893,6 +893,110 @@ fn test_service_start_on_selected_graph_does_not_create_daemon_tasks() {
     let _ = child.wait();
 }
 
+/// Send one read-only `viz_snapshot` request over the live daemon socket and
+/// parse the `IpcResponse`. Mirrors the pi plugin's viz client exactly:
+/// one request line, one response line, one-shot connection.
+fn send_viz_snapshot(socket: &str) -> serde_json::Value {
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)
+        .expect("connect to daemon socket for viz_snapshot");
+    writeln!(stream, r#"{{"cmd":"viz_snapshot","log_tail":20}}"#).unwrap();
+    stream.flush().unwrap();
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .expect("read viz_snapshot response");
+    serde_json::from_str(line.trim()).expect("parse viz_snapshot IpcResponse")
+}
+
+fn viz_task<'a>(response: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    response["tasks"]
+        .as_array()
+        .expect("viz_snapshot response carries tasks")
+        .iter()
+        .find(|t| t["id"] == id)
+        .unwrap_or_else(|| panic!("viz_snapshot should include task {id}"))
+}
+
+/// Live end-to-end: the embedded viz panel's data path against a REAL daemon.
+/// The read-only `viz_snapshot` IPC request returns the graph, reflects a task
+/// transition (log entry) on the next poll, and provably never mutates graph
+/// state beyond the explicitly-issued CLI command.
+#[test]
+#[serial]
+fn test_viz_snapshot_ipc_returns_live_graph_and_tracks_transitions() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
+
+    // Staging-only adds (no publish marker): nothing dispatches, no agents.
+    wg_ok(&wg_dir, &["add", "Viz parent", "--id", "viz-parent"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Viz child",
+            "--id",
+            "viz-child",
+            "--after",
+            "viz-parent",
+        ],
+    );
+
+    let socket = socket_path_for(&wg_dir);
+    let mut child = wg_command(&wg_dir);
+    child
+        .args([
+            "service",
+            "start",
+            "--socket",
+            &socket,
+            "--executor",
+            "shell",
+            "--no-coordinator-agent",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = child.spawn().expect("failed to start daemon");
+    assert!(
+        wait_for_service_ready(&wg_dir, Duration::from_secs(10)),
+        "service did not become ready"
+    );
+
+    // Initial snapshot: the live graph, projected.
+    let first = send_viz_snapshot(&socket);
+    assert_eq!(first["ok"], true, "viz_snapshot must succeed: {first}");
+    let parent = viz_task(&first, "viz-parent");
+    let child_task = viz_task(&first, "viz-child");
+    assert_eq!(parent["status"], "open");
+    assert_eq!(child_task["status"], "open");
+    assert_eq!(child_task["after"], serde_json::json!(["viz-parent"]));
+    let baseline_log_count = child_task["log_count"].as_u64().unwrap_or(0);
+
+    // Transition via the normal CLI (the panel itself never mutates), then
+    // re-poll: the snapshot must reflect the new log entry.
+    wg_ok(&wg_dir, &["log", "viz-child", "panel live-check entry"]);
+    let second = send_viz_snapshot(&socket);
+    assert_eq!(second["ok"], true);
+    let child_after = viz_task(&second, "viz-child");
+    assert_eq!(
+        child_after["log_count"].as_u64(),
+        Some(baseline_log_count + 1)
+    );
+    let tail = child_after["log_tail"].as_array().expect("log tail array");
+    assert_eq!(tail.len(), baseline_log_count as usize + 1);
+    // Newest-first tail starts with the just-added entry.
+    assert_eq!(tail[0]["message"], "panel live-check entry");
+    // The transition changed only the log: identity/status/edges are intact.
+    assert_eq!(child_after["status"], child_task["status"]);
+    assert_eq!(child_after["after"], child_task["after"]);
+    assert_eq!(second["tasks"].as_array().unwrap().len(), 2);
+
+    assert_service_teardown(&wg_dir);
+    let _ = child.wait();
+}
+
 #[test]
 #[serial]
 fn test_service_start_fails_on_invalid_config_instead_of_using_defaults() {
