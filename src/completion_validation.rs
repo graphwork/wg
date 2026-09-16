@@ -1272,16 +1272,31 @@ fn validation_environment_binding() -> Result<ValidationEnvironmentBinding, Stri
 }
 
 /// Environment variables excluded from the stable environment identity.
-/// Shell bookkeeping differs between any two processes by construction, and
-/// agent session/attempt plumbing is scoped to one executor run, so neither
-/// carries toolchain identity. Including them made worker-captured evidence
+/// Shell bookkeeping differs between any two processes by construction;
+/// agent session/attempt plumbing is scoped to one executor run; and WG's
+/// build-isolation overlay (per-graph cache target, per-attempt scratch
+/// temp dir, build-tuning knobs) is WG-owned plumbing that changes artifact
+/// placement and caching, never validation semantics. None of them carry
+/// toolchain identity. Including them made worker-captured evidence
 /// impossible to re-validate from the daemon finalizer or an operator CLI.
 fn volatile_env_name(key: &std::ffi::OsStr) -> bool {
     let name = String::from_utf8_lossy(key.as_encoded_bytes());
-    matches!(name.as_ref(), "SHLVL" | "_" | "PWD" | "OLDPWD" | "TERM")
-        || name.starts_with("WG_")
+    matches!(
+        name.as_ref(),
+        "SHLVL"
+            | "_"
+            | "PWD"
+            | "OLDPWD"
+            | "TERM"
+            | "TMPDIR"
+            | "TEMP"
+            | "TMP"
+            | "CARGO_TARGET_DIR"
+            | "CARGO_INCREMENTAL"
+    ) || name.starts_with("WG_")
         || name.starts_with("PI_")
         || name.starts_with("CLAUDE_CODE_")
+        || name.starts_with("CARGO_PROFILE_")
         || name == "CLAUDECODE"
 }
 
