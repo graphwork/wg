@@ -3290,3 +3290,10 @@ script = "scenarios/retry_episode_usage.sh"
 owners = ["fix-retry-episode-usage"]
 description = "Candidate-binary real terminal accounting regression: a source exec records provider usage and fails, explicit retry reserves a new attempt and succeeds with more usage, then show/spend report both attempt-labeled source costs exactly once as an episode-cumulative total while the completion-review lane remains separately labeled and excluded."
 timeout_seconds = 45
+
+[[scenario]]
+name = "disk_cleanup_reaps_locked_baseline"
+script = "scenarios/disk_cleanup_reaps_locked_baseline.sh"
+owners = ["fix-wg-disk"]
+description = "Real CLI regression for the 555-protected baseline EPERM bug: a stale explicitly-owned cache containing a WG-published .wg-owned-baseline tree locked read-only must surface as stale-eligible in the dry run and be unlocked + reaped by --execute (pre-fix it listed eligible then preserved forever with 'remove failed: Permission denied (os error 13)'); the ownership row retires and a second pass is a no-op."
+timeout_seconds = 30
