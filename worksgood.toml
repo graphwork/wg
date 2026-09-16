@@ -29,7 +29,7 @@ ucb_exploration_constant = 1.4142135623730951
 [agent]
 heartbeat_timeout = 5
 interval = 10
-model = "pi:lunaroute:glm-5.3-flash"
+model = "pi:lunaroute/glm-5.3-flash"
 reaper_grace_seconds = 30
 
 [bash]
@@ -68,7 +68,7 @@ max_escalation_depth = 3
 max_incomplete_retries = 3
 max_spawn_failures = 5
 max_verify_failures = 3
-model = "pi:lunaroute:glm-5.3-flash"
+model = "pi:lunaroute/glm-5.3-flash"
 on_provider_failure = "pause"
 poll_interval = 5
 provider_failure_cooldown = ""
@@ -136,63 +136,63 @@ rotation_threshold = 10485760
 [mcp]
 
 [models.assigner]
-model = "pi:lunaroute:deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.chat_compactor]
-model = "pi:lunaroute:deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.compactor]
-model = "pi:lunaroute:deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.creator]
-model = "pi:lunaroute:glm-5.3-flash"
+model = "pi:lunaroute/glm-5.3-flash"
 reasoning = "xhigh"
 
 [models.default]
-model = "pi:lunaroute:glm-5.3-flash"
+model = "pi:lunaroute/glm-5.3-flash"
 reasoning = "high"
 
 [models.evaluator]
-model = "pi:lunaroute:deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.evolver]
-model = "pi:lunaroute:glm-5.3-flash"
+model = "pi:lunaroute/glm-5.3-flash"
 reasoning = "xhigh"
 
 [models.flip_comparison]
-model = "pi:lunaroute:deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.flip_inference]
-model = "pi:lunaroute:deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.merger]
-model = "pi:lunaroute:glm-5.3-flash"
+model = "pi:lunaroute/glm-5.3-flash"
 reasoning = "xhigh"
 
 [models.placer]
-model = "pi:lunaroute:deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.reviewer]
-model = "pi:lunaroute:deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.task_agent]
-model = "pi:lunaroute:glm-5.3-flash"
+model = "pi:lunaroute/glm-5.3-flash"
 reasoning = "high"
 
 [models.triage]
-model = "pi:lunaroute:deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.verification]
-model = "pi:lunaroute:glm-5.3-flash"
+model = "pi:lunaroute/glm-5.3-flash"
 reasoning = "xhigh"
 
 [project]
@@ -202,10 +202,10 @@ keep_done_threshold = 0.9
 snapshot_agent_output = false
 
 [tiers]
-fast = "pi:lunaroute:deepseek-4.1-flash"
+fast = "pi:lunaroute/deepseek-4.1-flash"
 fast_reasoning = "low"
-premium = "pi:lunaroute:glm-5.3-flash"
-standard = "pi:lunaroute:glm-5.3-flash"
+premium = "pi:lunaroute/glm-5.3-flash"
+standard = "pi:lunaroute/glm-5.3-flash"
 
 [tui]
 chat_history = true

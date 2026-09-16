@@ -2478,16 +2478,28 @@ pub fn parse_opaque_pi_route(route: &str) -> anyhow::Result<&str> {
 /// contain additional `:` or `/` characters.
 pub fn parse_exact_pi_route(route: &str) -> anyhow::Result<(String, String)> {
     let raw = route.trim();
-    let inner = raw
-        .strip_prefix("pi:")
-        .ok_or_else(|| anyhow::anyhow!("expected `pi:<provider>:<model>`; route is not Pi"))?;
-    let (provider, model) = inner.split_once(':').ok_or_else(|| {
+    let inner = raw.strip_prefix("pi:").ok_or_else(|| {
         anyhow::anyhow!(
-            "expected `pi:<provider>:<model>` (provider and model must be separated by `:`)"
+            "expected `pi:<provider>:<model>` or `pi:<provider>/<model>`; route is not Pi"
         )
     })?;
+    // Pi's own `--model` accepts both `provider:id` and provider-scoped
+    // patterns, and Pi model ids never contain `:` — so both separators
+    // identify the same exact (provider, model) pair. Accept them equally;
+    // the slash form is what the opaque execution experiment passes verbatim
+    // as one `--model` argument.
+    let (provider, model) = inner
+        .split_once(':')
+        .or_else(|| inner.split_once('/'))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "expected `pi:<provider>:<model>` or `pi:<provider>/<model>` (provider and model must be separated by `:` or `/`)"
+            )
+        })?;
     if provider.trim().is_empty() || model.trim().is_empty() {
-        anyhow::bail!("expected non-empty provider and model in `pi:<provider>:<model>`");
+        anyhow::bail!(
+            "expected non-empty provider and model in `pi:<provider>:<model>` or `pi:<provider>/<model>`"
+        );
     }
     Ok((provider.to_string(), model.to_string()))
 }
@@ -2517,7 +2529,7 @@ pub fn parse_supported_execution_route(route: &str) -> anyhow::Result<(String, S
         }
     }
     anyhow::bail!(
-        "expected an explicit `pi:<provider>:<model>`, `claude:<native-model>`, or `codex:<native-model>` worker route"
+        "expected an explicit `pi:<provider>:<model>`, `pi:<provider>/<model>`, `claude:<native-model>`, or `codex:<native-model>` worker route"
     )
 }
 
