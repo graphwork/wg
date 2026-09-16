@@ -86,6 +86,16 @@ pub struct ValidationEnvironmentBinding {
     /// the WG executable identity and host/platform identity. Values are never
     /// disclosed in evidence; only their canonical digest is retained.
     pub environment_identity: ContentDigest,
+    /// Digest over the stable environment projection: the full environment
+    /// minus variables that are process-local by construction (shell
+    /// bookkeeping) or attempt/session-scoped coordination plumbing. Two
+    /// processes may legitimately disagree on every excluded variable while
+    /// running the identical toolchain, so the stable identity — not the full
+    /// digest — is what makes worker-captured evidence re-validatable by the
+    /// daemon finalizer or an operator CLI. Absent on historical captures,
+    /// which re-validate strictly against `environment_identity`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_stable_identity: Option<ContentDigest>,
     pub platform: String,
     pub architecture: String,
     pub host_identity: ContentDigest,
@@ -1185,7 +1195,7 @@ fn validation_timeout(task: &Task) -> Duration {
 }
 
 fn validation_environment_binding() -> Result<ValidationEnvironmentBinding, String> {
-    let mut environment = std::env::vars_os()
+    let environment = std::env::vars_os()
         .map(|(key, value)| {
             (
                 hex::encode(key.as_encoded_bytes()),
@@ -1193,6 +1203,20 @@ fn validation_environment_binding() -> Result<ValidationEnvironmentBinding, Stri
             )
         })
         .collect::<Vec<_>>();
+    let stable_environment = std::env::vars_os()
+        .filter(|(key, _)| !volatile_env_name(key))
+        .map(|(key, value)| {
+            (
+                hex::encode(key.as_encoded_bytes()),
+                hex::encode(value.as_encoded_bytes()),
+            )
+        })
+        .collect::<Vec<_>>();
+    // Rust sorts `(String, String)` lexicographically; keep the projection
+    // comparable to the full-environment ordering.
+    let mut stable_environment = stable_environment;
+    stable_environment.sort();
+    let mut environment = environment;
     environment.sort();
 
     let executable = std::env::current_exe()
@@ -1229,13 +1253,36 @@ fn validation_environment_binding() -> Result<ValidationEnvironmentBinding, Stri
         "host_identity": host_identity,
         "executable_identity": executable_identity,
     })));
+    let environment_stable_identity =
+        ContentDigest::of_bytes(&canonical_json(&serde_json::json!({
+            "environment": stable_environment,
+            "platform": platform,
+            "architecture": architecture,
+            "host_identity": host_identity,
+            "executable_identity": executable_identity,
+        })));
     Ok(ValidationEnvironmentBinding {
         environment_identity,
+        environment_stable_identity: Some(environment_stable_identity),
         platform,
         architecture,
         host_identity,
         executable_identity,
     })
+}
+
+/// Environment variables excluded from the stable environment identity.
+/// Shell bookkeeping differs between any two processes by construction, and
+/// agent session/attempt plumbing is scoped to one executor run, so neither
+/// carries toolchain identity. Including them made worker-captured evidence
+/// impossible to re-validate from the daemon finalizer or an operator CLI.
+fn volatile_env_name(key: &std::ffi::OsStr) -> bool {
+    let name = String::from_utf8_lossy(key.as_encoded_bytes());
+    matches!(name.as_ref(), "SHLVL" | "_" | "PWD" | "OLDPWD" | "TERM")
+        || name.starts_with("WG_")
+        || name.starts_with("PI_")
+        || name.starts_with("CLAUDE_CODE_")
+        || name == "CLAUDECODE"
 }
 
 fn command_identity(command: &str, configured_index: u32) -> ValidationCommandIdentity {
@@ -1737,7 +1784,28 @@ fn verify_one(
                 detail,
             )
         })?;
-        if *environment != current {
+        let environment_matches = match (
+            &environment.environment_stable_identity,
+            &current.environment_stable_identity,
+        ) {
+            (Some(stored), Some(live)) => {
+                // Stable-environment evidence re-validates across process
+                // boundaries: the toolchain-bearing projection must match and
+                // the host/platform/executable identity stays exact. The full
+                // `environment_identity` is retained for audit but no longer
+                // gates, because it bakes in shell bookkeeping and
+                // session/attempt plumbing that differ by construction.
+                stored == live
+                    && environment.platform == current.platform
+                    && environment.architecture == current.architecture
+                    && environment.host_identity == current.host_identity
+                    && environment.executable_identity == current.executable_identity
+            }
+            // Historical captures without a stable projection re-validate
+            // strictly against the full environment digest.
+            _ => *environment == current,
+        };
+        if !environment_matches {
             return Err(incomplete(
                 IncompleteEvidenceKind::DigestMismatch,
                 "deterministic validation environment binding",
@@ -2239,8 +2307,12 @@ mod tests {
             temp.path(),
         )
         .unwrap();
-        optional.environment.as_mut().unwrap().environment_identity =
-            ContentDigest::of_bytes(b"foreign environment");
+        {
+            let environment = optional.environment.as_mut().unwrap();
+            environment.environment_identity = ContentDigest::of_bytes(b"foreign environment");
+            environment.environment_stable_identity =
+                Some(ContentDigest::of_bytes(b"foreign environment"));
+        }
         let output = store.put_bytes(b"report", "text/plain").unwrap();
         let manifest = CompletionManifest {
             manifest_version: COMPLETION_MANIFEST_VERSION,
@@ -2251,6 +2323,107 @@ mod tests {
             source_revision: optional.repository.before_head_oid.clone(),
             outputs: vec![OutputRef::Artifact(output)],
             validation_evidence: vec![evidence_ref(&store, &authority_dir, &optional)],
+            worker_summary_digest: ContentDigest::of_bytes(b"summary"),
+        };
+        let bundle = crate::completion_manifest::ReviewResolver::new(&store)
+            .resolve(
+                &manifest,
+                &crate::completion_task::task_requirements_bytes(&task).unwrap(),
+                b"summary",
+            )
+            .unwrap();
+        let error = verify_validation_evidence(
+            &task,
+            &manifest,
+            None,
+            &bundle,
+            temp.path(),
+            &authority_dir,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, IncompleteEvidenceKind::DigestMismatch);
+        assert!(error.reference.contains("environment"));
+    }
+
+    #[test]
+    fn stable_environment_survives_process_local_plumbing_changes() {
+        let (temp, mut task) = fixture();
+        task.validation_commands.clear();
+        let store = CompletionArtifactStore::open(temp.path().join("store")).unwrap();
+        let authority_dir = temp.path().join(".wg");
+        let mut captured = capture_validation(
+            &task,
+            "printf 'ok\\n'",
+            0,
+            ValidationPurpose::Optional,
+            temp.path(),
+        )
+        .unwrap();
+        {
+            // Simulate re-validation from a different process: the full
+            // environment digest differs (shell bookkeeping, session/attempt
+            // plumbing), while the stable projection and every exact identity
+            // (platform/architecture/host/executable) are unchanged.
+            let environment = captured.environment.as_mut().unwrap();
+            environment.environment_identity = ContentDigest::of_bytes(b"revalidating process");
+            assert!(environment.environment_stable_identity.is_some());
+        }
+        let output = store.put_bytes(b"report", "text/plain").unwrap();
+        let manifest = CompletionManifest {
+            manifest_version: COMPLETION_MANIFEST_VERSION,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            completion_contract: CompletionContract::Report,
+            requirements_digest: requirements_digest(&task).unwrap(),
+            source_revision: captured.repository.before_head_oid.clone(),
+            outputs: vec![OutputRef::Artifact(output)],
+            validation_evidence: vec![evidence_ref(&store, &authority_dir, &captured)],
+            worker_summary_digest: ContentDigest::of_bytes(b"summary"),
+        };
+        let bundle = crate::completion_manifest::ReviewResolver::new(&store)
+            .resolve(
+                &manifest,
+                &crate::completion_task::task_requirements_bytes(&task).unwrap(),
+                b"summary",
+            )
+            .unwrap();
+        // The capture must survive full-environment drift within one host and
+        // executable, because the stable projection is what carries identity.
+        verify_validation_evidence(&task, &manifest, None, &bundle, temp.path(), &authority_dir)
+            .unwrap_or_else(|error| panic!("stable environment must re-validate: {error:#}"));
+    }
+
+    #[test]
+    fn legacy_full_environment_binding_stays_strict() {
+        let (temp, mut task) = fixture();
+        task.validation_commands.clear();
+        let store = CompletionArtifactStore::open(temp.path().join("store")).unwrap();
+        let authority_dir = temp.path().join(".wg");
+        let mut captured = capture_validation(
+            &task,
+            "printf 'ok\\n'",
+            0,
+            ValidationPurpose::Optional,
+            temp.path(),
+        )
+        .unwrap();
+        {
+            // Historical evidence carries no stable projection; it must keep
+            // failing closed on any full-environment drift.
+            let environment = captured.environment.as_mut().unwrap();
+            environment.environment_stable_identity = None;
+            environment.environment_identity = ContentDigest::of_bytes(b"legacy drift");
+        }
+        let output = store.put_bytes(b"report", "text/plain").unwrap();
+        let manifest = CompletionManifest {
+            manifest_version: COMPLETION_MANIFEST_VERSION,
+            task_id: task.id.clone(),
+            generation: task.lifecycle.generation,
+            completion_contract: CompletionContract::Report,
+            requirements_digest: requirements_digest(&task).unwrap(),
+            source_revision: captured.repository.before_head_oid.clone(),
+            outputs: vec![OutputRef::Artifact(output)],
+            validation_evidence: vec![evidence_ref(&store, &authority_dir, &captured)],
             worker_summary_digest: ContentDigest::of_bytes(b"summary"),
         };
         let bundle = crate::completion_manifest::ReviewResolver::new(&store)
