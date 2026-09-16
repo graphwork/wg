@@ -110,6 +110,19 @@ worksgood --model pi:openrouter:deepseek/deepseek-v4-flash
 
 Those exact routes and reasoning settings govern **unattended dispatch only**; they never select or rewrite the model a human chooses inside an attended Pi chat. The route is copied to every automation role without normalization or fallback. Worker roles default to reasoning `high`; eval/assign/FLIP roles default to `low`. Override those independently with `--strong-reasoning` and `--weak-reasoning`. `--profile` remains the advanced path for selecting and customizing an existing reusable automation base.
 
+#### The two-tier model plane (strong vs weak)
+
+Real deployments usually run **two** routes, not one. WG resolves every automation role through exactly two tiers:
+
+- **STRONG** — workers and heavy generative roles (`task_agent`, `creator`, `merger`, `evolver`, `verification`), reasoning `high`. This is where implementation quality matters.
+- **WEAK** — the cheap, recoverable one-shots (`evaluator`, `assigner`, `flip_inference`/`flip_comparison`, `triage`, `placer`, `compactor`, `chat_compactor`, `coordinator_eval`, `reviewer`), reasoning `low`. These run many times per task, and every verdict they produce is recoverable (re-run or escalate), so a fast model is usually enough.
+
+Interactive `wg setup` (no `--yes`) asks for the **strong** route first, then the **weak** route, shows the resulting role table (which roles resolve to which tier and the reasoning each gets) before writing anything, and reminds you that routes are re-changeable any time via `wg config -m <route>` / `wg config --set-model <role> <route>` / `wg profile select <name>` — Pi owns the model plane, WG stores exact routes only. Reusing the strong route at the weak prompt is a valid answer: single-model deployments keep working (the weak tier simply inherits the strong route, and no `[tiers]` keys are written).
+
+Non-interactive setup keeps the single-model paste; an optional `--weak-model <pi:<provider>:<model>>` on `wg setup --route pi --yes` writes the distinct weak tier explicitly.
+
+> **Naming note — two different "FLIP"s.** The *completion-review FLIP* (`flip_inference` / `flip_comparison` roles) runs by default on the weak tier as part of terminal-completion review. The separately-named `agency.flip_enabled` config flag is an opt-in agency rollout feature and has nothing to do with those FLIP roles' routing.
+
 For explicit graph-only expert use, `wg init` followed by `wg tui` is **non-mutating** — those commands never select a model, authenticate, install packages, or start a service. The complete task/tool command set remains under `wg`; agent integrations continue to use the `wg_*` protocol.
 
 ### Quickstart: drive a free OpenRouter model through Pi

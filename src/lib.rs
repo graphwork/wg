@@ -110,6 +110,7 @@ pub mod self_exe;
 pub mod service;
 pub mod service_identity;
 pub mod session_lock;
+pub mod setup_two_tier;
 pub mod simple_land;
 pub mod smoke;
 pub mod source_provider_recovery;

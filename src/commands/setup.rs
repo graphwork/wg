@@ -95,6 +95,9 @@ pub struct SetupArgs {
     pub url: Option<String>,
     /// Default model ID
     pub model: Option<String>,
+    /// Optional distinct weak-tier route (`pi:<provider>:<model>`). Only the
+    /// `pi` route accepts it; omitting it keeps single-model behavior.
+    pub weak_model: Option<String>,
     /// Skip API key validation
     pub skip_validation: bool,
     /// Non-interactive: write the route's config without prompting.
@@ -174,6 +177,10 @@ pub struct SetupChoices {
     pub provider: String,
     pub executor: String,
     pub model: String,
+    /// Distinct weak-tier route for the Pi two-tier model plane. `None` means
+    /// single-model: the weak tier inherits the strong route at resolution
+    /// time and no `tiers.fast` key is written.
+    pub weak_model: Option<String>,
     pub agency_enabled: bool,
     pub max_agents: usize,
     /// Endpoint config for non-Anthropic providers
@@ -207,6 +214,17 @@ pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
                 ..Default::default()
             },
         );
+        // Two-tier Pi model plane: a distinct weak route pins `tiers.fast`
+        // (the cheap recoverable one-shots) alongside the strong route.
+        // `None` (or a weak answer equal to strong) keeps single-model
+        // inheritance exactly as before.
+        if let Some(weak) = choices
+            .weak_model
+            .as_deref()
+            .filter(|weak| weak != &choices.model)
+        {
+            config.set_pi_tiers(Some(&choices.model), Some(weak));
+        }
         config.coordinator.max_agents = choices.max_agents;
         // Synthetic assignment tasks are retired. Agency setup enables
         // source-bound review/observation only; assignment remains direct
@@ -984,6 +1002,7 @@ pub fn run_non_interactive(args: &SetupArgs) -> Result<()> {
         provider: provider.to_string(),
         executor: executor.to_string(),
         model: model.to_string(),
+        weak_model: None,
         agency_enabled: existing.agency.auto_evaluate,
         max_agents: existing.coordinator.max_agents,
         endpoint,
@@ -1528,6 +1547,11 @@ fn run_route(args: &SetupArgs, graph_dir: &Path) -> Result<()> {
         }
     }
 
+    if args.weak_model.is_some() && route != SetupRoute::Pi {
+        bail!(
+            "--weak-model is only valid with --route pi; the strong/weak split is a Pi model-plane concept"
+        );
+    }
     let params = RouteParams {
         api_key_env: args.api_key_env.clone(),
         api_key_file: args.api_key_file.clone(),
@@ -1561,7 +1585,24 @@ fn run_route(args: &SetupArgs, graph_dir: &Path) -> Result<()> {
             "WG no longer configures providers, endpoints, or API keys. Configure/login in Pi, then pass only `--route pi --model pi:<provider>:<model>`."
         );
     }
-    let new_config = config_for_route(route, params);
+    let mut new_config = config_for_route(route, params);
+    // Opt-in non-interactive two-tier write: a distinct `--weak-model` pins
+    // `tiers.fast` alongside the strong route. Equal/absent keeps the
+    // historical single-model paste behavior byte-for-byte.
+    if let Some(weak) = args.weak_model.as_deref() {
+        let strong = args
+            .model
+            .as_deref()
+            .unwrap_or("pi:openrouter:z-ai/glm-5.2");
+        if weak != strong {
+            worksgood::config::parse_exact_pi_route(weak).map_err(|error| {
+                anyhow::anyhow!(
+                    "--weak-model must be an exact `pi:<provider>:<model>` route; {error}"
+                )
+            })?;
+            new_config.set_pi_tiers(Some(strong), Some(weak));
+        }
+    }
     new_config.validate_pi_model_plane()?;
 
     let project_path = worksgood::project_config::path_for_graph(graph_dir).ok_or_else(|| {
@@ -2091,7 +2132,7 @@ pub fn run(graph_dir: &Path) -> Result<()> {
         "Pi is the recommended setup route and owns its login/providers/models. Native Claude/Codex workers remain explicit `wg profile select claude|codex` options."
     );
 
-    let (endpoint, inherit_global_endpoints, mut model_registry_entries, model) =
+    let (endpoint, inherit_global_endpoints, mut model_registry_entries, model, weak_model) =
         configure_pi(scope, &Config::default(), existing)?;
 
     // 3b. Validate API key if an endpoint is configured
@@ -2177,6 +2218,7 @@ pub fn run(graph_dir: &Path) -> Result<()> {
         provider: provider.clone(),
         executor,
         model,
+        weak_model,
         agency_enabled,
         max_agents,
         endpoint,
@@ -2198,6 +2240,25 @@ pub fn run(graph_dir: &Path) -> Result<()> {
     println!("───────────────────────");
     println!("{}", format_delta_summary(&preview_config));
     println!("───────────────────────");
+    // The two-tier role table: which roles resolve to which tier and the
+    // reasoning each gets, BEFORE anything is written.
+    match worksgood::setup_two_tier::render_two_tier_role_table(&preview_config) {
+        Ok(table) => {
+            println!();
+            println!("{table}");
+        }
+        Err(error) => {
+            // The preview must never block the write path: surface the
+            // resolution error loudly instead and let the confirmation
+            // step (and the post-write validation) catch it.
+            println!();
+            println!("  (role routing preview unavailable: {error:#})");
+        }
+    }
+    println!();
+    println!("These routes are re-changeable any time: `wg config -m <route>`,");
+    println!("`wg config --set-model <role> <route>`, or `wg profile select <name>`.");
+    println!("Pi owns the model plane; WG stores exact routes only.");
     println!();
 
     let confirm = Confirm::new()
@@ -2504,6 +2565,13 @@ fn configure_openrouter(
     Ok((endpoint, inherit_global_endpoints, registry_entries, model))
 }
 
+/// Explain the two-tier Pi model plane before the prompts, then gather the
+/// strong and weak routes. The pure wording/normalization/table core lives in
+/// [`worksgood::setup_two_tier`] so it is unit-testable without a terminal.
+pub(crate) fn two_tier_explainer_lines() -> Vec<String> {
+    worksgood::setup_two_tier::two_tier_explainer_lines()
+}
+
 fn configure_pi(
     _scope: SetupScope,
     _existing_global: &Config,
@@ -2513,12 +2581,15 @@ fn configure_pi(
     bool,
     Vec<ModelRegistryEntry>,
     String,
+    Option<String>,
 )> {
     println!();
-    println!("Pi model plane");
-    println!("──────────────");
-    println!("Choose an exact route from Pi's own model picker/catalog.");
-    println!("WG will not inspect Pi credentials, endpoints, or model availability.");
+    println!("Pi model plane — two tiers");
+    println!("───────────────────────────");
+    for line in two_tier_explainer_lines() {
+        println!("{line}");
+    }
+    println!();
     let configured = existing
         .coordinator
         .model
@@ -2529,16 +2600,29 @@ fn configure_pi(
                 .is_ok()
                 .then_some(existing.agent.model.as_str())
         });
-    let model: String = Input::new()
-        .with_prompt("Exact Pi route (pi:<provider>:<model>)")
+    let strong: String = Input::new()
+        .with_prompt("STRONG route (pi:<provider>:<model>)")
         .default(
             configured
-                .unwrap_or("pi:openrouter:z-ai/glm-5.2")
+                .unwrap_or(worksgood::setup_two_tier::DEFAULT_STRONG_ROUTE)
                 .to_string(),
         )
         .interact_text()?;
-    worksgood::config::parse_exact_pi_route(&model)?;
-    Ok((None, false, vec![], model))
+    println!();
+    let configured_weak = existing
+        .tiers
+        .fast
+        .as_deref()
+        .filter(|model| worksgood::config::parse_exact_pi_route(model).is_ok())
+        .unwrap_or_else(|| strong.trim());
+    let weak_answer: String = Input::new()
+        .with_prompt("WEAK route (pi:<provider>:<model>) [Enter = reuse strong]")
+        .default(configured_weak.to_string())
+        .show_default(false)
+        .interact_text()?;
+    let (strong, weak) =
+        worksgood::setup_two_tier::resolve_two_tier_answers(&strong, &weak_answer)?;
+    Ok((None, false, vec![], strong, weak))
 }
 
 #[allow(dead_code)]
@@ -3362,6 +3446,7 @@ mod tests {
                 provider: "openrouter".to_string(),
                 executor: "native".to_string(),
                 model: "qwen3-coder".to_string(),
+                weak_model: None,
                 agency_enabled: true,
                 max_agents: 4,
                 endpoint: Some(EndpointChoices {
@@ -3408,6 +3493,7 @@ mod tests {
             provider: "anthropic".to_string(),
             executor: "claude".to_string(),
             model: "opus".to_string(),
+            weak_model: None,
             agency_enabled: true,
             max_agents: 4,
             endpoint: None,
@@ -3444,6 +3530,7 @@ mod tests {
             provider: "anthropic".to_string(),
             executor: "claude".to_string(),
             model: "haiku".to_string(),
+            weak_model: None,
             agency_enabled: true,
             max_agents: 2,
             endpoint: None,
@@ -3476,6 +3563,7 @@ mod tests {
             provider: "anthropic".to_string(),
             executor: "claude".to_string(),
             model: "opus".to_string(),
+            weak_model: None,
             agency_enabled: false,
             max_agents: 4,
             endpoint: None,
@@ -3494,6 +3582,7 @@ mod tests {
             provider: "anthropic".to_string(),
             executor: "claude".to_string(),
             model: "sonnet".to_string(),
+            weak_model: None,
             agency_enabled: true,
             max_agents: 4,
             endpoint: None,
@@ -3512,6 +3601,7 @@ mod tests {
             provider: "anthropic".to_string(),
             executor: "claude".to_string(),
             model: "opus".to_string(),
+            weak_model: None,
             agency_enabled: true,
             max_agents: 4,
             endpoint: None,
@@ -3533,6 +3623,7 @@ mod tests {
             provider: "anthropic".to_string(),
             executor: "claude".to_string(),
             model: "sonnet".to_string(),
+            weak_model: None,
             agency_enabled: false,
             max_agents: 8,
             endpoint: None,
@@ -3552,6 +3643,7 @@ mod tests {
             provider: "anthropic".to_string(),
             executor: "claude".to_string(),
             model: "opus".to_string(),
+            weak_model: None,
             agency_enabled: true,
             max_agents: 6,
             endpoint: None,
@@ -3578,6 +3670,7 @@ mod tests {
             provider: "anthropic".to_string(),
             executor: "claude".to_string(),
             model: "sonnet".to_string(),
+            weak_model: None,
             agency_enabled: false,
             max_agents: 3,
             endpoint: None,
@@ -3603,6 +3696,7 @@ mod tests {
             provider: "anthropic".to_string(),
             executor: "my-custom-executor".to_string(),
             model: "haiku".to_string(),
+            weak_model: None,
             agency_enabled: false,
             max_agents: 1,
             endpoint: None,
@@ -3624,6 +3718,7 @@ mod tests {
             provider: "openrouter".to_string(),
             executor: "native".to_string(),
             model: "sonnet".to_string(),
+            weak_model: None,
             agency_enabled: false,
             max_agents: 4,
             endpoint: Some(EndpointChoices {
@@ -3676,6 +3771,7 @@ mod tests {
             provider: "openrouter".to_string(),
             executor: "native".to_string(),
             model: "sonnet".to_string(),
+            weak_model: None,
             agency_enabled: true,
             max_agents: 2,
             endpoint: Some(EndpointChoices {
@@ -3712,6 +3808,7 @@ mod tests {
             provider: "openrouter".to_string(),
             executor: "native".to_string(),
             model: "sonnet".to_string(),
+            weak_model: None,
             agency_enabled: false,
             max_agents: 4,
             endpoint: Some(EndpointChoices {
@@ -3741,6 +3838,7 @@ mod tests {
             provider: "anthropic".to_string(),
             executor: "claude".to_string(),
             model: "opus".to_string(),
+            weak_model: None,
             agency_enabled: false,
             max_agents: 4,
             endpoint: None,
@@ -4336,6 +4434,7 @@ mod tests {
             provider: "openrouter".to_string(),
             executor: "native".to_string(),
             model: "sonnet".to_string(),
+            weak_model: None,
             agency_enabled: false,
             max_agents: 4,
             endpoint: None,

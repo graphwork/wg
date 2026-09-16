@@ -2527,6 +2527,12 @@ pub enum Commands {
         /// Exact `pi:<provider>:<model>` route.
         #[arg(long)]
         model: Option<String>,
+        /// Optional distinct weak-tier route (`pi:<provider>:<model>`) for the
+        /// cheap recoverable one-shots (evaluator, assigner, flip, triage,
+        /// placer, compactors). Only valid with --route pi; omit for
+        /// single-model setups (weak inherits strong).
+        #[arg(long)]
+        weak_model: Option<String>,
         /// [DEPRECATED/UNSUPPORTED] Pi performs provider/model validation.
         #[arg(long, hide = true)]
         skip_validation: bool,

@@ -3325,3 +3325,12 @@ script = "scenarios/completion_legacy_environment_drift_renewal.sh"
 owners = ["smoke-pin-completion"]
 description = "Real terminal regression for the stable-environment-identity and legacy-drift renewal fixes: worker-captured evidence re-validates across the worker→operator process boundary without renewal (positive control), while the same evidence downgraded to the historical v1 shape (environment_stable_identity stripped, with the content-addressed chain kept consistent) fails strict re-validation with the environment-drift classification and completes only through the sanctioned Done-step renewal — configured + Land baseline commands re-run in the current environment at the integrated commit, fresh captures stored and ledger-recorded with a stable environment identity, and the original evidence re-verified under TolerantDrift."
 timeout_seconds = 240
+
+[[scenario]]
+name = "setup_two_tier_routes"
+script = "scenarios/setup_two_tier_routes.sh"
+owners = [
+    "setup-collects-strong",
+]
+description = "Pins setup-collects-strong: interactive `wg setup` (no --yes) collects a STRONG route (workers + heavy generative roles: task_agent, creator, merger, evolver, verification, reasoning high) and then a WEAK route (cheap recoverable one-shots: evaluator, assigner, flip_inference/flip_comparison, triage, placer, compactors, coordinator_eval, reviewer, reasoning low), explains which roles ride which tier, offers Enter=reuse-strong for single-model deployments, shows the resulting role table (like wg config --models) BEFORE writing, and states routes stay re-changeable via wg config / wg profile select because Pi owns the model plane. Distinct answers write distinct [tiers] standard/fast keys with the right reasoning; Enter-at-weak and `--yes` without --weak-model stay single-model (unchanged historical behavior); `--yes --weak-model` gives non-interactive two-tier writes and `wg config --models` resolves task_agent→strong, evaluator→weak."
+timeout_seconds = 120
