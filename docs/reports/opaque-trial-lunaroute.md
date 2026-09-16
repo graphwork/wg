@@ -132,3 +132,45 @@ end-to-end leg (experimental daemon → admission → probe task → byte-exact 
   `src/worker_cli.rs` `maybe_run` (trusted-worker service refusal).
 - No files under `execution-assignment/` were created; no graph state was mutated by this
   trial beyond its own logs/artifacts; the default daemon was never stopped.
+
+## Trial outcome — operator-run completion (2026-09-16, post-fix)
+
+Both blockers from the first attempt were resolved and the trial completed
+end-to-end under the operator's authority:
+
+1. **Admin boundary:** the experimental-daemon restart was performed by the
+   operator (the fence refusing service/admin operations to trusted workers
+   is correct behavior and was left intact; no admin lane was granted).
+2. **Probe resolution gap:** fixed in production
+   (`execution_assignment::classify_capability_rows`, commit `222154d5`) —
+   the probe now accepts multiple fuzzy rows when exactly one row's
+   provider/model columns equal the opaque route's literal segments, so
+   catalog siblings (`glm-5.3-flash-background`) no longer read as
+   ambiguity. Six unit tests pin the classification.
+3. **Route spelling:** the project routes were migrated to the executable
+   slash form with `wg migrate opaque-pi-route` (commit `5e960d24` refers to
+   the backup cleanup; the migration itself is in `222154d5`'s tree state),
+   and the strict route validator now accepts `pi:<provider>/<model>` as a
+   first-class exact route (it previously rejected its own migrate output —
+   `WG-EXEC-ROUTE-UNSUPPORTED`). The default spawn path was verified live
+   with slash routes before the trial (`slash-route-probe`, done).
+
+**Live trial evidence (`opaque-trial-probe`, done):**
+
+- Experimental daemon (`WG_EXPERIMENTAL_OPAQUE_ASSIGNMENT=1`) admitted both
+  project routes with no `WG-OPAQUE-*` refusal.
+- The bound attempt evidence
+  (`.wg/attempts/by-source-tuple/4e0f28b5…/execution-assignment/assignment.json`)
+  records `execution.opaque_route = "lunaroute/glm-5.3-flash"` byte-exact,
+  `reasoning = high`, no provider/model splitting.
+- The spawned worker's pinned invocation passed the route verbatim as a
+  single argument: `--model 'lunaroute/glm-5.3-flash'`.
+- The task completed through the opaque path; the default (non-experimental)
+  daemon was restored afterwards and verified healthy with no experimental
+  env in the daemon environment.
+
+**Recommendation:** the experiment is ready for a wider opt-in period on
+this project's real routes. Promotion toward default should wait for the
+three new smoke scenarios (`smoke-pin-completion`) to pin the pipeline,
+including an opaque-path scenario using the fake-pi fixture with
+sibling-ambiguous catalog output.
