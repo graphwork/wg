@@ -1486,6 +1486,30 @@ fn git_path_from_bytes(raw: &[u8]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(raw).into_owned())
 }
 
+/// How `verify_validation_evidence` treats the environment binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvironmentPolicy {
+    /// Exact re-validation semantics (default). Stable-environment evidence
+    /// compares the stable projection; historical evidence compares the full
+    /// environment digest.
+    Strict,
+    /// Skip the environment comparison; every other check stays enforced.
+    /// Used only by the sanctioned legacy-drift renewal flow, which pairs it
+    /// with freshly captured, authoritative-passing evidence recorded in the
+    /// current environment.
+    TolerantDrift,
+}
+
+/// True when the verification failure is exactly a validation-environment
+/// binding drift and nothing else. Because the environment check runs after
+/// every per-evidence content, lifecycle, repository, and pass/fail check in
+/// `verify_one`, an environment-drift error implies the drifted evidence item
+/// already passed everything enforced before it.
+pub fn is_environment_drift(error: &IncompleteEvidence) -> bool {
+    error.kind == IncompleteEvidenceKind::DigestMismatch
+        && error.reference == "deterministic validation environment binding"
+}
+
 fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     let bytes = git_bytes(cwd, args)?;
     String::from_utf8(bytes)
@@ -1556,6 +1580,30 @@ pub fn verify_validation_evidence(
     repository_root: &Path,
     workgraph_dir: &Path,
 ) -> Result<(), IncompleteEvidence> {
+    verify_validation_evidence_with_env_policy(
+        task,
+        manifest,
+        binding,
+        bundle,
+        repository_root,
+        workgraph_dir,
+        EnvironmentPolicy::Strict,
+    )
+}
+
+/// `verify_validation_evidence` with an explicit environment policy. Only the
+/// sanctioned legacy-drift renewal flow may pass `TolerantDrift`, and only
+/// after recording freshly captured, authoritative-passing evidence for every
+/// configured command in the current environment.
+pub fn verify_validation_evidence_with_env_policy(
+    task: &Task,
+    manifest: &CompletionManifest,
+    binding: Option<&CompletionReviewBinding>,
+    bundle: &ResolvedReviewBundle,
+    repository_root: &Path,
+    workgraph_dir: &Path,
+    environment_policy: EnvironmentPolicy,
+) -> Result<(), IncompleteEvidence> {
     let expected_commands = configured_validation_commands(task);
     let structured = bundle
         .validation_evidence
@@ -1604,6 +1652,7 @@ pub fn verify_validation_evidence(
             &parsed,
             &expected_repository_identity,
             parsed.purpose != ValidationPurpose::Optional,
+            environment_policy,
         )?;
         match parsed.purpose {
             ValidationPurpose::Configured => {
@@ -1718,6 +1767,7 @@ fn verify_one(
     evidence: &DeterministicValidationEvidence,
     expected_repository_identity: &ContentDigest,
     require_success: bool,
+    environment_policy: EnvironmentPolicy,
 ) -> Result<(), IncompleteEvidence> {
     if evidence.evidence_version != DETERMINISTIC_VALIDATION_VERSION
         || evidence.capture_origin != "wg_done"
@@ -1792,40 +1842,43 @@ fn verify_one(
         ));
     }
     if let Some(environment) = evidence.environment.as_ref() {
-        let current = validation_environment_binding().map_err(|detail| {
-            incomplete(
-                IncompleteEvidenceKind::Inaccessible,
-                "deterministic validation environment",
-                detail,
-            )
-        })?;
-        let environment_matches = match (
-            &environment.environment_stable_identity,
-            &current.environment_stable_identity,
-        ) {
-            (Some(stored), Some(live)) => {
-                // Stable-environment evidence re-validates across process
-                // boundaries: the toolchain-bearing projection must match and
-                // the host/platform/executable identity stays exact. The full
-                // `environment_identity` is retained for audit but no longer
-                // gates, because it bakes in shell bookkeeping and
-                // session/attempt plumbing that differ by construction.
-                stored == live
-                    && environment.platform == current.platform
-                    && environment.architecture == current.architecture
-                    && environment.host_identity == current.host_identity
-                    && environment.executable_identity == current.executable_identity
+        if environment_policy == EnvironmentPolicy::Strict {
+            let current = validation_environment_binding().map_err(|detail| {
+                incomplete(
+                    IncompleteEvidenceKind::Inaccessible,
+                    "deterministic validation environment",
+                    detail,
+                )
+            })?;
+            let environment_matches = match (
+                &environment.environment_stable_identity,
+                &current.environment_stable_identity,
+            ) {
+                (Some(stored), Some(live)) => {
+                    // Stable-environment evidence re-validates across process
+                    // boundaries: the toolchain-bearing projection must match
+                    // and the host/platform/executable identity stays exact.
+                    // The full `environment_identity` is retained for audit
+                    // but no longer gates, because it bakes in shell
+                    // bookkeeping and session/attempt plumbing that differ by
+                    // construction.
+                    stored == live
+                        && environment.platform == current.platform
+                        && environment.architecture == current.architecture
+                        && environment.host_identity == current.host_identity
+                        && environment.executable_identity == current.executable_identity
+                }
+                // Historical captures without a stable projection re-validate
+                // strictly against the full environment digest.
+                _ => *environment == current,
+            };
+            if !environment_matches {
+                return Err(incomplete(
+                    IncompleteEvidenceKind::DigestMismatch,
+                    "deterministic validation environment binding",
+                    "execution environment or WG executable changed; revalidation is required",
+                ));
             }
-            // Historical captures without a stable projection re-validate
-            // strictly against the full environment digest.
-            _ => *environment == current,
-        };
-        if !environment_matches {
-            return Err(incomplete(
-                IncompleteEvidenceKind::DigestMismatch,
-                "deterministic validation environment binding",
-                "execution environment or WG executable changed; revalidation is required",
-            ));
         }
     }
     verify_timing(evidence)?;
@@ -2358,6 +2411,28 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind, IncompleteEvidenceKind::DigestMismatch);
         assert!(error.reference.contains("environment"));
+    }
+
+    #[test]
+    fn environment_drift_is_classified_exactly() {
+        let drift = incomplete(
+            IncompleteEvidenceKind::DigestMismatch,
+            "deterministic validation environment binding",
+            "execution environment or WG executable changed",
+        );
+        assert!(is_environment_drift(&drift));
+        let other_subject = incomplete(
+            IncompleteEvidenceKind::DigestMismatch,
+            "deterministic validation candidate binding",
+            "command did not observe one unchanged candidate/worktree state",
+        );
+        assert!(!is_environment_drift(&other_subject));
+        let other_kind = incomplete(
+            IncompleteEvidenceKind::Missing,
+            "deterministic validation environment binding",
+            "host-captured command result is missing",
+        );
+        assert!(!is_environment_drift(&other_kind));
     }
 
     #[test]

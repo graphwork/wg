@@ -122,17 +122,39 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str) -> Result<()> {
         )
     }
     .map_err(|error| anyhow::anyhow!("completion evidence no longer resolves: {error}"))?;
-    worksgood::completion_validation::verify_validation_evidence(
+    if let Err(error) = worksgood::completion_validation::verify_validation_evidence(
         task,
         &manifest,
         submission.review_binding.as_ref(),
         &resolved,
         project_root,
         dir,
-    )
-    .map_err(|error| {
-        anyhow::anyhow!("deterministic validation evidence no longer resolves: {error}")
-    })?;
+    ) {
+        if !worksgood::completion_validation::is_environment_drift(&error) {
+            return Err(anyhow::anyhow!(
+                "deterministic validation evidence no longer resolves: {error}"
+            ));
+        }
+        // Legacy evidence without a stable environment identity can never
+        // match a re-validating process by construction. Sanctioned renewal:
+        // re-run every configured command in the current environment and
+        // require an authoritative pass, exactly like target-advance
+        // reconciliation, then re-verify the original evidence with the
+        // environment comparison skipped (every other check stays enforced).
+        renew_environment_drifted_validation(dir, id, task, project_root, integration_ref)?;
+        worksgood::completion_validation::verify_validation_evidence_with_env_policy(
+            task,
+            &manifest,
+            submission.review_binding.as_ref(),
+            &resolved,
+            project_root,
+            dir,
+            worksgood::completion_validation::EnvironmentPolicy::TolerantDrift,
+        )
+        .map_err(|error| {
+            anyhow::anyhow!("deterministic validation evidence no longer resolves: {error}")
+        })?;
+    }
     let config = worksgood::config::Config::load_merged(dir)?;
     let (review_policy, semantic_outcome) = if config.agency.completion_review_strict {
         load_exact_review_pair(&completion_store, &submission, &manifest, &resolved)?;
@@ -458,6 +480,107 @@ pub fn operator_accept(dir: &Path, id: &str, reason: &str) -> Result<()> {
     project_outcome_advisory(dir, id);
     super::notify_graph_changed(dir);
     println!("Operator accepted '{id}' with immutable receipt {receipt_digest}: {reason}");
+    Ok(())
+}
+
+/// Sanctioned renewal for legacy validation evidence whose environment binding
+/// can never match a re-validating process: re-run every configured command
+/// (plus the Land baseline) in the current environment inside a detached
+/// worktree at the integrated commit, require an authoritative pass for each,
+/// and store + ledger-record the fresh captures. This is the same authority
+/// the descendant-target reconciliation already exercises; it re-proves the
+/// validation condition instead of waiving it.
+fn renew_environment_drifted_validation(
+    dir: &Path,
+    id: &str,
+    task: &worksgood::graph::Task,
+    project_root: &Path,
+    integration_ref: &str,
+) -> Result<()> {
+    use worksgood::completion_validation::{
+        BASELINE_VALIDATION_EVIDENCE_KIND, CONFIGURED_VALIDATION_EVIDENCE_KIND, ValidationPurpose,
+        capture_validation, configured_validation_commands, land_baseline_command,
+    };
+    let contract = match task.completion_contract {
+        worksgood::graph::CompletionContract::Land => {
+            worksgood::simple_land::CompletionContract::Land
+        }
+        worksgood::graph::CompletionContract::Report => {
+            worksgood::simple_land::CompletionContract::Report
+        }
+        worksgood::graph::CompletionContract::Explore => {
+            worksgood::simple_land::CompletionContract::Explore
+        }
+        // Historical contract retained only so evidence-bearing graphs remain
+        // readable; renewal treats it as its nearest live equivalent.
+        worksgood::graph::CompletionContract::Deliver => {
+            worksgood::simple_land::CompletionContract::Report
+        }
+    };
+    let observed = Command::new("git")
+        .args(["rev-parse", integration_ref])
+        .current_dir(project_root)
+        .output()
+        .context("resolve integration ref for validation renewal")?;
+    if !observed.status.success() {
+        bail!(
+            "resolve integration ref {integration_ref}: {}",
+            String::from_utf8_lossy(&observed.stderr).trim()
+        );
+    }
+    let commit = String::from_utf8_lossy(&observed.stdout).trim().to_string();
+    let validation_worktree =
+        super::completion_land::ValidationWorktree::materialize(project_root, &commit)?;
+    let commands = configured_validation_commands(task);
+    for (index, command) in commands.iter().enumerate() {
+        let captured = capture_validation(
+            task,
+            command,
+            u32::try_from(index).unwrap_or(u32::MAX),
+            ValidationPurpose::Configured,
+            &validation_worktree.path,
+        )
+        .with_context(|| format!("renew environment-drifted validation command: {command}"))?;
+        let reference = super::completion_finish::store_validation_evidence(
+            dir,
+            &captured,
+            CONFIGURED_VALIDATION_EVIDENCE_KIND,
+        )?;
+        super::completion_finish::record_validation_result(dir, task, &captured, &reference)?;
+        if !captured.authoritative_pass(contract) {
+            bail!(
+                "environment-drift renewal validation failed: command={command} exit={:?} timeout={}",
+                captured.exit.code,
+                captured.exit.timed_out
+            );
+        }
+    }
+    if task.completion_contract == worksgood::graph::CompletionContract::Land {
+        let baseline = capture_validation(
+            task,
+            land_baseline_command(),
+            u32::try_from(commands.len()).unwrap_or(u32::MAX),
+            ValidationPurpose::Baseline,
+            &validation_worktree.path,
+        )
+        .context("renew environment-drifted baseline validation")?;
+        let baseline_ref = super::completion_finish::store_validation_evidence(
+            dir,
+            &baseline,
+            BASELINE_VALIDATION_EVIDENCE_KIND,
+        )?;
+        super::completion_finish::record_validation_result(dir, task, &baseline, &baseline_ref)?;
+        if !baseline.authoritative_pass(contract) {
+            bail!(
+                "environment-drift renewal baseline validation failed (exit={:?}, timeout={})",
+                baseline.exit.code,
+                baseline.exit.timed_out
+            );
+        }
+    }
+    eprintln!(
+        "[completion-done] '{id}' validation evidence renewed in the current environment after legacy environment drift"
+    );
     Ok(())
 }
 

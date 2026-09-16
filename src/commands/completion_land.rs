@@ -1342,13 +1342,13 @@ fn commit_integration_tree(
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
-struct ValidationWorktree {
+pub(crate) struct ValidationWorktree {
     project: PathBuf,
-    path: PathBuf,
+    pub(crate) path: PathBuf,
 }
 
 impl ValidationWorktree {
-    fn materialize(project: &Path, commit: &str) -> Result<Self> {
+    pub(crate) fn materialize(project: &Path, commit: &str) -> Result<Self> {
         let common = PathBuf::from(git(project, &["rev-parse", "--git-common-dir"])?);
         let common = if common.is_absolute() {
             common
