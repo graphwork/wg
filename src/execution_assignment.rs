@@ -944,6 +944,62 @@ pub fn pin_executable(program: &Path) -> PathBuf {
 /// exit status supplies the classification; WG does not inspect names or a
 /// model registry.  Exit 2 is Pi's deterministic configuration/capability
 /// rejection contract. Other failures are transient/indeterminate.
+/// Classification of Pi's `--list-models` output for one opaque route.
+#[derive(Debug)]
+enum CapabilityRows {
+    /// Exactly one data row: unambiguous capability.
+    Unique,
+    /// Multiple data rows, but exactly one row's provider/model columns equal
+    /// the opaque route's literal provider/model segments. Pi's fuzzy search
+    /// matches catalog siblings (`glm-5.3-flash` prefix-matches
+    /// `glm-5.3-flash-background`); the exact row is the queried selection.
+    UniqueExactMatch,
+    /// Zero data rows: the query matched nothing.
+    Missing,
+    /// Multiple data rows with no exact match: genuinely ambiguous.
+    Ambiguous(usize),
+}
+
+/// Split the opaque route at its first provider separator (`/` or `:`) into
+/// (provider, model). Routes without a separator have no exact segments.
+fn split_opaque_route(opaque_route: &str) -> Option<(&str, &str)> {
+    let split_at = opaque_route.find(['/', ':'])?;
+    let (provider, model) = opaque_route.split_at(split_at);
+    let model = &model[1..];
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some((provider, model))
+}
+
+fn classify_capability_rows(stdout: &str, opaque_route: &str) -> CapabilityRows {
+    let rows: Vec<(&str, &str)> = stdout
+        .lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let mut columns = line.split_whitespace();
+            let provider = columns.next()?;
+            let model = columns.next()?;
+            Some((provider, model))
+        })
+        .collect();
+    match rows.len() {
+        0 => CapabilityRows::Missing,
+        1 => CapabilityRows::Unique,
+        _ => match split_opaque_route(opaque_route).map(|(provider, model)| {
+            rows.iter()
+                .filter(|(row_provider, row_model)| {
+                    *row_provider == provider && *row_model == model
+                })
+                .count()
+        }) {
+            Some(1) => CapabilityRows::UniqueExactMatch,
+            _ => CapabilityRows::Ambiguous(rows.len()),
+        },
+    }
+}
+
 pub fn preflight(assignment: &ExecutionAssignment) -> PiPreflightOutcome {
     let RuntimeExecution::Pi {
         opaque_route,
@@ -977,23 +1033,26 @@ pub fn preflight(assignment: &ExecutionAssignment) -> PiPreflightOutcome {
     match output {
         Ok(output) if output.status.success() => {
             // Pi's list command exits successfully even when the exact query
-            // matched nothing. Treat only a returned data row as capability;
-            // the opaque query is never split or interpreted by WG.
+            // matched nothing. Treat only a resolvable selection as
+            // capability; the opaque query is never split or interpreted by
+            // WG beyond comparing Pi's own returned rows against the query's
+            // literal segments (see classify_capability_rows).
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let matches = stdout
-                .lines()
-                .skip(1)
-                .filter(|line| !line.trim().is_empty())
-                .count();
-            if matches == 1 {
-                PiPreflightOutcome::Ready
-            } else {
-                PiPreflightOutcome::MissingRequiredCapability {
+            match classify_capability_rows(&stdout, opaque_route) {
+                CapabilityRows::Unique => PiPreflightOutcome::Ready,
+                CapabilityRows::UniqueExactMatch => PiPreflightOutcome::Ready,
+                CapabilityRows::Missing => PiPreflightOutcome::MissingRequiredCapability {
                     exit_code: output.status.code(),
                     diagnostic: format!(
-                        "Pi capability query returned {matches} rows for opaque route {opaque_route:?}; exactly one Pi-resolved selection is required"
+                        "Pi capability query returned 0 rows for opaque route {opaque_route:?}; exactly one Pi-resolved selection is required"
                     ),
-                }
+                },
+                CapabilityRows::Ambiguous(count) => PiPreflightOutcome::MissingRequiredCapability {
+                    exit_code: output.status.code(),
+                    diagnostic: format!(
+                        "Pi capability query returned {count} rows for opaque route {opaque_route:?} and none of them exactly equals the query's provider/model segments; exactly one Pi-resolved selection is required"
+                    ),
+                },
             }
         }
         Ok(output) => {
@@ -1765,5 +1824,79 @@ mod tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod capability_rows_tests {
+    use super::*;
+
+    const HEADER: &str = "Provider Model Context Window Max Output\n";
+
+    #[test]
+    fn single_row_is_unique() {
+        let out = format!("{HEADER}lunaroute glm-5.3-flash 1 1\n");
+        assert!(matches!(
+            classify_capability_rows(&out, "lunaroute/glm-5.3-flash"),
+            CapabilityRows::Unique
+        ));
+    }
+
+    #[test]
+    fn zero_rows_is_missing() {
+        let out = HEADER;
+        assert!(matches!(
+            classify_capability_rows(&out, "lunaroute/glm-5.3-flash"),
+            CapabilityRows::Missing
+        ));
+    }
+
+    #[test]
+    fn slash_siblings_with_one_exact_match_are_unique_exact_match() {
+        // Pi's fuzzy search returns the queried model plus its -background
+        // catalog sibling; exactly one row equals the query's segments.
+        let out = format!(
+            "{HEADER}lunaroute glm-5.3-flash 1 1\nlunaroute glm-5.3-flash-background 1 1\n"
+        );
+        assert!(matches!(
+            classify_capability_rows(&out, "lunaroute/glm-5.3-flash"),
+            CapabilityRows::UniqueExactMatch
+        ));
+        // Symmetrically for the sibling query.
+        assert!(matches!(
+            classify_capability_rows(&out, "lunaroute/glm-5.3-flash-background"),
+            CapabilityRows::UniqueExactMatch
+        ));
+    }
+
+    #[test]
+    fn multiple_rows_without_exact_match_stay_ambiguous() {
+        let out = format!("{HEADER}lunaroute glm-5.3 1 1\nlunaroute glm-5.3-flash 1 1\n");
+        match classify_capability_rows(&out, "lunaroute/glm-5.3-fla") {
+            CapabilityRows::Ambiguous(count) => assert_eq!(count, 2),
+            other => panic!("expected ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn colon_routes_split_at_the_first_colon() {
+        let out = format!(
+            "{HEADER}lunaroute deepseek-4.1-flash 1 1\nlunaroute deepseek-4.1-flash-background 1 1\n"
+        );
+        assert!(matches!(
+            classify_capability_rows(&out, "lunaroute:deepseek-4.1-flash"),
+            CapabilityRows::UniqueExactMatch
+        ));
+    }
+
+    #[test]
+    fn routes_without_separator_never_exact_match() {
+        let out = format!(
+            "{HEADER}lunaroute glm-5.3-flash 1 1\nlunaroute glm-5.3-flash-background 1 1\n"
+        );
+        match classify_capability_rows(&out, "glm-5.3-flash") {
+            CapabilityRows::Ambiguous(count) => assert_eq!(count, 2),
+            other => panic!("expected ambiguous, got {other:?}"),
+        }
     }
 }
