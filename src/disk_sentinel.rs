@@ -2526,6 +2526,29 @@ mod tests {
 
     #[test]
     fn active_legacy_tmp_scratch_stays_visible_until_guarded_cleanup_is_safe() {
+        // The legacy scratch root is `std::env::temp_dir()/wg/build-tmp` — a
+        // live, daemon-swept location on real machines. Run the fixture in an
+        // isolated temp root so the running daemon's legacy reaper and
+        // prior-run residue cannot race it. TMPDIR is process-global: hold
+        // the env lock and restore it on drop (including panics).
+        struct RestoreTmpDirEnv {
+            previous: Option<std::ffi::OsString>,
+        }
+        impl Drop for RestoreTmpDirEnv {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(value) => unsafe { std::env::set_var("TMPDIR", value) },
+                    None => unsafe { std::env::remove_var("TMPDIR") },
+                }
+            }
+        }
+        let _env_guard = worksgood::test_helpers::env_lock();
+        let isolated_tmp = TempDir::new().unwrap();
+        let _restore = RestoreTmpDirEnv {
+            previous: std::env::var_os("TMPDIR"),
+        };
+        unsafe { std::env::set_var("TMPDIR", isolated_tmp.path()) };
+
         let project = TempDir::new().unwrap();
         let dir = project.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
