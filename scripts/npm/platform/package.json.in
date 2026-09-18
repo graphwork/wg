@@ -1,0 +1,24 @@
+{
+  "name": "__PKG_NAME__",
+  "version": "__WG_VERSION__",
+  "description": "Prebuilt WorksGood binaries (worksgood, wg, nex) for __TARGET__. Installed automatically as an optional dependency of @worksgood/cli.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/graphwork/wg.git",
+    "directory": "scripts/npm"
+  },
+  "homepage": "https://github.com/graphwork/wg",
+  "os": [
+    "__OS__"
+  ],
+  "cpu": [
+    "__CPU__"
+  ],
+  "files": [
+    "bin/",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {}
+}

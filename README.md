@@ -94,9 +94,19 @@ A normal install places three commands on `PATH`: `worksgood` (the attended huma
 
 ```bash
 cargo install --git https://github.com/graphwork/wg --locked
+# or, from npm (Node 22+): same three commands plus the Pi coding agent CLI,
+# from prebuilt per-platform packages — no install scripts, no Rust toolchain:
+npm install -g @worksgood/cli
 mkdir -p ~/work/my-project && cd ~/work/my-project
 worksgood
 ```
+
+The npm route ships the same signed release binaries via
+[`@worksgood/cli`](https://www.npmjs.com/package/@worksgood/cli) (esbuild/biome-style
+`optionalDependencies` — zero postinstall; fully functional under
+`--ignore-scripts`; `WG_BINARY_PATH` overrides the packaged binary). On an
+unsupported platform (or with `--no-optional`) the shim prints the `cargo
+install` fallback instead of failing. See `scripts/npm/README.md`.
 
 ### This system is yours
 
@@ -158,9 +168,11 @@ for the graphwork.github.io site).
 The spine:
 
 ```bash
-# 1. install WorksGood (worksgood + wg + nex; needs Rust) and Pi (needs Node 20+)
+# 1. install WorksGood (worksgood + wg + nex) and Pi (needs Node 22+).
+#    Rust route (primary):    cargo install --git https://github.com/graphwork/wg --locked
+#    npm route (prebuilt):    npm install -g @worksgood/cli        # brings WG + Pi in one install
 cargo install --git https://github.com/graphwork/wg --locked
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent   # skip when using the npm route
 
 # 2. authenticate Pi with OpenRouter (once, in Pi — WG never sees the key)
 pi

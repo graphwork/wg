@@ -576,6 +576,106 @@ jobs:
             ${{ steps.archive.outputs.archive_path }}.intoto.jsonl
             ${{ steps.signing_status.outputs.status_file }}
 
+  # npm distribution first slice (docs/research/npm-distribution.md): assemble
+  # @worksgood/cli + the slice platform packages from the release archives.
+  # Publishing is OPERATOR-GATED: it requires BOTH a publishable v* release AND
+  # the repository variable NPM_PUBLISH_ENABLED=true plus npm credentials
+  # (trusted publishing via OIDC, or the NPM_TOKEN secret). Dry runs and
+  # release-test-* tags pack + dry-run-publish only. See scripts/npm/README.md
+  # for the operator checklist.
+  npm-package:
+    name: npm packages
+    needs:
+      - plan
+      - build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Download slice-target release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-x86_64-unknown-linux-gnu
+          path: dist
+          merge-multiple: true
+
+      - name: Download slice-target release artifacts (darwin-arm64)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-aarch64-apple-darwin
+          path: dist
+          merge-multiple: true
+
+      - name: Run npm resolver unit tests
+        run: node --test scripts/npm/test/
+
+      - name: Build npm packages from release archives
+        env:
+          # Archives are named with the plan `version` (for release-test tags
+          # that is <cargo_version>-<tag>); the npm version stays the Cargo
+          # version — Cargo.toml is the single source of truth.
+          ARCHIVE_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/npm/make-packages.sh \
+            --archive-dir dist \
+            --out-dir npm-dist \
+            --archive-version "${ARCHIVE_VERSION}" \
+            --pack
+
+      - name: npm publish dry-run validation (no registry write)
+        run: |
+          set -euo pipefail
+          for dir in npm-dist/@worksgood/*/; do
+            (cd "${dir}" && npm publish --dry-run --loglevel=error >/dev/null)
+            echo "dry-run publish OK: ${dir}"
+          done
+
+      - name: Upload npm package tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages-${{ needs.plan.outputs.tag }}
+          if-no-files-found: error
+          path: npm-dist/*.tgz
+
+      # Operator-gated publish: platform packages FIRST, metapackage LAST
+      # (the metapackage exact-pins the platform version; research doc §4).
+      - name: Publish npm platform packages (operator-gated)
+        if: needs.plan.outputs.publish == 'true' && vars.NPM_PUBLISH_ENABLED == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for dir in npm-dist/@worksgood/*/; do
+            pkg_name="$(node -p "require(process.argv[1]).name" "${dir}package.json")"
+            if [[ "${pkg_name}" == "@worksgood/cli" ]]; then continue; fi
+            (cd "${dir}" && npm publish --provenance --access public)
+            echo "published ${pkg_name}"
+          done
+
+      - name: Publish npm metapackage (operator-gated, last)
+        if: needs.plan.outputs.publish == 'true' && vars.NPM_PUBLISH_ENABLED == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          (cd npm-dist/@worksgood/cli && npm publish --provenance --access public)
+          echo "published @worksgood/cli"
+
+      - name: Operator checklist (publish not armed this run)
+        if: needs.plan.outputs.publish != 'true' || vars.NPM_PUBLISH_ENABLED != 'true'
+        run: |
+          echo "npm publish skipped — operator-gated. Arm it with the repository"
+          echo "variable NPM_PUBLISH_ENABLED=true + npm credentials (trusted"
+          echo "publishing or NPM_TOKEN). See scripts/npm/README.md for the full"
+          echo "one-time operator checklist (org claim, name reservation, credential"
+          echo "setup, rehearsal)."
+
   assemble:
     name: Assemble release
     needs:

@@ -1,0 +1,34 @@
+{
+  "name": "@worksgood/cli",
+  "version": "__WG_VERSION__",
+  "description": "WorksGood CLI — graph work for humans and AI agents. Metapackage: installs the prebuilt worksgood/wg/nex binaries for your platform plus the Pi coding agent CLI.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/graphwork/wg.git",
+    "directory": "scripts/npm"
+  },
+  "homepage": "https://github.com/graphwork/wg",
+  "bin": {
+    "wg": "bin/wg.js",
+    "nex": "bin/nex.js",
+    "worksgood": "bin/worksgood.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {},
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1"
+  },
+  "optionalDependencies": {
+    "@worksgood/linux-x64-gnu": "__WG_VERSION__",
+    "@worksgood/darwin-arm64": "__WG_VERSION__"
+  }
+}

@@ -1,0 +1,14 @@
+# @worksgood/__PKG_SUFFIX__
+
+Prebuilt [WorksGood](https://github.com/graphwork/wg) binaries for `__TARGET__`:
+`worksgood`, `wg`, and `nex` at version `__WG_VERSION__`.
+
+You probably do not want to install this package directly — it is installed
+automatically as an optional dependency of [`@worksgood/cli`](https://www.npmjs.com/package/@worksgood/cli),
+which provides the `wg` / `nex` / `worksgood` commands.
+
+- The binaries in this package are exactly the release artifacts from the
+  matching GitHub release (`wg-v__WG_VERSION____ARCHIVE_SUFFIX__`); on macOS
+  they are Developer-ID signed and notarized before packaging.
+- Verify the release: `gh attestation verify wg-v__WG_VERSION____ARCHIVE_SUFFIX__.tar.gz --repo graphwork/wg`
+- npm additionally enforces SHA-512 integrity on the package tarball itself.

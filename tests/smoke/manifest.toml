@@ -3359,3 +3359,12 @@ owners = [
 ]
 description = "Pins wg-vizview-inside: the pi plugin's embedded VizView panel reads the live graph through a NEW read-only `viz_snapshot` daemon IPC request (the same one-request/one-response JSON-line protocol the TUI family uses). On a real installed binary + real daemon: the snapshot projects identity/status/edges with a bounded log tail, reflects a `wg log` transition on the next poll without any other drift, the embedded plugin build carries the viz modules with no mutating IPC command and a compat handshake matching `wg pi-plugin compat-version`, and the read-only `wg viz` ASCII fallback renders when the socket is unavailable. Credential-free; the interactive TUI panel (widget + ctx.ui.custom keyboard/mouse) is pinned by worksgood-pi/test/viz.test.ts against a fixture daemon socket."
 timeout_seconds = 180
+
+[[scenario]]
+name = "npm_pack_install_dry_run"
+script = "scenarios/npm_pack_install_dry_run.sh"
+owners = [
+    "implement-the-npm",
+]
+description = "Pins implement-the-npm (npm distribution first slice, docs/research/npm-distribution.md): make-packages.sh assembles @worksgood/cli + @worksgood/linux-x64-gnu (or darwin-arm64 on Apple silicon) from prebuilt binaries, verify-install.sh packs the tarballs and proves the whole slice in clean prefixes — zero install scripts in every package.json, the metapackage pulls the exact-pinned platform package AND @earendil-works/pi-coding-agent, the bin shim execs the real binaries (worksgood/wg/nex --version from the npm-installed layout), --ignore-scripts installs stay fully functional, WG_BINARY_PATH override execs the pointed-at binary (loud error on a missing target), a missing optional dep prints the cargo-install fallback instead of a stack trace, and npm publish --dry-run validates every package. Exit 77 = loud SKIP without prebuilt binaries, off-slice platform, or npm registry access. No publish, no npm token."
+timeout_seconds = 900
