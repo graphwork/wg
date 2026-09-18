@@ -5155,6 +5155,12 @@ pub struct ResourceManagementConfig {
     /// Optional root for per-agent Cargo-install/tmp scratch directories.
     #[serde(default)]
     pub build_tmp_root: Option<String>,
+    /// Optional override for the legacy pre-project scratch root (the
+    /// historical `std::env::temp_dir()/wg/build-tmp` location). Production
+    /// leaves this unset and sweeps the OS default; tests set it to an
+    /// isolated directory so fixtures cannot race the live reaper.
+    #[serde(default)]
+    pub legacy_build_tmp_root: Option<String>,
     #[serde(default = "default_disk_warning_bytes")]
     pub disk_warning_bytes: u64,
     #[serde(default = "default_disk_pause_build_bytes")]
@@ -5513,6 +5519,7 @@ impl Default for ResourceManagementConfig {
             disk_paths: Vec::new(),
             cargo_target_root: None,
             build_tmp_root: None,
+            legacy_build_tmp_root: None,
             disk_warning_bytes: default_disk_warning_bytes(),
             disk_pause_build_bytes: default_disk_pause_build_bytes(),
             disk_hard_refuse_bytes: default_disk_hard_refuse_bytes(),

@@ -656,7 +656,7 @@ fn configured_path_probes(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<Mou
     // OS temp directory. Existing leases remain an actual write/protection
     // surface until their guarded cleanup retires them; merely upgrading must
     // neither hide nor abandon an active legacy allocation.
-    let legacy_root = legacy_build_tmp_root();
+    let legacy_root = legacy_build_tmp_root(Some(cfg));
     if let Ok(ownership) = load_ownership(dir) {
         probes.extend(
             ownership
@@ -2328,7 +2328,13 @@ pub fn build_tmp_path_for_agent(
     build_tmp_root(dir, cfg).join(agent_id)
 }
 
-fn legacy_build_tmp_root() -> PathBuf {
+/// The legacy pre-project scratch root. Production sweeps the OS temp
+/// default; `cfg.legacy_build_tmp_root` overrides it (tests use this to
+/// isolate fixtures from the live daemon-swept location).
+fn legacy_build_tmp_root(cfg: Option<&ResourceManagementConfig>) -> PathBuf {
+    if let Some(override_root) = cfg.and_then(|cfg| cfg.legacy_build_tmp_root.as_deref()) {
+        return PathBuf::from(override_root);
+    }
     std::env::temp_dir().join("wg").join("build-tmp")
 }
 
@@ -2389,8 +2395,8 @@ mod tests {
         assert_eq!(a, first_dir.join("build-tmp/agent-1"));
         assert_eq!(b, second_dir.join("build-tmp/agent-1"));
         assert_ne!(a, b);
-        assert!(!a.starts_with(legacy_build_tmp_root()));
-        assert!(!b.starts_with(legacy_build_tmp_root()));
+        assert!(!a.starts_with(legacy_build_tmp_root(None)));
+        assert!(!b.starts_with(legacy_build_tmp_root(None)));
     }
 
     #[test]
@@ -2434,7 +2440,7 @@ mod tests {
         );
         assert_eq!(path, selected_wg.join("build-tmp/agent-daemon"));
         assert!(!path.starts_with(launcher.path()));
-        assert!(!path.starts_with(legacy_build_tmp_root()));
+        assert!(!path.starts_with(legacy_build_tmp_root(None)));
     }
 
     #[test]
@@ -2527,33 +2533,25 @@ mod tests {
     #[test]
     fn active_legacy_tmp_scratch_stays_visible_until_guarded_cleanup_is_safe() {
         // The legacy scratch root is `std::env::temp_dir()/wg/build-tmp` — a
-        // live, daemon-swept location on real machines. Run the fixture in an
-        // isolated temp root so the running daemon's legacy reaper and
-        // prior-run residue cannot race it. TMPDIR is process-global: hold
-        // the env lock and restore it on drop (including panics).
-        struct RestoreTmpDirEnv {
-            previous: Option<std::ffi::OsString>,
-        }
-        impl Drop for RestoreTmpDirEnv {
-            fn drop(&mut self) {
-                match &self.previous {
-                    Some(value) => unsafe { std::env::set_var("TMPDIR", value) },
-                    None => unsafe { std::env::remove_var("TMPDIR") },
-                }
-            }
-        }
-        let _env_guard = worksgood::test_helpers::env_lock();
-        let isolated_tmp = TempDir::new().unwrap();
-        let _restore = RestoreTmpDirEnv {
-            previous: std::env::var_os("TMPDIR"),
-        };
-        unsafe { std::env::set_var("TMPDIR", isolated_tmp.path()) };
-
+        // live, daemon-swept location on real machines. Isolate the fixture
+        // via the cfg override (not env mutation, which would leak into
+        // parallel tests): a private root the live reaper cannot see.
         let project = TempDir::new().unwrap();
+        let isolated_root = TempDir::new().unwrap();
+        let mut cfg = ResourceManagementConfig::default();
+        cfg.legacy_build_tmp_root = Some(
+            isolated_root
+                .path()
+                .join("wg")
+                .join("build-tmp")
+                .display()
+                .to_string(),
+        );
+        let cfg = cfg;
         let dir = project.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
         save_graph(&WorkGraph::new(), dir.join("graph.jsonl")).unwrap();
-        let legacy = legacy_build_tmp_root().join(format!(
+        let legacy = legacy_build_tmp_root(Some(&cfg)).join(format!(
             "compat-test-{}-{}",
             std::process::id(),
             project.path().file_name().unwrap().to_string_lossy()
@@ -2571,13 +2569,13 @@ mod tests {
             3_600,
         );
         register_owned_cache(&dir, cache.clone()).unwrap();
-        let probes = configured_path_probes(&dir, &ResourceManagementConfig::default());
+        let probes = configured_path_probes(&dir, &cfg);
         assert!(probes.iter().any(|probe| {
             probe.source == "legacy-owned-build-scratch"
                 && probe.path == legacy.display().to_string()
         }));
 
-        let active = cleanup_owned(&dir, &ResourceManagementConfig::default(), true).unwrap();
+        let active = cleanup_owned(&dir, &cfg, true).unwrap();
         assert!(legacy.exists());
         assert!(
             active
@@ -2590,7 +2588,7 @@ mod tests {
         cache.pid_start_epoch = None;
         cache.lease_expires_at = "2020-01-01T00:00:00Z".into();
         register_owned_cache(&dir, cache).unwrap();
-        let stale = cleanup_owned(&dir, &ResourceManagementConfig::default(), true).unwrap();
+        let stale = cleanup_owned(&dir, &cfg, true).unwrap();
         assert!(!legacy.exists());
         assert!(
             stale
