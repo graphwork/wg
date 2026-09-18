@@ -1292,6 +1292,26 @@ fn prepare_plan(
     })
 }
 
+/// Plain operator framing printed ahead of the role plan in the attended
+/// lifecycle. No emoji, no internal codenames: it states whose system this
+/// is, what each tier drives, that routes stay re-changeable, and that Pi
+/// owns authentication and model selection.
+fn operator_framing_lines() -> [&'static str; 4] {
+    [
+        "You are the operator: this system is yours, not a research artifact.",
+        "The graph is your durable record of the work done here.",
+        "Two tiers drive automation: the strong tier runs your workers and heavy generative roles; the weak tier runs the cheap, recoverable one-shots (evaluation, assignment, the completion-review FLIP reviewer, triage, compaction). Pointing both tiers at the same model is a valid choice.",
+        "Routes are choices, not commitments: re-change them any time with `wg config` or `wg profile select`; Pi owns authentication and model selection.",
+    ]
+}
+
+fn print_operator_framing<W: std::io::Write>(out: &mut W) -> std::io::Result<()> {
+    for line in operator_framing_lines() {
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
+}
+
 fn print_plan(plan: &ConciergePlan) -> Result<()> {
     println!("\nImmutable redacted plan:");
     println!("{}", serde_json::to_string_pretty(plan)?);
@@ -1714,6 +1734,10 @@ pub fn run_lifecycle(options: &LifecycleOptions) -> Result<()> {
     );
     let (mode, profile) = choose_mode_and_profile(&target, options)?;
     let prepared = prepare_plan(&target, &executable, options, mode.clone(), profile)?;
+    // Operator framing lands before the role plan so the attended flow reads
+    // as the operator's own tool, not a research artifact. Write errors (a
+    // closed stdout) must not abort an otherwise writable transaction.
+    let _ = print_operator_framing(&mut std::io::stdout().lock());
     print_plan(&prepared.public)?;
     if options.dry_run {
         println!(
@@ -2141,6 +2165,30 @@ pub fn run_tui(project_path: Option<&Path>) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn operator_framing_block_prints_in_full_before_the_plan() {
+        let mut buffer = Vec::new();
+        print_operator_framing(&mut buffer).unwrap();
+        let block = String::from_utf8(buffer).unwrap();
+        let lines: Vec<&str> = block.lines().collect();
+        assert_eq!(lines.len(), 4, "framing block is 4-6 plain lines: {block}");
+        // You are the operator; the graph is the durable record of work.
+        assert!(lines[0].contains("You are the operator"), "{block}");
+        assert!(lines[1].contains("durable record"), "{block}");
+        // Each tier's role split, with same-as-strong stated as valid.
+        assert!(lines[2].contains("strong tier"), "{block}");
+        assert!(lines[2].contains("weak tier"), "{block}");
+        assert!(lines[2].contains("valid choice"), "{block}");
+        // Routes are re-changeable; Pi owns authentication and model selection.
+        assert!(lines[3].contains("not commitments"), "{block}");
+        assert!(
+            lines[3].contains("Pi owns authentication and model selection"),
+            "{block}"
+        );
+        // Plain style: no emoji, no internal codenames left unexplained.
+        assert!(!block.chars().any(|c| c as u32 > 0x2600), "{block}");
+    }
 
     #[test]
     fn repository_resolution_is_nearest_and_never_global() {

@@ -98,6 +98,22 @@ mkdir -p ~/work/my-project && cd ~/work/my-project
 worksgood
 ```
 
+### This system is yours
+
+Once installed, this is your tool, not a research artifact:
+
+- The **graph** in your project is your durable record of the work — every
+  task, decision, and result stays there, readable at any time.
+- **Routes are choices, not commitments.** Change them whenever you like with
+  `wg config` or `wg profile select`; Pi owns authentication and model
+  selection, so WG only ever remembers the exact routes you picked.
+- The **strong tier** drives your workers and heavy generative roles. The
+  **weak tier** drives the cheap, recoverable one-shots (evaluation,
+  assignment, the FLIP completion reviewer, triage, compaction). Pointing
+  both tiers at the same model is a perfectly valid choice.
+- The **concierge** is the front door: install → Pi login → tiers → TUI.
+  Run `worksgood` and follow the prompts.
+
 Bare `worksgood` takes the simple attended path: it verifies `pi`, ensures the compatible WorksGood plugin, initializes a route-free graph when needed, and opens the TUI. Choose **New chat → Pi**; Pi owns login, provider/model selection, and model switching. No profile, worker/evaluator route, reasoning tier, dispatcher, or service is required or changed. Use `worksgood --without-ai` (or `wg init --no-agency && wg tui`) to open a graph without checking Pi.
 
 Repository-wide automation is a separate advanced choice. If you want unattended workers and evaluation and already know one exact Pi route, configure it with one paste and one confirmation:

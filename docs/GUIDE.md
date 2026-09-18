@@ -639,6 +639,13 @@ completion evidence → optionally score → optionally evolve**. Scoring observ
 receipt-backed `Done`; it never mutates task lifecycle or creates synthetic
 evaluator/FLIP graph tasks.
 
+> **Glossary — two different "FLIP"s.** (1) The *completion-review FLIP* is a
+> two-phase reviewer (`flip_inference` / `flip_comparison` roles) that runs by
+> default on the weak tier as part of terminal-completion review. (2)
+> `agency.flip_enabled` is a separate opt-in rollout observation feature and
+> has nothing to do with those FLIP roles' routing. See also
+> docs/AGENCY.md §4b for the legacy FLIP fidelity metric.
+
 ```bash
 wg assign --auto <task>                      # explicit roster ranking/binding
 wg evaluate run <done-task> --dry-run        # exact Pi route/reasoning/evidence, no write

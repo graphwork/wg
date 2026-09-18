@@ -269,6 +269,14 @@ Scores propagate to three levels:
 
 ### 4b. Legacy FLIP records — Fidelity via Latent Intent Probing
 
+> **Glossary — two different "FLIP"s.** (1) The *completion-review FLIP* is a
+> two-phase reviewer (`flip_inference` / `flip_comparison` roles) that runs by
+> default on the weak tier as part of terminal-completion review. (2)
+> `agency.flip_enabled` is a separate opt-in rollout observation feature and
+> has nothing to do with those FLIP roles' routing. This section is about a
+> third, historical meaning: the legacy FLIP *fidelity metric* for retained
+> records (see also docs/GUIDE.md, the agency-loop glossary note).
+
 The following describes the historical metric for interpreting retained
 records. New `.flip-*` tasks are not created or dispatched.
 

@@ -2602,6 +2602,13 @@ description = "Pins the primary concierge one-model contract through the real at
 timeout_seconds = 300
 
 [[scenario]]
+name = "concierge_operator_framing"
+script = "scenarios/concierge_operator_framing.sh"
+owners = ["operator-framing-docs"]
+description = "Pins the operator-framing contract of the attended worksgood lifecycle: before the role plan is printed, run_lifecycle emits a plain (no emoji, no internal codenames) framing block — you are the operator and the graph is your durable record of work; the strong tier drives workers and heavy generative roles while the weak tier drives the cheap recoverable one-shots with same-as-strong a valid choice; routes are choices, not commitments, re-changeable any time via wg config / wg profile select because Pi owns authentication and model selection. Exercised through the one-model dry-run fixtures (fake pi on PATH, isolated HOME) asserting the full block appears before 'Immutable redacted plan:' with no state written."
+timeout_seconds = 300
+
+[[scenario]]
 name = "worksgood_default_release_contract"
 script = "../install/release_contract.sh"
 owners = ["promote-worksgood-default-install"]
