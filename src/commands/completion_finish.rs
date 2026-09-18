@@ -423,12 +423,13 @@ pub(crate) fn run_at_with_checks(
     // Project-local build scratch may intentionally place TMPDIR under .wg.
     // Completion submission correctly refuses control-plane-sourced manifests,
     // so keep these small transient handoff files outside the repository rather
-    // than weakening that provenance boundary.
+    // than weakening that provenance boundary. Use the dedicated wg cache
+    // handoff directory (not a project-parent walk, which lands in $HOME and
+    // leaks corpse files on killed attempts); the cache root honors XDG_CACHE_HOME.
     let temp = if configured_temp.starts_with(project_root) {
-        project_root
-            .parent()
-            .context("project-local TMPDIR has no safe parent")?
-            .to_path_buf()
+        let handoff = worksgood::pi_plugin::wg_cache_dir().join("completion-handoff");
+        fs::create_dir_all(&handoff)?;
+        handoff
     } else {
         configured_temp
     };
