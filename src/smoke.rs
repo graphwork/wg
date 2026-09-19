@@ -1076,7 +1076,7 @@ fn signal_owned_process(process: &OwnedProcess, run_id: &str, signal: libc::c_in
 }
 
 #[cfg(not(unix))]
-fn signal_owned_process(_process: &OwnedProcess, _run_id: &str, _signal: libc::c_int) {}
+fn signal_owned_process(_process: &OwnedProcess, _run_id: &str, _signal: i32) {}
 
 #[cfg(unix)]
 fn signal_registered_process(process: &OwnedProcess, signal: libc::c_int) {
@@ -1097,7 +1097,7 @@ fn signal_registered_process(process: &OwnedProcess, signal: libc::c_int) {
 }
 
 #[cfg(not(unix))]
-fn signal_registered_process(_process: &OwnedProcess, _signal: libc::c_int) {}
+fn signal_registered_process(_process: &OwnedProcess, _signal: i32) {}
 
 fn authorized_owned_processes(
     run_id: &str,

@@ -148,11 +148,11 @@ model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.creator]
-model = "pi:lunaroute/glm-5.3-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "xhigh"
 
 [models.default]
-model = "pi:lunaroute/glm-5.3-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "high"
 
 [models.evaluator]
@@ -160,7 +160,7 @@ model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.evolver]
-model = "pi:lunaroute/glm-5.3-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "xhigh"
 
 [models.flip_comparison]
@@ -172,7 +172,7 @@ model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.merger]
-model = "pi:lunaroute/glm-5.3-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "xhigh"
 
 [models.placer]
@@ -184,7 +184,7 @@ model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.task_agent]
-model = "pi:lunaroute/glm-5.3-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "high"
 
 [models.triage]
@@ -192,7 +192,7 @@ model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "low"
 
 [models.verification]
-model = "pi:lunaroute/glm-5.3-flash"
+model = "pi:lunaroute/deepseek-4.1-flash"
 reasoning = "xhigh"
 
 [project]
@@ -204,8 +204,8 @@ snapshot_agent_output = false
 [tiers]
 fast = "pi:lunaroute/deepseek-4.1-flash"
 fast_reasoning = "low"
-premium = "pi:lunaroute/glm-5.3-flash"
-standard = "pi:lunaroute/glm-5.3-flash"
+premium = "pi:lunaroute/deepseek-4.1-flash"
+standard = "pi:lunaroute/deepseek-4.1-flash"
 
 [tui]
 chat_history = true
