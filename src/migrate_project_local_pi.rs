@@ -38,7 +38,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::IsTerminal;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::atomic_file::write_atomic;
@@ -490,7 +489,15 @@ fn record_preserved_roots(report: &mut ProjectLocalPiCleanupReport) -> Result<()
 fn stat_metadata(path: &Path) -> (bool, Option<u32>, Option<String>) {
     match fs::metadata(path) {
         Ok(meta) => {
-            let mode = meta.permissions().mode();
+            // `PermissionsExt::mode` is Unix-only; on other platforms the octal
+            // mode is not part of the file identity we record.
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                Some(meta.permissions().mode())
+            };
+            #[cfg(not(unix))]
+            let mode = None;
             let mtime = meta
                 .modified()
                 .ok()
@@ -500,7 +507,7 @@ fn stat_metadata(path: &Path) -> (bool, Option<u32>, Option<String>) {
                         .map(|dt| dt.to_rfc3339())
                         .unwrap_or_default()
                 });
-            (true, Some(mode), mtime)
+            (true, mode, mtime)
         }
         Err(_) => (false, None, None),
     }
@@ -863,9 +870,15 @@ fn assert_preserved_unchanged(report: &ProjectLocalPiCleanupReport) -> Result<()
 }
 
 fn set_mode_0700(path: &Path) -> Result<()> {
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o700);
-    fs::set_permissions(path, perms)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(path, perms)?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -873,9 +886,13 @@ fn set_mode_0600(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(path, perms)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
     Ok(())
 }
 
@@ -973,6 +990,8 @@ fn emit_report(report: &ProjectLocalPiCleanupReport, json: bool, dry_run: bool) 
 mod tests {
     use super::*;
     use serial_test::serial;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     struct EnvRestore {

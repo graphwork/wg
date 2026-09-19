@@ -1057,7 +1057,10 @@ fn scan_registered_processes(_owner_dir: &Path) -> Vec<OwnedProcess> {
     Vec::new()
 }
 
-#[cfg(unix)]
+// Owned-process selection re-validates the unguessable run-id environment
+// marker via `/proc`, which only exists on Linux, so this helper is Linux-only
+// even though it lives beside the portable Unix signal code.
+#[cfg(target_os = "linux")]
 fn signal_owned_process(process: &OwnedProcess, run_id: &str, signal: libc::c_int) {
     let Some(current) = process_info(process.pid) else {
         return;
@@ -1075,7 +1078,7 @@ fn signal_owned_process(process: &OwnedProcess, run_id: &str, signal: libc::c_in
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 fn signal_owned_process(_process: &OwnedProcess, _run_id: &str, _signal: i32) {}
 
 #[cfg(unix)]
@@ -1158,6 +1161,18 @@ fn write_cleanup_diagnostics(
     let _ = std::fs::write(path, body);
 }
 
+// Signal numbers are supplied to the (possibly stubbed) platform signal
+// helpers. `libc` is only linked on Unix, so the non-Unix constants exist
+// purely to satisfy the call sites that compile to no-op stubs there.
+#[cfg(unix)]
+const SMOKE_SIGTERM: i32 = libc::SIGTERM;
+#[cfg(unix)]
+const SMOKE_SIGKILL: i32 = libc::SIGKILL;
+#[cfg(not(unix))]
+const SMOKE_SIGTERM: i32 = 15;
+#[cfg(not(unix))]
+const SMOKE_SIGKILL: i32 = 9;
+
 fn terminate_owned_processes(
     run_id: &str,
     scenario: &str,
@@ -1172,9 +1187,9 @@ fn terminate_owned_processes(
         for (key, (process, registered)) in &processes {
             seen.entry(*key).or_insert_with(|| process.clone());
             if *registered {
-                signal_registered_process(process, libc::SIGTERM);
+                signal_registered_process(process, SMOKE_SIGTERM);
             } else {
-                signal_owned_process(process, run_id, libc::SIGTERM);
+                signal_owned_process(process, run_id, SMOKE_SIGTERM);
             }
         }
         if reap_children {
@@ -1192,9 +1207,9 @@ fn terminate_owned_processes(
         for (key, (process, registered)) in &processes {
             seen.entry(*key).or_insert_with(|| process.clone());
             if *registered {
-                signal_registered_process(process, libc::SIGKILL);
+                signal_registered_process(process, SMOKE_SIGKILL);
             } else {
-                signal_owned_process(process, run_id, libc::SIGKILL);
+                signal_owned_process(process, run_id, SMOKE_SIGKILL);
             }
         }
         if reap_children {
