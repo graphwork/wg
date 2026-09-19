@@ -67,15 +67,60 @@ fn filesystem_identity(path: &Path) -> Result<FilesystemIdentity> {
 
 #[cfg(windows)]
 fn filesystem_identity(path: &Path) -> Result<FilesystemIdentity> {
-    use std::os::windows::fs::MetadataExt;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        GetFileInformationByHandle, OPEN_EXISTING,
+    };
+
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("inspect owned cache identity {}", path.display()))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         anyhow::bail!("owned cache is not a real directory: {}", path.display());
     }
+
+    // `std::os::windows::fs::MetadataExt::volume_serial_number`/`file_index`
+    // are unstable (`windows_by_handle`), so query the stable Win32 API for the
+    // same volume-serial + file-index identity, opening without following a
+    // reparse point and without requesting read access.
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` is NUL-terminated for the duration of the call; the
+    // returned handle (when valid) is closed exactly once below.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("open owned cache identity {}", path.display()));
+    }
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `handle` is a live file handle and `info` is a valid out-pointer.
+    let queried = unsafe { GetFileInformationByHandle(handle, &mut info) };
+    // SAFETY: `handle` came from CreateFileW above and is not used afterwards.
+    unsafe {
+        CloseHandle(handle);
+    }
+    if queried == 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("read owned cache identity {}", path.display()));
+    }
     Ok(FilesystemIdentity {
-        volume: metadata.volume_serial_number(),
-        file_index: metadata.file_index(),
+        volume: Some(info.dwVolumeSerialNumber),
+        file_index: Some(((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64),
     })
 }
 

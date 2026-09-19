@@ -114,10 +114,25 @@ pub fn install_daemon_signal_handlers() -> i32 {
     use std::os::unix::io::RawFd;
 
     let mut fds: [RawFd; 2] = [-1, -1];
-    // pipe2 with CLOEXEC so agent children don't inherit the pipe.
-    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    // `pipe` + `fcntl` rather than Linux-only `pipe2`. Both ends get
+    // O_NONBLOCK and FD_CLOEXEC so agent children don't inherit the pipe.
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if rc != 0 {
         return -1;
+    }
+    for fd in fds {
+        // SAFETY: `fd` is a fresh pipe end owned by this function; fcntl only
+        // queries/sets file-status flags and the fd stays open on failure.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+                return -1;
+            }
+            let cflags = libc::fcntl(fd, libc::F_GETFD);
+            if cflags < 0 || libc::fcntl(fd, libc::F_SETFD, cflags | libc::FD_CLOEXEC) < 0 {
+                return -1;
+            }
+        }
     }
     let read_fd = fds[0];
     let write_fd = fds[1];

@@ -735,12 +735,23 @@ fn attest_native_child_of_wrapper(child_pid: u32, wrapper_pid: u32) -> Result<()
             );
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         let caller_parent = unsafe { libc::getppid() as u32 };
         if caller_parent != wrapper_pid || child_pid == wrapper_pid {
             anyhow::bail!(
                 "invalid_process_topology: bootstrap caller is not owned by wrapper PID {wrapper_pid} or child is not distinct"
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows has no portable parent-PID query at this layer. Enforce the
+        // invariant we can still check: the native child must be distinct from
+        // the wrapper.
+        if child_pid == wrapper_pid {
+            anyhow::bail!(
+                "invalid_process_topology: native Pi PID {child_pid} is not distinct from wrapper PID {wrapper_pid}"
             );
         }
     }
@@ -875,7 +886,7 @@ fn attest_worker_descends_from_current_process(watchdog: &PiWatchdog) -> Result<
             wrapper.map_or_else(|| "none".into(), |value| value.pid.to_string())
         );
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         let parent = unsafe { libc::getppid() as u32 };
         if parent != native.pid && wrapper.is_none_or(|value| value.pid != parent) {
@@ -884,6 +895,14 @@ fn attest_worker_descends_from_current_process(watchdog: &PiWatchdog) -> Result<
                 watchdog.state().process_epoch
             );
         }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows has no portable parent-PID query at this layer; the Linux
+        // /proc walk and the Unix getppid check are unavailable, so accept the
+        // caller lineage (the watchdog's own state fence still bounds actors).
+        let _ = (native, wrapper);
         Ok(())
     }
 }
