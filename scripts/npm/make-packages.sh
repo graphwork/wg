@@ -92,6 +92,13 @@ else
   [[ -n "${ARCHIVE_DIR}" ]] || { echo "make-packages.sh: --archive-dir is required (or use --bin-dir/--npm-platform)" >&2; usage >&2; exit 2; }
 fi
 
+# `npm pack --pack-destination` runs after `cd`-ing into each package dir, so a
+# relative out-dir would be resolved against that dir and fail. Pin it to an
+# absolute path now (relative args are interpreted against the invocation cwd).
+if [[ "${OUT_DIR}" != /* ]]; then
+  OUT_DIR="$(pwd)/${OUT_DIR}"
+fi
+
 pkg_index_by_target() {
   local i
   for i in "${!SLICE_TARGETS[@]}"; do
@@ -130,7 +137,8 @@ finish_package() {
   # ever. Guard the invariant instead of trusting the templates.
   local dir="$1"
   node -e '
-    const pkg = require(process.argv[1]);
+    const fs = require("fs");
+    const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
     const s = pkg.scripts || {};
     const forbidden = Object.keys(s).filter((k) =>
       /^(pre|post)?install$|^(pre|post)?prepare$|^prepack$|^postpack$/.test(k));
