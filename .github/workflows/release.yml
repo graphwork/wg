@@ -612,7 +612,7 @@ jobs:
           merge-multiple: true
 
       - name: Run npm resolver unit tests
-        run: node --test scripts/npm/test/
+        run: node --test scripts/npm/test/*.test.js
 
       - name: Build npm packages from release archives
         env:
