@@ -20,8 +20,9 @@ use crate::completion_review::{
 };
 use crate::config::{Config, DispatchRole};
 use crate::json_extract::extract_json;
+use crate::service::agency_retry::{AgencyRetryFailure, AgencyRetryStats};
 use crate::service::llm::{
-    AgencyDispatch, resolve_agency_dispatch, run_exact_agency_dispatch_call,
+    AgencyDispatch, LlmCallResult, resolve_agency_dispatch, run_exact_agency_dispatch_call,
 };
 use crate::simple_land::ReviewVerdict;
 use anyhow::{Result, bail};
@@ -53,6 +54,7 @@ pub struct ExactModelReviewer<'a> {
     artifact_store: crate::completion_manifest::CompletionArtifactStore,
     timeout_secs: u64,
     last_execution: Option<ReviewExecution>,
+    last_retry: Option<AgencyRetryStats>,
 }
 
 impl<'a> ExactModelReviewer<'a> {
@@ -102,12 +104,25 @@ impl<'a> ExactModelReviewer<'a> {
             artifact_store,
             timeout_secs: completion_review_timeout_secs(),
             last_execution: None,
+            last_retry: None,
         })
     }
 
     pub fn with_timeout_secs(mut self, timeout_secs: u64) -> Self {
         self.timeout_secs = timeout_secs;
         self
+    }
+
+    /// Fold one call's retry accounting into this reviewer's running total so a
+    /// FLIP two-phase pair reports the sum of both phases.
+    fn record_retry(&mut self, stats: &AgencyRetryStats) {
+        if stats.attempts == 0 {
+            return;
+        }
+        match self.last_retry.as_mut() {
+            Some(existing) => existing.merge(stats),
+            None => self.last_retry = Some(stats.clone()),
+        }
     }
 
     fn review_flip(
@@ -121,7 +136,7 @@ impl<'a> ExactModelReviewer<'a> {
         })?;
         let comparison = self
             .comparison_dispatch
-            .as_ref()
+            .clone()
             .expect("FLIP construction requires comparison dispatch");
         let blind_input = build_flip_blind_input(bundle);
         let outputs = blind_input.outputs.clone();
@@ -141,17 +156,20 @@ impl<'a> ExactModelReviewer<'a> {
         )?;
         let inference_started = chrono::Utc::now().to_rfc3339();
         let inference_execution_id = format!("flip-inference:{}", uuid::Uuid::now_v7());
-        let inference = run_exact_agency_dispatch_call(
+        let (inference_result, inference_retry) = run_exact_with_retry(
             self.config,
             &self.dispatch,
             &inference_prompt,
             self.timeout_secs,
-        )
-        .map_err(|error| ReviewerUnavailable {
+        );
+        self.record_retry(&inference_retry);
+        let inference = inference_result.map_err(|error| ReviewerUnavailable {
             code: "flip.inference_route_unavailable".into(),
             message: format!(
-                "exact FLIP inference route {:?} failed without fallback: {error:#}",
-                self.dispatch.raw_spec
+                "exact FLIP inference route {:?} failed without fallback after {} attempt(s) (classification={}): {error:#}",
+                self.dispatch.raw_spec,
+                inference_retry.attempts.max(1),
+                inference_retry.final_classification
             ),
         })?;
         let inference_finished = chrono::Utc::now().to_rfc3339();
@@ -234,17 +252,21 @@ impl<'a> ExactModelReviewer<'a> {
         // process (`--no-session`); no phase-I process or context is reusable.
         let comparison_started = chrono::Utc::now().to_rfc3339();
         let comparison_execution_id = format!("flip-comparison:{}", uuid::Uuid::now_v7());
-        let compared = run_exact_agency_dispatch_call(
+        let (compared_result, comparison_retry) = run_exact_with_retry(
             self.config,
-            comparison,
+            &comparison,
             &comparison_prompt,
             self.timeout_secs,
-        )
-        .map_err(|error| ReviewerUnavailable {
+        );
+        self.record_retry(&comparison_retry);
+        let compared = compared_result.map_err(|error| ReviewerUnavailable {
             code: "flip.comparison_route_unavailable".into(),
             message: format!(
-                "exact FLIP comparison route {:?} failed without fallback after hypothesis {} was persisted: {error:#}",
-                comparison.raw_spec, hypothesis_object.content_digest
+                "exact FLIP comparison route {:?} failed without fallback after {} attempt(s) (classification={}) after hypothesis {} was persisted: {error:#}",
+                comparison.raw_spec,
+                comparison_retry.attempts.max(1),
+                comparison_retry.final_classification,
+                hypothesis_object.content_digest
             ),
         })?;
         let comparison_finished = chrono::Utc::now().to_rfc3339();
@@ -269,7 +291,7 @@ impl<'a> ExactModelReviewer<'a> {
             phase: FlipPhase::Comparison,
             binding,
             candidate_digest: bundle.manifest_digest.clone(),
-            route: route_snapshot(comparison),
+            route: route_snapshot(&comparison),
             input_schema: FLIP_COMPARISON_INPUT_SCHEMA.into(),
             input_digest: comparison_input_object.content_digest.clone(),
             input: comparison_input_object,
@@ -315,6 +337,7 @@ impl<'a> ExactModelReviewer<'a> {
                 inference.token_usage.as_ref(),
                 compared.token_usage.as_ref(),
             ),
+            retry: None,
         });
         Ok(review)
     }
@@ -340,7 +363,20 @@ impl ManifestReviewer for ExactModelReviewer<'_> {
     }
 
     fn take_execution(&mut self) -> Option<ReviewExecution> {
-        self.last_execution.take()
+        let retry = self.last_retry.take();
+        match self.last_execution.take() {
+            Some(mut execution) => {
+                if execution.retry.is_none() {
+                    execution.retry = retry;
+                }
+                Some(execution)
+            }
+            None => retry.map(|retry| ReviewExecution {
+                executor: self.dispatch.handler.as_str().to_string(),
+                usage: None,
+                retry: Some(retry),
+            }),
+        }
     }
 
     fn review(
@@ -372,20 +408,48 @@ impl ManifestReviewer for ExactModelReviewer<'_> {
         self.last_execution = Some(ReviewExecution {
             executor: self.dispatch.handler.as_str().to_string(),
             usage: None,
+            retry: None,
         });
-        let result =
-            run_exact_agency_dispatch_call(self.config, &self.dispatch, &prompt, self.timeout_secs)
-                .map_err(|error| ReviewerUnavailable {
-                    code: "reviewer.route_unavailable".to_string(),
-                    message: format!(
-                        "exact route {:?} failed without fallback: {error:#}",
-                        self.dispatch.raw_spec
-                    ),
-                })?;
+        let (result, retry) =
+            run_exact_with_retry(self.config, &self.dispatch, &prompt, self.timeout_secs);
+        self.record_retry(&retry);
+        let result = result.map_err(|error| ReviewerUnavailable {
+            code: "reviewer.route_unavailable".to_string(),
+            message: format!(
+                "exact route {:?} failed without fallback after {} attempt(s) (classification={}): {error:#}",
+                self.dispatch.raw_spec,
+                retry.attempts.max(1),
+                retry.final_classification
+            ),
+        })?;
         if let Some(execution) = self.last_execution.as_mut() {
             execution.usage = result.token_usage.as_ref().map(review_usage);
         }
         parse_semantic_review(&result.text)
+    }
+}
+
+/// Run one already-resolved agency route under the bounded retry policy and
+/// report both the result and the retry accounting, so a failed call can still
+/// surface how many attempts were made before it became unavailable.
+fn run_exact_with_retry(
+    config: &Config,
+    dispatch: &AgencyDispatch,
+    prompt: &str,
+    timeout_secs: u64,
+) -> (Result<LlmCallResult, anyhow::Error>, AgencyRetryStats) {
+    match run_exact_agency_dispatch_call(config, dispatch, prompt, timeout_secs) {
+        Ok(result) => {
+            let stats = result.retry.clone();
+            (Ok(result), stats)
+        }
+        Err(error) => {
+            let stats = error
+                .downcast_ref::<AgencyRetryFailure>()
+                .map(|failure| failure.stats.clone())
+                .unwrap_or_default();
+            (Err(error), stats)
+        }
     }
 }
 

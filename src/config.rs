@@ -4809,6 +4809,23 @@ fn default_source_provider_retry_cap() -> u64 {
     300
 }
 
+/// Agency one-shots are short, side-effect-free inferences, so the retry budget
+/// is tighter than the source-provider policy: at most two retries, one-to-five
+/// second exponential delay, and a one-minute total window. Enabled by default.
+fn default_agency_retry() -> SourceProviderRetryConfig {
+    SourceProviderRetryConfig {
+        enabled: true,
+        max_automatic_retries: 2,
+        recovery_window_seconds: 60,
+        base_seconds: 1,
+        delay_cap_seconds: 5,
+    }
+}
+
+fn is_default_agency_retry(value: &SourceProviderRetryConfig) -> bool {
+    value == &default_agency_retry()
+}
+
 /// Coordinator-specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoordinatorConfig {
@@ -4868,6 +4885,20 @@ pub struct CoordinatorConfig {
     /// tick; it never opens the retired PlannerStore.
     #[serde(default, skip_serializing_if = "SourceProviderRetryConfig::is_default")]
     pub source_provider_retry: SourceProviderRetryConfig,
+
+    /// Bounded retry for transient provider failures on the agency one-shot
+    /// path (FLIP inference/comparison, Eval, assign/evaluate, and the
+    /// content-review one-shot). These calls are side-effect-free single
+    /// inferences, so retrying a 429/5xx/timeout can never turn an outage into
+    /// an acceptance: exhaustion still yields the existing fail-closed
+    /// `reviewer_unavailable` outcome. Unlike `source_provider_retry` this is
+    /// enabled by default, because a throttled reviewer is a recoverable
+    /// infrastructure blip, not a semantic rejection.
+    #[serde(
+        default = "default_agency_retry",
+        skip_serializing_if = "is_default_agency_retry"
+    )]
+    pub agency_retry: SourceProviderRetryConfig,
 
     /// Executor to use for spawned agents.
     /// When `None` (not set in config), `effective_executor()` auto-detects
@@ -5574,6 +5605,7 @@ impl Default for CoordinatorConfig {
             graph_watch_debounce_ms: default_graph_watch_debounce_ms(),
             convergence: ConvergenceConfig::default(),
             source_provider_retry: SourceProviderRetryConfig::default(),
+            agency_retry: default_agency_retry(),
             executor: None,
             model: None,
             provider: None,
@@ -7219,6 +7251,13 @@ impl Config {
         if let Err(error) = self.coordinator.source_provider_retry.validate() {
             result.errors.push(ConfigDiagnostic {
                 rule: "source-provider-retry-bounds".into(),
+                message: error,
+                fix: "Keep retries <= 3, window <= 900 seconds, and 1 <= base delay <= delay cap <= window.".into(),
+            });
+        }
+        if let Err(error) = self.coordinator.agency_retry.validate() {
+            result.errors.push(ConfigDiagnostic {
+                rule: "agency-retry-bounds".into(),
                 message: error,
                 fix: "Keep retries <= 3, window <= 900 seconds, and 1 <= base delay <= delay cap <= window.".into(),
             });

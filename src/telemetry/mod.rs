@@ -218,6 +218,113 @@ fn status_reason(status: u16, error_type: Option<&str>) -> FailureReason {
     }
 }
 
+/// Extract an HTTP status echoed by provider prose. Shared by the raw-stream
+/// classifier and the agency one-shot call path so both read the same markers.
+///
+/// Recognizes, in order:
+/// - a structured `api_error_status` / `"status"` / `"code"` field embedded in
+///   a provider envelope serialized into the message;
+/// - the `API error 429` / `HTTP 503` prose markers;
+/// - a bare leading 3-digit HTTP status (`429 CONCURRENT_REQUEST_LIMIT_EXCEEDED`).
+///
+/// Only 4xx/5xx codes are returned, so a model or byte count in the text cannot
+/// masquerade as a provider status.
+pub fn extract_http_status_from_text(text: &str) -> Option<u16> {
+    let plausible = |code: u16| (400..=599).contains(&code);
+    // 1. Structured fields embedded in the text.
+    for key in ["api_error_status", "\"status\"", "\"code\""] {
+        if let Some(pos) = text.find(key) {
+            let after = &text[pos + key.len()..];
+            let digits: String = after
+                .trim_start_matches(|c: char| c == ':' || c == '=' || c == '"' || c == ' ')
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            if let Ok(code) = digits.parse::<u16>()
+                && plausible(code)
+            {
+                return Some(code);
+            }
+        }
+    }
+    // 2. Prose markers.
+    for marker in ["API error ", "HTTP "] {
+        let lower = text.to_ascii_lowercase();
+        let marker_lower = marker.to_ascii_lowercase();
+        if let Some(pos) = lower.find(&marker_lower) {
+            let after = &text[pos + marker.len()..];
+            let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(code) = digits.parse::<u16>()
+                && plausible(code)
+            {
+                return Some(code);
+            }
+        }
+    }
+    // 3. A bare leading status code on any line/segment.
+    for segment in text.split(['\n', ':', ',', ';']) {
+        let digits: String = segment
+            .trim_start()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if digits.len() == 3
+            && let Ok(code) = digits.parse::<u16>()
+            && plausible(code)
+        {
+            return Some(code);
+        }
+    }
+    None
+}
+
+/// Classify a provider failure from captured error text alone.
+///
+/// This is the shared taxonomy seam for callers without a `raw_stream.jsonl`
+/// on disk — the agency/review one-shot path carries provider errors as text.
+/// It reuses the same OpenRouter envelope parser and confidence ladder as the
+/// source dispatcher (`failure_signal_from_envelope` /
+/// `failure_signal_from_evidence`), so the two paths cannot drift.
+pub fn classify_provider_signal_from_text(
+    text: &str,
+    executor: ExecutorKind,
+    route: Option<String>,
+) -> FailureSignal {
+    // Latest structured envelope wins; some handlers echo the provider body
+    // with a logger label prefix, so also try the suffix at `{"error"`.
+    for line in text.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let candidates = std::iter::once(line).chain(
+            line.find("{\"error\"")
+                .filter(|position| *position > 0)
+                .map(|position| &line[position..]),
+        );
+        for candidate in candidates {
+            if let Some(signal) =
+                failure_signal_from_envelope(candidate, None, executor, route.clone())
+                && (signal.http_status.is_some()
+                    || signal.error_type.is_some()
+                    || signal.reason != FailureReason::Unknown)
+            {
+                return signal;
+            }
+        }
+    }
+    let status = extract_http_status_from_text(text);
+    failure_signal_from_evidence(
+        status,
+        None,
+        None,
+        parse_retry_after_text(text),
+        text,
+        executor,
+        route,
+    )
+}
+
 /// Extract an echoed `Retry-After:` or `retry_after:` number from prose.
 pub fn parse_retry_after_text(text: &str) -> Option<f64> {
     let lower = text.to_ascii_lowercase();

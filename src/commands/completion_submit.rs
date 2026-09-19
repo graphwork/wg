@@ -1113,6 +1113,7 @@ fn record_review_outcome(
                     model_route: stored.receipt.model_route.clone(),
                     executor: stored.receipt.executor.clone(),
                     usage: stored.receipt.usage.clone(),
+                    retry: stored.receipt.retry.clone(),
                     duration_ms: stored.receipt.duration_ms,
                     created_at: stored.receipt.created_at.clone(),
                 },

@@ -8715,6 +8715,7 @@ fn tui_review_activity_exposes_current_binding_route_failure_usage_timing_and_fi
                 cache_creation_input_tokens: 0,
                 cost_usd: 0.004,
             }),
+            retry: None,
             duration_ms: Some(17),
             created_at: "2026-08-09T00:00:00Z".to_string(),
         },
@@ -28411,6 +28412,7 @@ mod hud_tests {
                 model_route: Some("pi:lunaroute:deepseek-4.1-flash".to_string()),
                 executor: Some("pi-two-phase".to_string()),
                 usage: None,
+                retry: None,
                 duration_ms: Some(6443),
                 created_at: "2026-09-16T00:00:00Z".to_string(),
             }];

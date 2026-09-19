@@ -6,6 +6,7 @@
 //! - Executor configuration for spawning agents
 //! - Agent registry for tracking running agents
 
+pub mod agency_retry;
 pub mod chat_compactor;
 pub mod convergence;
 pub mod coordinator_prompt;

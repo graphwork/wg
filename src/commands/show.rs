@@ -1184,6 +1184,23 @@ fn print_human_readable(details: &TaskDetails) {
                     usage.cost_usd
                 );
             }
+            if let Some(retry) = activity.retry.as_ref() {
+                println!(
+                    "    provider retry: attempts={} retries={} classification={}{}{}",
+                    retry.attempts,
+                    retry.retries,
+                    retry.final_classification,
+                    if retry.exhausted {
+                        " exhausted=true"
+                    } else {
+                        ""
+                    },
+                    retry
+                        .retry_after_seconds
+                        .map(|seconds| format!(" retry-after={seconds}s"))
+                        .unwrap_or_default()
+                );
+            }
             for finding in &activity.findings {
                 println!(
                     "    finding [{}]: {}{}",

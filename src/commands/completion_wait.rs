@@ -465,6 +465,7 @@ mod tests {
                 model_route: Some("pi:test".to_string()),
                 executor: Some("pi".to_string()),
                 usage: None,
+                retry: None,
                 duration_ms: Some(1),
                 created_at: "2026-01-01T00:00:00Z".to_string(),
             });
