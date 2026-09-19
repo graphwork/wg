@@ -19,9 +19,10 @@ Topology B the SDK Node host). See
 | Surface | What |
 |---|---|
 | **Tools** (LLM/human callable) | `wg_capabilities` (effective trusted/scoped/read-only policy), `wg_ready`, `wg_show`, `wg_add` (visible draft), `wg_publish` (explicit release), `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run` |
-| **Commands** | `/wg ready\|graph\|show\|run\|add\|done\|fail`, `/wg-viz` (live work-graph panel), `/wg-model <provider:id>` (warm in-session swap) |
+| **Commands** | `/wg ready\|graph\|show\|run\|add\|done\|fail`, `/wg-viz` (live work-graph panel), `/wg-model <provider:id>` (warm in-session swap), `/wg-wake [on\|off]` (completion-event wakeups) |
 | **VizView panel** | `/wg-viz` opens a read-only live work-graph panel via `ctx.ui.custom()` (TUI mode only): dependency tree, keyboard selection, expand/collapse, the TUI HUD's selected-task → detail-lines model, log tail; mouse clicks where the host pi-tui dispatches mouse to custom components. A passive widget (`ctx.ui.setWidget("wg-viz")`) shows a one-line in-progress/ready/blocked/done/failed summary. Data comes from the daemon IPC socket (read-only `viz_snapshot` request, bounded poll with change-guard); when the daemon is unavailable the panel falls back to the read-only `wg viz --all --no-tui` ASCII output and the widget silently clears. **Slice boundary (first slice):** deferred — filters, agency lanes UI, chat surfaces, back-edge arc rendering, scrollback search, and HUD-only detail sections (admission waiting, agency identity, route receipts). Read-only by construction: the panel never mutates graph state. |
 | **Model bridge** | `registerProvider(WG endpoints/keys)` + managed-chat `model_select` → WG `CoordinatorState.model_override` write-back |
+| **Completion wakeups** | A bounded poll of the graph (`wg list --json`, enriched with `wg show <id> --json`) tells the live session when a task reaches a terminal/needs-attention transition. The wake is injected with `pi.sendMessage` (`triggerTurn` when the session is idle; queued as a follow-up when busy) and pinged with `ctx.ui.notify`. A persisted per-session cursor (`<sessionFile>.wg-wake-cursor.json`) makes each transition announce exactly once and lets several sessions attached to one daemon keep independent cursors. Safe defaults: failures always, completions top-level only, `/wg-wake off` mutes a session. Read-only; the daemon-push/event-stream path is the documented follow-up. See [design-pi-completion-wakeups.md](../docs/design-pi-completion-wakeups.md). |
 
 WG context (`WG_TASK_ID`, `WG_AGENT_ID`, `WG_CHAT_ID`, `WG_CHAT_REF`,
 `WG_STATE_DIR`, `WG_DAEMON_SOCKET`, `WG_PROJECT_DIR`) rides in via environment
@@ -46,6 +47,7 @@ src/viz-snapshot.ts   daemon-socket client: read-only viz_snapshot + bounded pol
 src/viz-readmodel.ts  pure tree/detail/counts read-model (mirrors src/tui/viz_viewer/state.rs vocabulary)
 src/viz-panel.ts      /wg-viz ctx.ui.custom() panel + setWidget live summary (TUI mode only)
 src/model-bridge.ts   registerProvider + model_select write-back
+src/completion-watcher.ts  completion-event wakeups: transition detection + deduped polling watcher + /wg-wake
 src/wg-backend.ts     pi.exec("wg", …) client (daemon-IPC later)
 host/wg-pi-host.mjs   Topology B: embed pi as a library with the plugin loaded
 ```

@@ -19,6 +19,7 @@ import { registerWgTools } from "./tools.js";
 import { registerWgCommands } from "./commands.js";
 import { installModelBridge } from "./model-bridge.js";
 import { installVizPanel } from "./viz-panel.js";
+import { installCompletionWatcher } from "./completion-watcher.js";
 import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
 
 /**
@@ -83,6 +84,7 @@ export default function worksgoodPi(pi: ExtensionAPI): void {
   registerWgCommands(pi, backend); // /wg, /wg-model (+ autocomplete)
   installModelBridge(pi, backend, process.env); // registerProvider + model_select → CoordinatorState
   installVizPanel(pi, backend, env); // /wg-viz panel + live widget (TUI mode only, read-only)
+  installCompletionWatcher(pi, backend, env); // /wg-wake + polling watcher: tell the session when tasks finish
 
   // Tear down any session-scoped resources (the future daemon-IPC socket /
   // graph watcher live here once wg-backend upgrades from exec to IPC).
@@ -119,4 +121,27 @@ export {
 } from "./viz-readmodel.js";
 export type { VizCounts, TreeRender, DetailLines } from "./viz-readmodel.js";
 export { installModelBridge, wgSpecFromModel, buildProviderConfig } from "./model-bridge.js";
+export {
+  DEFAULT_COMPLETION_WAKE_CONFIG,
+  CompletionWatcher,
+  MemoryCursorStore,
+  fileCursorStore,
+  formatWakeMessage,
+  installCompletionWatcher,
+  isInternalTask,
+  isTopLevelTask,
+  planWakes,
+  readCompletionWakeConfig,
+  readTaskDetail,
+} from "./completion-watcher.js";
+export type {
+  CompletionCursor,
+  CompletionWakeConfig,
+  CursorStore,
+  GraphTask,
+  TaskDetail,
+  WakeKind,
+  WakeScope,
+  WakeTransition,
+} from "./completion-watcher.js";
 export { WG_PI_PLUGIN_COMPAT_VERSION } from "./version.js";
