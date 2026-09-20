@@ -1,0 +1,7 @@
+Task: recovery-probe-live-6
+Status: done
+Completion manifest: b3:14125baf17db4a96c00ed380da8f28e1cf04114191df0c43771a48633e5db5a8
+Completion review: FLIP=b3:14faf1732a801e3efed53b371a4fd581fbfc52c85e09d33d54437ad629dcdd67 eval=b3:40d6b3ff82029d1ce3fe342363da8231f314c33fd50912fa39a4803ad3684aae
+  Two-phase FLIP pass candidate=Current receipt=b3:14faf1732a801e3efed53b371a4fd581fbfc52c85e09d33d54437ad629dcdd67 route=prompt-reconstruction-two-phase-v3[inference=pi:lunaroute/deepseek-4.1-flash-background;comparison=pi:lunaroute/deepseek-4.1-flash-background] executor=pi-two-phase failure=none duration=44875ms
+  Eval pass candidate=Current receipt=b3:40d6b3ff82029d1ce3fe342363da8231f314c33fd50912fa39a4803ad3684aae route=pi:lunaroute/deepseek-4.1-flash-background executor=pi failure=none duration=26564ms
+Completed disposition: Landed receipt=b3:68cb7116480a5453d66658ec39561256ae8872999b0ec753965b55a9d67bc17b

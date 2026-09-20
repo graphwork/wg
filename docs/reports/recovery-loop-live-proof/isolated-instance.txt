@@ -1,0 +1,16 @@
+# Isolated strict-policy instance used for the live probes
+binary: /home/bot/.cache/wg/build-targets/2555b39f5ac57f2742255f1e49be26e3a7e797942ae41327825a896d186091cd/layers/8674950a5c961da386c840591a4f1015536029c2199f8a458b5538e37ca6094b/agent-157/target/debug/wg
+binary strings COMPLETION REVIEW RECOVERY ROUND: 1
+commit: 7f7e600cd0987e6fbb7613808ede56fc694a26c5 feat: recoverable review rejection resumes the same node in place (implement-milestone-2-of)
+
+## Effective policy (wg status from the isolated project)
+Completion review policy: mode=strict, applicability=required-for-structural-deliverables; otherwise-advisory, evaluator-threshold=0.70, FLIP-policy=required-strict-when-persisted-in-hard-gate, FLIP-threshold=0.70 (only the completion controller applies lifecycle policy)
+
+## Probe tasks published + routed
+[dispatcher] No ready tasks (terminal: 0/0)
+
+## service start log (head)
+Service started and ready (PID 2394174)
+Socket: /tmp/recovery-live-proof/project/.wg/service/daemon.sock
+Log: /tmp/recovery-live-proof/project/.wg/service/daemon.log
+Dispatcher: max_agents=2, poll_interval=5s, executor=pi, model=pi:lunaroute/deepseek-4.1-flash-background

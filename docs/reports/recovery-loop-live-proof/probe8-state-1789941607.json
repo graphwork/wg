@@ -1,0 +1,626 @@
+{
+  "id": "recovery-probe-live-8",
+  "title": "Recovery-loop live fixture v8 (rust + cargo validation)",
+  "presentation": "primary",
+  "origin": {
+    "kind": "user"
+  },
+  "description": "Implement a small, well-tested addition to the Rust crate in this repository.\n\n## Task\nAdd a public function `pub fn classify_semantic(code: &str, message: &str) -> &'static str`\nto `src/lib.rs`, implementing exactly this recoverability split:\n\n- if `code` contains any of `gate-weaken`, `tamper`, `required-check` -> return `\"gate-weakening\"`\n- else if `code` contains any of `scope-ambigu`, `ambiguity` -> return `\"scope-ambiguity\"`\n- else if `code` contains any of `missing-authority`, `unauthorized`, `forged` -> return `\"missing-authority\"`\n- else if `code` contains any of `defect`, `incomplete-implementation`, `not-implemented` -> return `\"defect-or-incomplete-implementation\"`\n- else -> return `\"recoverable\"`\n\n`message` is accepted for signature stability but does not affect the result.\nAdd focused `#[cfg(test)]` unit tests covering at least one case per branch.\n\n## Validation\n- [ ] `cargo test --lib` is green\n- [ ] `cargo fmt --check` is clean\n- [ ] `cargo clippy` is clean\n- [ ] the function is public and the five branches are all covered by tests",
+  "status": "in-progress",
+  "completion_contract": "land",
+  "completion_preflight": {
+    "checks": [
+      {
+        "purpose": "baseline",
+        "command": "git diff --check refs/heads/main..HEAD",
+        "provenance": "completion contract: land (built-in, cannot be relaxed)"
+      }
+    ],
+    "evidence_capture": "wg done executes each required command in the retained worktree and registers a host-bound immutable deterministic-validation/v1 evidence object before semantic review",
+    "optional_evidence_capture": "pass worker-selected commands with `wg done TASK --check '<COMMAND>'`; WG captures them with the same candidate/command/environment binding but records them as optional evidence, never as a gate or contract mutation",
+    "prose_is_authority": false,
+    "repair_boundary": "task-and-validation-fixtures",
+    "deterministic_repair_budget": 2,
+    "boundary_explanation": "repair task implementation plus tests/fixtures directly exercised by the unchanged required checks; unrelated production behavior, gate reduction, or arbitrary repository cleanup needs operator approval"
+  },
+  "completion_repair": {
+    "version": 1,
+    "disposition": "resolved",
+    "task_id": "recovery-probe-live-8",
+    "generation": 0,
+    "attempt_id": "attempt-0-1",
+    "fence": 1,
+    "requirements_digest": "b3:eb8058008fb1a8d098605add22dfd3fe94e38c7d2ee35a88774bd22d21a86168",
+    "validation_identity": "b3:517f86ca289d2f43353b86d8b4bfcab5cce2f67f2f7cfefbbe71d27dbde87d11",
+    "candidate_identity": "b3:12a5d29f431aa51eda3dd408645b8e7ff29dc425c43b16d04889b541b4eed622",
+    "evidence": {
+      "content_digest": "b3:088797efd8afe324572a07cbaeb233b679d7f84ddb0f8e1931e37fab5a44a223",
+      "immutable_locator": {
+        "kind": "completion_object",
+        "digest": "b3:088797efd8afe324572a07cbaeb233b679d7f84ddb0f8e1931e37fab5a44a223"
+      },
+      "evidence_kind": "deterministic-validation/baseline/v1",
+      "media_type": "application/vnd.worksgood.deterministic-validation+json",
+      "size": 2412
+    },
+    "command": "git diff --check refs/heads/main..HEAD",
+    "exit_category": "contract-precondition",
+    "diagnostic_excerpt": "<no diagnostic output; inspect immutable evidence>",
+    "opportunities_used": 1,
+    "opportunity_limit": 2,
+    "failed_candidates": [
+      "b3:12a5d29f431aa51eda3dd408645b8e7ff29dc425c43b16d04889b541b4eed622"
+    ],
+    "blocker_reason_code": "deterministic-check-failed",
+    "reason_code": "deterministic-checks-passed",
+    "safe_next": "deterministic repair resolved; continue exact candidate review/publication",
+    "feedback_id": "b3:d7e88798341605908b110c4072a204a0103c016cc3ffb183b984c57ab9413443",
+    "updated_at": "2026-09-20T22:00:02.753187203+00:00"
+  },
+  "completion_candidate": {
+    "manifest": {
+      "content_digest": "b3:18bf6484f725a9073c75a5762d18b711761dbaa49972832f1950d23711f3e959",
+      "immutable_locator": {
+        "kind": "completion_object",
+        "digest": "b3:18bf6484f725a9073c75a5762d18b711761dbaa49972832f1950d23711f3e959"
+      },
+      "size": 2084
+    },
+    "requirements": {
+      "content_digest": "b3:eb8058008fb1a8d098605add22dfd3fe94e38c7d2ee35a88774bd22d21a86168",
+      "immutable_locator": {
+        "kind": "completion_object",
+        "digest": "b3:eb8058008fb1a8d098605add22dfd3fe94e38c7d2ee35a88774bd22d21a86168"
+      },
+      "media_type": "application/vnd.worksgood.requirements+json",
+      "size": 1347
+    },
+    "worker_summary": {
+      "content_digest": "b3:f0bfff63ec5147a3e0a0fb5c63e85df67378dc62adb599c0726623797c52e759",
+      "immutable_locator": {
+        "kind": "completion_object",
+        "digest": "b3:f0bfff63ec5147a3e0a0fb5c63e85df67378dc62adb599c0726623797c52e759"
+      },
+      "media_type": "text/plain",
+      "size": 1149
+    },
+    "review_binding": {
+      "task_id": "recovery-probe-live-8",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "attempt_fence": 1,
+      "candidate_sequence": 1
+    }
+  },
+  "lifecycle": {
+    "generation": 0,
+    "revision": 3,
+    "fence": 1,
+    "attempt_sequence": 1,
+    "current_attempt": {
+      "id": "attempt-0-1",
+      "generation": 0,
+      "fence": 1,
+      "actor_id": "agent-8"
+    },
+    "ledger_head": "ev_01a0c0d4-b3d7-7be0-a688-fb534285bb73",
+    "audit": [
+      {
+        "schema_version": 1,
+        "event_id": "ev_01a0c0d4-b341-7163-97d4-b9c70e1dc33d",
+        "idempotency_key": "spawn-claim:recovery-probe-live-8:0:1:agent-8",
+        "task_id": "recovery-probe-live-8",
+        "task_revision": 1,
+        "generation": 0,
+        "event_kind": "attempt-reserved",
+        "old_state": "open",
+        "new_state": "in-progress",
+        "actor_kind": "dispatcher",
+        "actor_id": "spawn",
+        "attempt_id": "attempt-0-1",
+        "fence": 1,
+        "reason_code": "spawn_reservation",
+        "evidence_refs": [
+          "b3:5894a1cb63e2b0a4580dc1f677df48a953902422763ab25391b4ed23ea1be6b9"
+        ],
+        "occurred_at": "2026-09-20T21:59:20.129731905+00:00",
+        "committed_at": "2026-09-20T21:59:20.129747655+00:00",
+        "projection": {
+          "status": "in-progress",
+          "generation": 0,
+          "revision": 1,
+          "fence": 1,
+          "attempt_sequence": 1,
+          "current_attempt": {
+            "id": "attempt-0-1",
+            "generation": 0,
+            "fence": 1,
+            "actor_id": "agent-8"
+          },
+          "pi_process_epoch": 0,
+          "pi_continuation_epoch": 0
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "ev_01a0c0d4-b3a1-7c92-9190-f1a1b0a6d643",
+        "idempotency_key": "attempt-running:recovery-probe-live-8:attempt-0-1",
+        "task_id": "recovery-probe-live-8",
+        "task_revision": 2,
+        "generation": 0,
+        "event_kind": "attempt-running",
+        "old_state": "in-progress",
+        "new_state": "in-progress",
+        "actor_kind": "dispatcher",
+        "actor_id": "spawn-launch-gate",
+        "attempt_id": "attempt-0-1",
+        "fence": 1,
+        "reason_code": "launch_permitted",
+        "evidence_refs": [
+          "b3:d2479cda81a48c80e49641268d897c624224c4eb2a011f3284bf131435030948"
+        ],
+        "occurred_at": "2026-09-20T21:59:20.225986566+00:00",
+        "committed_at": "2026-09-20T21:59:20.226002367+00:00",
+        "projection": {
+          "status": "in-progress",
+          "generation": 0,
+          "revision": 2,
+          "fence": 1,
+          "attempt_sequence": 1,
+          "current_attempt": {
+            "id": "attempt-0-1",
+            "generation": 0,
+            "fence": 1,
+            "actor_id": "agent-8"
+          },
+          "pi_process_epoch": 0,
+          "pi_continuation_epoch": 0
+        }
+      },
+      {
+        "schema_version": 1,
+        "event_id": "ev_01a0c0d4-b3d7-7be0-a688-fb534285bb73",
+        "idempotency_key": "pi-auth:attempt-0-1",
+        "task_id": "recovery-probe-live-8",
+        "task_revision": 3,
+        "generation": 0,
+        "event_kind": "pi-continuation-authorized",
+        "old_state": "in-progress",
+        "new_state": "in-progress",
+        "actor_kind": "dispatcher",
+        "actor_id": "pi-spawn-bootstrap",
+        "attempt_id": "attempt-0-1",
+        "fence": 1,
+        "reason_code": "pi_authorized",
+        "occurred_at": "2026-09-20T21:59:20.279492518+00:00",
+        "committed_at": "2026-09-20T21:59:20.279503969+00:00",
+        "projection": {
+          "status": "in-progress",
+          "generation": 0,
+          "revision": 3,
+          "fence": 1,
+          "attempt_sequence": 1,
+          "current_attempt": {
+            "id": "attempt-0-1",
+            "generation": 0,
+            "fence": 1,
+            "actor_id": "agent-8"
+          },
+          "pi_process_epoch": 1,
+          "pi_process_identity_digest": "b3:4b335be1f4298111856aba135e1eb1d09560baaaf306ee5e3f65e2e188968ddf",
+          "pi_continuation_epoch": 0,
+          "pi_continuation": {
+            "authorization_id": "pi-auth:attempt-0-1",
+            "task_id": "recovery-probe-live-8",
+            "generation": 0,
+            "attempt_id": "attempt-0-1",
+            "attempt_fence": 1,
+            "worktree_lease_epoch": 1,
+            "session_proof_digest": "b3:19edd7eb4f7ba80093e5032aacb7e8d587f7e67a9c0a4d0ed054a7c5a74a6a13",
+            "route_snapshot_digest": "b3:6cd0b6d40841093e4a99effc952d047f21edd4cb29d21b5d1b669c3c15d816ae",
+            "state": "active",
+            "max_replacement_epochs": 3,
+            "max_reserved_elapsed_secs": 1800,
+            "epochs_used": 0,
+            "elapsed_reserved_secs": 0,
+            "issued_by_policy": "pi-watchdog-static-v1"
+          }
+        }
+      }
+    ],
+    "pi_process_epoch": 1,
+    "pi_process_identity_digest": "b3:4b335be1f4298111856aba135e1eb1d09560baaaf306ee5e3f65e2e188968ddf",
+    "pi_continuation_epoch": 0,
+    "pi_continuation": {
+      "authorization_id": "pi-auth:attempt-0-1",
+      "task_id": "recovery-probe-live-8",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "attempt_fence": 1,
+      "worktree_lease_epoch": 1,
+      "session_proof_digest": "b3:19edd7eb4f7ba80093e5032aacb7e8d587f7e67a9c0a4d0ed054a7c5a74a6a13",
+      "route_snapshot_digest": "b3:6cd0b6d40841093e4a99effc952d047f21edd4cb29d21b5d1b669c3c15d816ae",
+      "state": "active",
+      "max_replacement_epochs": 3,
+      "max_reserved_elapsed_secs": 1800,
+      "epochs_used": 0,
+      "elapsed_reserved_secs": 0,
+      "issued_by_policy": "pi-watchdog-static-v1"
+    }
+  },
+  "worktree_observer": {
+    "schema_version": 1,
+    "source": {
+      "task_id": "recovery-probe-live-8",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "attempt_fence": 1,
+      "worktree_id": "agent-8",
+      "worktree_lease_epoch": 1,
+      "process_epoch": 1,
+      "observer_epoch": 0,
+      "canonical_worktree_root": "/tmp/recovery-live-proof/project/.wg-worktrees/agent-8",
+      "root_identity": {
+        "canonical_path": "/tmp/recovery-live-proof/project/.wg-worktrees/agent-8",
+        "device": 2306,
+        "file_identity": 27010016
+      }
+    },
+    "policy_digest": "b3:c1f08ae0a74127542b325f383349395fdc9c23290282aeec5385c096203f802c",
+    "timing_policy": {
+      "generated_paths": [],
+      "debounce_ms": 100,
+      "reconcile_interval_secs": 15,
+      "observed_activity_grace_secs": 120,
+      "max_observed_only_extension_secs": 600
+    },
+    "manifest_digest": "b3:d3131b0002921de1375e31366bd879f3de6c8e94842dbedfd054510f53532e95",
+    "content_seq": 0,
+    "baseline_time_unknown": false,
+    "health": "poll-only",
+    "degraded_reason": "observer-process-not-started-or-exited",
+    "last_reconciliation_at": 1789941560,
+    "ignored_churn": {},
+    "unstable_scans": 0,
+    "watcher_overflows": 0,
+    "stale_callbacks": 0,
+    "preservation_mode": false,
+    "purported_reap": false,
+    "quarantine_required": false,
+    "late_mutations": [],
+    "next_safe_action": "state preserved; recover with argv: wg worktree-observer-run --state-dir /tmp/recovery-live-proof/project/.wg/attempts/by-source-tuple/cfc0b0acee2a64345eaaba21260467964d7522266aacd53f1d58aca4cd93129a/worktree-observer"
+  },
+  "activity_clocks": {
+    "schema_version": 1,
+    "worktree_authority": "observed-unproven",
+    "worktree_content_seq": 0,
+    "last_proven_progress": null,
+    "meaningful_silence_secs": 300,
+    "observed_activity_grace_secs": 120,
+    "max_observed_only_extension_secs": 600,
+    "deadline": null,
+    "observer": {
+      "schema_version": 1,
+      "source": {
+        "task_id": "recovery-probe-live-8",
+        "generation": 0,
+        "attempt_id": "attempt-0-1",
+        "attempt_fence": 1,
+        "worktree_id": "agent-8",
+        "worktree_lease_epoch": 1,
+        "process_epoch": 1,
+        "observer_epoch": 0,
+        "canonical_worktree_root": "/tmp/recovery-live-proof/project/.wg-worktrees/agent-8",
+        "root_identity": {
+          "canonical_path": "/tmp/recovery-live-proof/project/.wg-worktrees/agent-8",
+          "device": 2306,
+          "file_identity": 27010016
+        }
+      },
+      "policy_digest": "b3:c1f08ae0a74127542b325f383349395fdc9c23290282aeec5385c096203f802c",
+      "timing_policy": {
+        "generated_paths": [],
+        "debounce_ms": 100,
+        "reconcile_interval_secs": 15,
+        "observed_activity_grace_secs": 120,
+        "max_observed_only_extension_secs": 600
+      },
+      "manifest_digest": "b3:d3131b0002921de1375e31366bd879f3de6c8e94842dbedfd054510f53532e95",
+      "content_seq": 0,
+      "baseline_time_unknown": false,
+      "health": "poll-only",
+      "degraded_reason": "observer-process-not-started-or-exited",
+      "last_reconciliation_at": 1789941560,
+      "ignored_churn": {},
+      "unstable_scans": 0,
+      "watcher_overflows": 0,
+      "stale_callbacks": 0,
+      "preservation_mode": false,
+      "purported_reap": false,
+      "quarantine_required": false,
+      "late_mutations": [],
+      "next_safe_action": "state preserved; recover with argv: wg worktree-observer-run --state-dir /tmp/recovery-live-proof/project/.wg/attempts/by-source-tuple/cfc0b0acee2a64345eaaba21260467964d7522266aacd53f1d58aca4cd93129a/worktree-observer"
+    }
+  },
+  "pi_watchdog": {
+    "schema_version": 2,
+    "source": {
+      "task_id": "recovery-probe-live-8",
+      "generation": 0,
+      "attempt_id": "attempt-0-1",
+      "attempt_fence": 1,
+      "worktree_lease_epoch": 1,
+      "worktree_path": "/tmp/recovery-live-proof/project/.wg-worktrees/agent-8"
+    },
+    "route": {
+      "handler": "pi",
+      "provider": "unknown",
+      "model": "lunaroute/deepseek-4.1-flash-background",
+      "reasoning": "high",
+      "endpoint_redacted": "pi-owned",
+      "endpoint_hmac": "b3:6ce4cd0f60c02af76f0654cc59e1768780ab90ed236cd26af3762dbe52d79095",
+      "qos": "low",
+      "pi_binary_digest": "pi-path-owned",
+      "plugin_digest": "0.3.0"
+    },
+    "session": {
+      "session_id": "01a0c0d4-b339-7751-8c88-2b4844da6d06",
+      "branch_leaf": "b3:854744425aacf2d1ccf121419618ff0f5cbbd286b872fb0b571241e6b4b99082",
+      "session_dir": "/tmp/recovery-live-proof/project/.wg/agents/agent-8/pi-session",
+      "session_file": "/tmp/recovery-live-proof/project/.wg/agents/agent-8/pi-session/2026-09-20T21-59-20-515Z_01a0c0d4-b339-7751-8c88-2b4844da6d06.jsonl",
+      "header_digest": "b3:919a5f03f5f3f6cbc882070e84fd98fa26569c9ddd5a993edeeccb2dc61594d8",
+      "append_prefix_digest": "b3:854744425aacf2d1ccf121419618ff0f5cbbd286b872fb0b571241e6b4b99082",
+      "append_prefix_len": 102254
+    },
+    "process": {
+      "pid": 2560370,
+      "pgid": 2560354,
+      "start_ticks": 2074945941,
+      "boot_id": "ed0dfca9-7ac5-480e-81f6-07b47fb42cbe",
+      "nonce": "01a0c0d4-b3c0-7722-9f4e-61b485ebf9ae"
+    },
+    "terminal_wrapper": {
+      "pid": 2560354,
+      "pgid": 2560354,
+      "start_ticks": 2074945936,
+      "boot_id": "ed0dfca9-7ac5-480e-81f6-07b47fb42cbe",
+      "nonce": "01a0c0d4-b3c0-7722-9f4e-61caa9067910"
+    },
+    "completion_handoff": null,
+    "process_epoch": 1,
+    "continuation_epoch": 0,
+    "classification": "long-tool",
+    "phase": "tool",
+    "progress_seq": 1736,
+    "progress_digest": "b3:27659fa3520eab3d011edfe9a37e9ef30d97c5560530acf70b167e82fd1c3bf6",
+    "last_meaningful_at": 1789941602,
+    "last_meaningful_kind": "tool-progress",
+    "suspect_at": null,
+    "probe_action_id": null,
+    "probe_observed_at": null,
+    "hard_resume_after_secs": null,
+    "hard_eligible_at": null,
+    "hard_grace_deadline": null,
+    "terminal": false,
+    "terminal_receipt": null,
+    "tool": {
+      "tool_call_id": "chatcmpl-tool-8e52a8b5f957ef9c",
+      "effect": "non-idempotent",
+      "lease_expires_at": null,
+      "completion_receipt": null
+    },
+    "wait_correlation": null,
+    "exact_guards": {
+      "session": true,
+      "route": true,
+      "worktree": true,
+      "pid_identity": true,
+      "containment": true,
+      "effect": false,
+      "terminal_clear": true
+    },
+    "epochs_used": 0,
+    "elapsed_reserved_secs": 0,
+    "manual_epochs_granted": 0,
+    "manual_elapsed_granted_secs": 0,
+    "prompt_action_id": null,
+    "prompt_digest": null,
+    "prompt_marker": null,
+    "prompt_count": 0,
+    "pending_actions": [],
+    "completed_action_ids": [],
+    "manual_grant_ids": [],
+    "reason_code": null,
+    "exact_route_error": null,
+    "possible_unattributed_cost": false,
+    "native_activity": {
+      "process_epoch": 1,
+      "event_seq": 1735,
+      "last_activity_at": 1789941602,
+      "thinking_activity_seq": 1335,
+      "thinking_tokens": null,
+      "output_activity_seq": 192,
+      "output_tokens": null,
+      "last_output_activity_at": 1789941602,
+      "output_samples": [],
+      "current_tool_label": "bash",
+      "current_tool_class": "tool",
+      "tool_progress": 2,
+      "tool_child_state": "running",
+      "tool_receipt_state": "pending",
+      "managed_process_active": 0,
+      "managed_process_completed": 0,
+      "managed_process_wakes": 0,
+      "managed_process_ids": [],
+      "managed_process_receipts": [],
+      "usage_input": 795417,
+      "usage_output": 8224,
+      "usage_cache_read": 0,
+      "usage_cache_write": 0,
+      "usage_total": 803641,
+      "usage_cost": "0.000000",
+      "usage_receipt_count": 23,
+      "usage_receipts": [
+        "b3:07bbd5ab42c9aedd049020b061de41884f60130149d88b25a04deaa746165d0d",
+        "b3:0e64ba9e3e3a99b499944289d9c2b6a5df1d9929a121601b6e021a58565f6c91",
+        "b3:250f2936030c0c9e0fbae62e66a270b5e1d943d3d2f350eb0f92ee940dbc0853",
+        "b3:42d9def0e5ac1435d52f08f070a466d5f20c63f32620e80668c0211943807bb2",
+        "b3:46866a815d345af0aea5850df4fa08a41da1397698b384c7d10472b1d1955452",
+        "b3:509bb85a44f80caa046bba3d817318e284acc424e84dd637a506371737ef4b48",
+        "b3:50c1f3f7779930480dc99b7c045282c77e11166ab03e9f623bfd086d414aa3dc",
+        "b3:6c64c00f418343a5bd5926417249551a8478f7ef3b8cfe9bc08fce9b342ab006",
+        "b3:6fbf7c9c3cc79e70f4b8ede19a1e9eaec67003126cf8c2e61883167768698c47",
+        "b3:78b3b3d41af6521ca4d2439454f3d2e4a6c93046e4a4f7487238434c465c54c6",
+        "b3:7cbeefbca19b10892ce4586bf47ef55b1967ec6042e3c5bf8c6d80dbe4962b34",
+        "b3:7d28de84ca60168e04e140590f8fb0a12817d632cf5f96d68214f76b33682fd9",
+        "b3:b68c7ca238f5eace8e21134b09cae0e5b98aaa218ecf021c02967cfa86fd479f",
+        "b3:bb1b309e155460ecdcacccdcd070f2f2f72dbc3864e2f318e71c284858ae6e0b",
+        "b3:c20dfb905fa8c98c3c0fdbcf7bf4eede32237eecba1a099e30e9422c26c1c5de",
+        "b3:c742abf4f96cf3d87d81e69edeff12ca1c24423a890bb29a57558d3c74ff4ff7",
+        "b3:cc6af39c2c8e52e3c562b0b151708b42aedacc1efdd366a923a92960d32f4051",
+        "b3:cd014ec992c80452e8085e072992c7f2aa19ef0d76c77f5c46fea16dfba4f1da",
+        "b3:cdad7cbe9044d8b2c9e0656d3fe8d26446e8e206b8c2d828644ef4e55a52dcef",
+        "b3:d10fbf6a1efe8fd89a23320b8a2d5653d659d343b5d639017de9c406b0a8c5c1",
+        "b3:d95d9ac6954c374e8ecbfe970c5a3a3a5b8aaf6fc0a203f621f24bf80fb3205e",
+        "b3:edd990137a4b2d5f7b227421aef11595654e4c509da9f08159973af11b909434",
+        "b3:fb838364c199220ae6fa1b3c0057577fbb52eabbd3493946e47686da65a85276"
+      ],
+      "stream_offsets": {
+        "b3:66de5dbfb3d0a8ea644f46a3a80176a68cc58eac0d54ab04aff2c117c625fdc3": 1002910
+      }
+    },
+    "domain_counters": {
+      "admission": 0,
+      "source_retry": 0,
+      "spawn_breaker": 0,
+      "provider_breaker": 0,
+      "evaluation_jobs": 0,
+      "accounting_attempts": 0
+    }
+  },
+  "priority": 10,
+  "assigned": "agent-8",
+  "after": [],
+  "before": [],
+  "created_at": "2026-09-20T21:59:17.924123653+00:00",
+  "started_at": "2026-09-20T21:59:20.129761556+00:00",
+  "last_interaction_at": "2026-09-20T22:00:02.804475725+00:00",
+  "log": [
+    {
+      "timestamp": "2026-09-20T21:59:17.918182862+00:00",
+      "user": "bot",
+      "message": "Task paused"
+    },
+    {
+      "timestamp": "2026-09-20T21:59:17.958070294+00:00",
+      "user": "bot",
+      "message": "Task published"
+    },
+    {
+      "timestamp": "2026-09-20T21:59:20.247965383+00:00",
+      "actor": "agent-8",
+      "user": "bot",
+      "message": "Spawned by coordinator --executor pi --model lunaroute/deepseek-4.1-flash-background --isolation required-worktree"
+    },
+    {
+      "timestamp": "2026-09-20T21:59:27.804360342+00:00",
+      "user": "bot",
+      "message": "Starting implementation of classify_semantic in src/lib.rs"
+    },
+    {
+      "timestamp": "2026-09-20T21:59:33.580667735+00:00",
+      "user": "bot",
+      "message": "All checks green: cargo test --lib (7 passed), fmt clean, clippy clean. Committed 7f2685a"
+    },
+    {
+      "timestamp": "2026-09-20T21:59:35.166463021+00:00",
+      "actor": "deterministic-validation",
+      "message": "Captured deterministic validation purpose=Baseline command=b3:3b7bd0ca1ca97b1638bf3fe73419298bb8e0069c43bc6168fc0d8829216b9052 exit=Some(0) timeout=false duration_ms=25 evidence=b3:088797efd8afe324572a07cbaeb233b679d7f84ddb0f8e1931e37fab5a44a223"
+    },
+    {
+      "timestamp": "2026-09-20T21:59:35.171490407+00:00",
+      "actor": "completion-repair",
+      "message": "Deterministic completion feedback=b3:d7e88798341605908b110c4072a204a0103c016cc3ffb183b984c57ab9413443 candidate=b3:12a5d29f431aa51eda3dd408645b8e7ff29dc425c43b16d04889b541b4eed622 validation=b3:517f86ca289d2f43353b86d8b4bfcab5cce2f67f2f7cfefbbe71d27dbde87d11 evidence=b3:088797efd8afe324572a07cbaeb233b679d7f84ddb0f8e1931e37fab5a44a223 disposition=Repairing budget=1/2 reason=deterministic-check-failed"
+    },
+    {
+      "timestamp": "2026-09-20T22:00:02.177325569+00:00",
+      "user": "bot",
+      "message": "Root cause of contract-precondition: untracked Cargo.lock dirtied worktree status; committed it. Retrying wg done."
+    },
+    {
+      "timestamp": "2026-09-20T22:00:02.294647282+00:00",
+      "actor": "deterministic-validation",
+      "message": "Captured deterministic validation purpose=Baseline command=b3:3b7bd0ca1ca97b1638bf3fe73419298bb8e0069c43bc6168fc0d8829216b9052 exit=Some(0) timeout=false duration_ms=25 evidence=b3:c699e9d054cf829b34e0e750eb186f990cce019a24340f74fe246b1f9694f4ed"
+    },
+    {
+      "timestamp": "2026-09-20T22:00:02.450662115+00:00",
+      "actor": "deterministic-validation",
+      "message": "Captured deterministic validation purpose=Optional command=b3:a52924dd4d12ba1856ce55e104595f0d634b88d52330846f24bd42272ad13d72 exit=Some(0) timeout=false duration_ms=75 evidence=b3:408be2d97fdb2f490c0478c11b490e78633fd3578a8119246d96ca79471daa6b"
+    },
+    {
+      "timestamp": "2026-09-20T22:00:02.573666262+00:00",
+      "actor": "deterministic-validation",
+      "message": "Captured deterministic validation purpose=Optional command=b3:4528dac49874bfa9ab5152d7e0bc4cefc5819a43e4291f5cd8bb30c2cdc41037 exit=Some(0) timeout=false duration_ms=50 evidence=b3:7af08f1b07d35a8ae8d2897e912e43de18e933d33284876e60b350270376b71e"
+    },
+    {
+      "timestamp": "2026-09-20T22:00:02.749133653+00:00",
+      "actor": "deterministic-validation",
+      "message": "Captured deterministic validation purpose=Optional command=b3:d06098962ea25cba23019023e50535621d23c42d6b986cbdb5fdbc6957c01e88 exit=Some(0) timeout=false duration_ms=100 evidence=b3:36e7f212d7712a44e5610daa59e3b9270a954ac628aaaf7b9cc8b5b28be4ff1a"
+    },
+    {
+      "timestamp": "2026-09-20T22:00:02.753188543+00:00",
+      "actor": "completion-repair",
+      "message": "Resolved deterministic completion repair after 1/2 opportunities"
+    },
+    {
+      "timestamp": "2026-09-20T22:00:02.804471775+00:00",
+      "actor": "completion-submit",
+      "message": "Selected immutable completion candidate; prior review receipts invalidated"
+    }
+  ],
+  "max_spawn_failures": 5,
+  "resolved_reasoning": "high",
+  "actual_executor": "pi",
+  "actual_model": "lunaroute/deepseek-4.1-flash-background",
+  "route_pin": {
+    "state": "inherited-unpinned",
+    "applies_to": "future-attempt",
+    "pinned_fields": [],
+    "dynamic_at_dispatch": true,
+    "current_inheritance": {
+      "profile": "project-config (no selected profile)",
+      "route": "pi:lunaroute/deepseek-4.1-flash-background",
+      "handler": "pi",
+      "reasoning": "high",
+      "source": "models.task_agent.model"
+    }
+  },
+  "worker_control_mode": "trusted",
+  "worker_control_restrictions": "normal local graph coordination is allowed; terminal completion remains own-attempt, receipt-backed, and fenced; service/admin and immutable evidence internals remain protected",
+  "token_usage": {
+    "input_tokens": 795417,
+    "output_tokens": 8224
+  },
+  "source_attempt_usage": [
+    {
+      "attempt_id": "attempt-0-1",
+      "generation": 0,
+      "fence": 1,
+      "usage": {
+        "input_tokens": 795417,
+        "output_tokens": 8224
+      },
+      "actual_executor": "pi",
+      "actual_model": "lunaroute/deepseek-4.1-flash-background"
+    }
+  ],
+  "worktree_state": {
+    "path": "/tmp/recovery-live-proof/project/.wg-worktrees/agent-8",
+    "branch": "wg/agent-8/recovery-probe-live-8",
+    "commits_ahead": 2,
+    "uncommitted_files": 0,
+    "last_modified": "2026-09-20T21:59:30.197997702+00:00",
+    "cleanup_pending": false,
+    "merged_to_main": false
+  }
+}

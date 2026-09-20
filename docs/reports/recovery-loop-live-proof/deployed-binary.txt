@@ -1,0 +1,13 @@
+# Deployed shared binary vs recovery commit
+shared binary: /home/bot/.cargo/bin/wg
+shared mtime: 2026-09-20 22:09:29.599180918 +0200
+recovery commit time: 2026-09-20 23:05:55 +0200  7f7e600c
+strings[prompt-reconstruction-two-phase-v3]: shared=2 built=2
+strings[COMPLETION_REVIEW_RECOVERY_ROUND]: shared=0 built=1
+strings[review-semantic-recovery]: shared=0 built=1
+strings[unchanged-candidate-repeated]: shared=1 built=1
+
+# Shared project policy (advisory; workers cannot change config)
+14:completion_review_strict = false
+# Isolated project policy (strict)
+14:completion_review_strict = true

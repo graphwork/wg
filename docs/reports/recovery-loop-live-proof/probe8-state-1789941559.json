@@ -1,0 +1,68 @@
+{
+  "id": "recovery-probe-live-8",
+  "title": "Recovery-loop live fixture v8 (rust + cargo validation)",
+  "presentation": "primary",
+  "origin": {
+    "kind": "user"
+  },
+  "description": "Implement a small, well-tested addition to the Rust crate in this repository.\n\n## Task\nAdd a public function `pub fn classify_semantic(code: &str, message: &str) -> &'static str`\nto `src/lib.rs`, implementing exactly this recoverability split:\n\n- if `code` contains any of `gate-weaken`, `tamper`, `required-check` -> return `\"gate-weakening\"`\n- else if `code` contains any of `scope-ambigu`, `ambiguity` -> return `\"scope-ambiguity\"`\n- else if `code` contains any of `missing-authority`, `unauthorized`, `forged` -> return `\"missing-authority\"`\n- else if `code` contains any of `defect`, `incomplete-implementation`, `not-implemented` -> return `\"defect-or-incomplete-implementation\"`\n- else -> return `\"recoverable\"`\n\n`message` is accepted for signature stability but does not affect the result.\nAdd focused `#[cfg(test)]` unit tests covering at least one case per branch.\n\n## Validation\n- [ ] `cargo test --lib` is green\n- [ ] `cargo fmt --check` is clean\n- [ ] `cargo clippy` is clean\n- [ ] the function is public and the five branches are all covered by tests",
+  "status": "open",
+  "completion_contract": "land",
+  "completion_preflight": {
+    "checks": [
+      {
+        "purpose": "baseline",
+        "command": "git diff --check refs/heads/main..HEAD",
+        "provenance": "completion contract: land (built-in, cannot be relaxed)"
+      }
+    ],
+    "evidence_capture": "wg done executes each required command in the retained worktree and registers a host-bound immutable deterministic-validation/v1 evidence object before semantic review",
+    "optional_evidence_capture": "pass worker-selected commands with `wg done TASK --check '<COMMAND>'`; WG captures them with the same candidate/command/environment binding but records them as optional evidence, never as a gate or contract mutation",
+    "prose_is_authority": false,
+    "repair_boundary": "task-and-validation-fixtures",
+    "deterministic_repair_budget": 2,
+    "boundary_explanation": "repair task implementation plus tests/fixtures directly exercised by the unchanged required checks; unrelated production behavior, gate reduction, or arbitrary repository cleanup needs operator approval"
+  },
+  "lifecycle": {
+    "generation": 0,
+    "revision": 0,
+    "fence": 0,
+    "attempt_sequence": 0,
+    "pi_process_epoch": 0,
+    "pi_continuation_epoch": 0
+  },
+  "priority": 10,
+  "after": [],
+  "before": [],
+  "created_at": "2026-09-20T21:59:17.924123653+00:00",
+  "last_interaction_at": "2026-09-20T21:59:17.958133256+00:00",
+  "log": [
+    {
+      "timestamp": "2026-09-20T21:59:17.918182862+00:00",
+      "user": "bot",
+      "message": "Task paused"
+    },
+    {
+      "timestamp": "2026-09-20T21:59:17.958070294+00:00",
+      "user": "bot",
+      "message": "Task published"
+    }
+  ],
+  "max_spawn_failures": 5,
+  "resolved_reasoning": "high",
+  "route_pin": {
+    "state": "inherited-unpinned",
+    "applies_to": "next-attempt",
+    "pinned_fields": [],
+    "dynamic_at_dispatch": true,
+    "current_inheritance": {
+      "profile": "project-config (no selected profile)",
+      "route": "pi:lunaroute/deepseek-4.1-flash-background",
+      "handler": "pi",
+      "reasoning": "high",
+      "source": "models.task_agent.model"
+    }
+  },
+  "worker_control_mode": "trusted",
+  "worker_control_restrictions": "normal local graph coordination is allowed; terminal completion remains own-attempt, receipt-backed, and fenced; service/admin and immutable evidence internals remain protected"
+}

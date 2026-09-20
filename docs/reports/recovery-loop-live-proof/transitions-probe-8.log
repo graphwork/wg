@@ -1,0 +1,5 @@
+23:59:19 open|None|None|None|None|None|-|None
+23:59:27 in-progress|agent-8|None|None|None|None|-|None
+23:59:35 in-progress|agent-8|repairing|None|deterministic-check-failed|1|-|None
+00:00:07 in-progress|agent-8|resolved|None|deterministic-checks-passed|1|-|None
+00:00:16 done|None|None|None|None|None|-|landed
