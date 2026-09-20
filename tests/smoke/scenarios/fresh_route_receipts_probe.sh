@@ -219,7 +219,7 @@ assert x.get('actual_executor') == 'pi', x.get('actual_executor')
 rows = x['completion_review_activity']
 assert [(r['reviewer_kind'], r['verdict']) for r in rows] == [('flip', 'pass'), ('eval', 'pass')], rows
 flip_route = rows[0]['model_route']
-assert 'prompt-reconstruction-two-phase-v2' in flip_route, flip_route
+assert 'prompt-reconstruction-two-phase-v3' in flip_route, flip_route
 assert 'inference=pi:lunaroute:deepseek-4.1-flash' in flip_route, flip_route
 assert 'comparison=pi:lunaroute:deepseek-4.1-flash' in flip_route, flip_route
 eval_route = rows[1]['model_route']
