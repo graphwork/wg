@@ -70,6 +70,65 @@ is pinned by the `pi_vizview_embedded_panel_contract` smoke scenario and the
 `test_viz_snapshot_ipc_returns_live_graph_and_tracks_transitions` integration
 test.
 
+## Reloading a live chat session (`wg chat reload`)
+
+After installing a new `wg` binary, a **live** pi chat keeps running whatever
+plugin bundle it loaded when it spawned. `wg chat resume` respawns the handler
+against the same `--session-dir` + `--session-id` (the conversation continues),
+but it does not by itself re-materialize the embedded plugin cache. Use
+`wg chat reload` for a full session-preserving reload:
+
+```sh
+wg chat reload <chat>      # one chat (numeric id, .chat-N, or name)
+wg chat reload --all       # every active chat in this project
+```
+
+In order, a reload:
+
+1. runs the `ensure-pi-plugin` primitive so the versioned cache matches this
+   binary's embedded bundle (content-digest validated);
+2. captures the **before** identity — wg/pi binary paths + mtime + content
+   digest, plugin compat / source / resolved entry, embed + cache digests, and
+   the pi session transcript;
+3. signals the live handler to exit and lets the supervisor respawn it,
+   resuming the **same** session dir/id;
+4. waits for real liveness (the same bounded handler-lock/tmux proof
+   `wg chat resume` uses — an accepted IPC is not success);
+5. prints the **after** identity and the delta: changed/unchanged binaries,
+   changed/unchanged plugin digest, session file preserved, and the transcript
+   message count when it is cheap to read.
+
+It **refuses loudly rather than degrading silently**: a plugin cache that is
+still stale after `ensure-pi-plugin` (unrefreshable), a chat with no pi session
+transcript, and a respawn that never becomes live within the bounded window each
+produce a named error and leave the chat resumable with `wg chat resume <chat>`
+(or stopped-but-resumable).
+
+**Running it from inside the chat.** A reload takes the chat's own console down
+on purpose: the handler process is the console. An agent can run
+`wg chat reload` for its own session, but the command must come from **another
+terminal or the TUI** (or the agent's own turn will be interrupted). The
+conversation is preserved by the session file, so the session continues on the
+respawned handler.
+
+### Manual ritual (if you prefer hands-on recovery)
+
+```sh
+# 1. Re-materialize the embedded plugin cache for the running binary.
+wg pi-plugin status          # inspect: source + embed/cache digest + cache state
+wg pi-plugin install         # materialize + wire the console direction
+
+# 2. Restart the chat handler against the same session.
+wg chat resume <chat>        # stops + respawns; waits for real liveness
+
+# 3. Confirm the console picked up the new extension.
+wg chat show <chat>          # handler live?
+wg pi-plugin status          # cache state should be "current"
+```
+
+`wg chat reload` is exactly this ritual, automated and with a before/after proof
+that the plugin digest actually changed and the session file was preserved.
+
 ## Develop
 
 ```sh

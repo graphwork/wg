@@ -2404,6 +2404,12 @@ fn main() -> Result<()> {
                     ChatCommands::Resume { chat } => {
                         commands::chat_cmd::run_resume(&workgraph_dir, &chat, cli.json)
                     }
+                    ChatCommands::Reload { chat, all } => commands::chat_cmd::run_reload(
+                        &workgraph_dir,
+                        chat.as_deref(),
+                        all,
+                        cli.json,
+                    ),
                     ChatCommands::Archive { chat } => {
                         commands::chat_cmd::run_archive(&workgraph_dir, &chat, cli.json)
                     }

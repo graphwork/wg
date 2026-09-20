@@ -6117,6 +6117,26 @@ pub enum ChatCommands {
         chat: String,
     },
 
+    /// Full session-preserving reload of the pi binary + extensions for one
+    /// chat (or every chat with `--all`). Re-materializes the embedded pi
+    /// plugin so recently shipped extensions actually load, then stops and
+    /// respawns the handler resuming the SAME session dir/id, waits for real
+    /// liveness, and prints a before/after identity delta. Refuses loudly
+    /// (leaving the chat resumable) when the plugin cache is stale and
+    /// unrefreshable, the session file is missing, or the respawn never
+    /// becomes live. Run it from another terminal or the TUI; a reload issued
+    /// from inside the chat itself takes that console down expectedly and the
+    /// agent session continues on respawn.
+    Reload {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        #[arg(required_unless_present = "all")]
+        chat: Option<String>,
+
+        /// Reload every active chat in this project.
+        #[arg(long, conflicts_with = "chat")]
+        all: bool,
+    },
+
     /// Mark the chat as Done and tag it `archived`. Out of the active
     /// set; chat directory is preserved.
     Archive {

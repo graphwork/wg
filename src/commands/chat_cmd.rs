@@ -19,11 +19,13 @@
 //! a deprecation warning and route here.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use worksgood::chat_id;
 use worksgood::dispatch::handler_for_model;
 use worksgood::graph::{Status, WorkGraph};
+use worksgood::pi_plugin::{self, CacheState, EnsureMode, PluginStatus, ResolvedPlugin, Source};
 
 use crate::commands::graph_path;
 use crate::commands::is_process_alive;
@@ -832,6 +834,29 @@ fn resume_runtime_proof_is_valid(graph: &WorkGraph, cid: u32, runtime_live: bool
 const RESUME_LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const RESUME_LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Schedule a handler (re)spawn through the supervisor using the chat's saved
+/// executor/model metadata (`reconstruct_resume_metadata`), without waiting for
+/// liveness. Shared by `wg chat resume` and `wg chat reload` so both use the
+/// exact same proven respawn path. Errors when the daemon rejects the request.
+pub(crate) fn request_chat_resume(dir: &Path, cid: u32) -> Result<()> {
+    use crate::commands::service::ipc::IpcRequest;
+    use crate::commands::service::send_request;
+    let (executor, model) = reconstruct_resume_metadata(dir, cid);
+    let resp = send_request(
+        dir,
+        &IpcRequest::SetChatExecutor {
+            chat_id: cid,
+            executor,
+            model,
+        },
+    )?;
+    if !resp.ok {
+        let msg = resp.error.unwrap_or_else(|| "Unknown error".to_string());
+        anyhow::bail!("{}", msg);
+    }
+    Ok(())
+}
+
 fn wait_for_chat_runtime_with(
     timeout: std::time::Duration,
     poll: std::time::Duration,
@@ -900,19 +925,8 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
         .with_context(|| "Failed to reload graph before scheduling chat resume")?;
     validate_chat_resumable(&scheduling_graph, cid)?;
 
-    let (executor, model) = reconstruct_resume_metadata(dir, cid);
-    use crate::commands::service::ipc::IpcRequest;
-    use crate::commands::service::send_request;
-    let resp = send_request(
-        dir,
-        &IpcRequest::SetChatExecutor {
-            chat_id: cid,
-            executor,
-            model,
-        },
-    )?;
-    if !resp.ok {
-        let msg = resp.error.unwrap_or_else(|| "Unknown error".to_string());
+    if let Err(e) = request_chat_resume(dir, cid) {
+        let msg = format!("{e}");
         if json {
             println!(
                 "{}",
@@ -967,6 +981,509 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
     } else {
         println!("Resumed chat {} — runtime is live.", cid);
     }
+    Ok(())
+}
+
+// ============================================================================
+// Subcommand: reload
+// ============================================================================
+
+/// Bounded window for the respawned handler to prove liveness.
+const RELOAD_LIVE_TIMEOUT: Duration = Duration::from_secs(10);
+const RELOAD_POLL: Duration = Duration::from_millis(100);
+
+/// Identity of one executable: path, mtime, size, and a content digest. `None`
+/// fields mean the file could not be inspected (missing/unreadable), never a
+/// fabricated value.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct BinaryIdentity {
+    pub path: String,
+    pub mtime_unix: Option<u64>,
+    pub size_bytes: Option<u64>,
+    pub digest: Option<String>,
+}
+
+/// The full observable identity of a chat + its runtime before or after a
+/// reload. Captured for before/after comparison.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ChatReloadIdentity {
+    pub chat_id: u32,
+    pub executor: Option<String>,
+    pub model: Option<String>,
+    pub wg_binary: Option<BinaryIdentity>,
+    pub pi_binary: Option<BinaryIdentity>,
+    pub plugin_compat: String,
+    pub plugin_source: String,
+    pub plugin_entry: String,
+    pub embed_digest: String,
+    pub cache_digest: Option<String>,
+    pub cache_state: String,
+    pub session_file: Option<String>,
+    pub session_message_count: Option<usize>,
+}
+
+/// The before→after delta `wg chat reload` prints.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ChatReloadDelta {
+    pub wg_binary_changed: bool,
+    pub pi_binary_changed: bool,
+    pub plugin_digest_changed: bool,
+    pub session_file_preserved: bool,
+    pub message_count_before: Option<usize>,
+    pub message_count_after: Option<usize>,
+}
+
+/// A compact, serializable view of the plugin resolution the reload performed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct PluginResolution {
+    pub compat: String,
+    pub source: String,
+    pub entry: String,
+    pub root: String,
+}
+
+/// The result of one successful chat reload.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ChatReloadOutcome {
+    pub chat_id: u32,
+    pub plugin: PluginResolution,
+    pub before: ChatReloadIdentity,
+    pub after: ChatReloadIdentity,
+    pub delta: ChatReloadDelta,
+}
+
+/// Runtime side effects of a reload, injectable so unit tests can drive the
+/// respawn/liveness state machine with a fake handler + fake daemon.
+pub(crate) trait ChatReloadRuntime {
+    /// Re-materialize the embedded pi plugin (idempotent).
+    fn ensure_plugin(&self) -> Result<ResolvedPlugin>;
+    /// Current read-only plugin status (cache state / digests).
+    fn plugin_status(&self) -> Result<PluginStatus>;
+    /// Signal the live handler and ask the supervisor to respawn it against the
+    /// same session (the exact `SetChatExecutor` path `wg chat resume` uses).
+    fn respawn_handler(&self, dir: &Path, cid: u32) -> Result<()>;
+    /// Concrete liveness: handler lock or TUI tmux owner is live.
+    fn handler_is_live(&self, dir: &Path, cid: u32) -> bool;
+}
+
+/// The production runtime: real `ensure-pi-plugin`, real daemon IPC, real lock
+/// probe. Every method delegates to an existing primitive.
+pub(crate) struct RealChatReloadRuntime;
+
+impl ChatReloadRuntime for RealChatReloadRuntime {
+    fn ensure_plugin(&self) -> Result<ResolvedPlugin> {
+        pi_plugin::ensure_pi_plugin(EnsureMode::Hermetic)
+            .context("ensure-pi-plugin (Hermetic) before chat reload")
+    }
+
+    fn plugin_status(&self) -> Result<PluginStatus> {
+        Ok(pi_plugin::status())
+    }
+
+    fn respawn_handler(&self, dir: &Path, cid: u32) -> Result<()> {
+        request_chat_resume(dir, cid)
+    }
+
+    fn handler_is_live(&self, dir: &Path, cid: u32) -> bool {
+        chat_handler_is_live(dir, cid)
+    }
+}
+
+/// Content digest of an executable, BLAKE3 over the full bytes. Content (not
+/// just mtime) is what lets the delta distinguish "a different binary was
+/// installed under the same path" from "the same binary respawned".
+fn binary_identity(path: &Path) -> Option<BinaryIdentity> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let mtime_unix = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    let digest = std::fs::read(path).ok().map(|bytes| {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&bytes);
+        format!("b3:{}", hasher.finalize().to_hex())
+    });
+    Some(BinaryIdentity {
+        path: path.display().to_string(),
+        mtime_unix,
+        size_bytes: Some(metadata.len()),
+        digest,
+    })
+}
+
+/// Newest pi transcript for `chat-N` under `<chat_dir>/pi-sessions`, matching
+/// pi-handler's `--session-id <chat_ref>` naming (`*_chat-N.jsonl`). `None`
+/// means no transcript exists yet (a fresh session).
+fn find_chat_session_file(dir: &Path, cid: u32) -> Option<PathBuf> {
+    let chat_ref = format!("chat-{cid}");
+    let session_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref).join("pi-sessions");
+    let suffix = format!("_chat-{cid}.jsonl");
+    std::fs::read_dir(session_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
+        })
+        .max_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok())
+}
+
+/// Count JSONL turns in a pi transcript. Cheap: one read + line count.
+fn count_jsonl_messages(path: &Path) -> Option<usize> {
+    let text = std::fs::read_to_string(path).ok()?;
+    Some(text.lines().filter(|line| !line.trim().is_empty()).count())
+}
+
+/// Capture the observable identity of a chat's runtime. Pure with respect to
+/// `plugin` and the injected binary paths, so tests can pin the delta without a
+/// live daemon or a real `pi` install.
+pub(crate) fn capture_chat_reload_identity(
+    dir: &Path,
+    cid: u32,
+    executor: Option<String>,
+    model: Option<String>,
+    wg_binary: Option<&Path>,
+    pi_binary: Option<&Path>,
+    plugin: &PluginStatus,
+) -> ChatReloadIdentity {
+    let session_file = find_chat_session_file(dir, cid);
+    let session_message_count = session_file.as_deref().and_then(count_jsonl_messages);
+    ChatReloadIdentity {
+        chat_id: cid,
+        executor,
+        model,
+        wg_binary: wg_binary.and_then(binary_identity),
+        pi_binary: pi_binary.and_then(binary_identity),
+        plugin_compat: plugin.compat.clone(),
+        plugin_source: format!("{:?}", plugin.source),
+        plugin_entry: plugin.dist_entry.display().to_string(),
+        embed_digest: plugin.embed_digest.clone(),
+        cache_digest: plugin.cache_digest.clone(),
+        cache_state: format!("{:?}", plugin.cache_state),
+        session_file: session_file.map(|p| p.display().to_string()),
+        session_message_count,
+    }
+}
+
+/// Compare two captured identities. `session_file_preserved` requires the same
+/// path on both sides; message count is informational.
+pub(crate) fn compute_reload_delta(
+    before: &ChatReloadIdentity,
+    after: &ChatReloadIdentity,
+) -> ChatReloadDelta {
+    ChatReloadDelta {
+        wg_binary_changed: before.wg_binary != after.wg_binary,
+        pi_binary_changed: before.pi_binary != after.pi_binary,
+        plugin_digest_changed: before.cache_digest != after.cache_digest,
+        session_file_preserved: before.session_file.is_some()
+            && before.session_file == after.session_file,
+        message_count_before: before.session_message_count,
+        message_count_after: after.session_message_count,
+    }
+}
+
+/// Fail-closed freshness gate applied AFTER `ensure-pi-plugin`. When this
+/// binary ships the cache path (`Source::Cache`), the cache must be byte-for-
+/// byte current with the binary's embed. A cache that is still drifted here is
+/// stale-and-unrefreshable: refuse loudly rather than respawn `pi` against old
+/// extension bytes.
+pub(crate) fn plugin_cache_freshness_gate(status: &PluginStatus) -> Result<()> {
+    if status.source == Source::Cache && status.cache_state != CacheState::Current {
+        anyhow::bail!(
+            "WG-CHAT-RELOAD-PLUGIN-STALE: pi plugin cache is {:?} after ensure-pi-plugin and cannot be refreshed; \
+             embed={} cache={} compat={} entry={}. \
+             Refusing to respawn against stale extension bytes. Run `wg pi-plugin install` with this binary, or check \
+             for write permission on {}. The chat was left untouched and is resumable with `wg chat resume`.",
+            status.cache_state,
+            status.embed_digest,
+            status.cache_digest.as_deref().unwrap_or("<none>"),
+            status.compat,
+            status.dist_entry.display(),
+            status.cache_version_dir.display(),
+        );
+    }
+    Ok(())
+}
+
+/// A reload must resume the same conversation. No transcript means the
+/// session-preserving guarantee cannot be honored — refuse rather than
+/// silently start a blank session.
+pub(crate) fn session_file_gate(session_file: Option<&str>, cid: u32) -> Result<()> {
+    if session_file.is_none() {
+        anyhow::bail!(
+            "WG-CHAT-RELOAD-SESSION-MISSING: chat {cid} has no pi session transcript under its pi-sessions/ dir. \
+             A reload cannot preserve a conversation that has no session file. Send the chat a message first so pi \
+             creates its transcript, then retry `wg chat reload {cid}`. The chat was left untouched."
+        );
+    }
+    Ok(())
+}
+
+fn plugin_resolution(plugin: &ResolvedPlugin) -> PluginResolution {
+    PluginResolution {
+        compat: plugin.compat.clone(),
+        source: format!("{:?}", plugin.source),
+        entry: plugin.dist_entry.display().to_string(),
+        root: plugin.root.display().to_string(),
+    }
+}
+
+/// One reload: capture → ensure → gate → respawn (signals + restarts the live
+/// handler over the same session) → wait-live → capture → delta. Every refusal
+/// happens before the respawn when possible, so a refused reload leaves the
+/// live handler running.
+pub(crate) fn reload_one(
+    dir: &Path,
+    cid: u32,
+    runtime: &dyn ChatReloadRuntime,
+    wg_binary: Option<&Path>,
+    pi_binary: Option<&Path>,
+    live_timeout: Duration,
+    poll: Duration,
+) -> Result<ChatReloadOutcome> {
+    let (executor, model) = reconstruct_resume_metadata(dir, cid);
+
+    // BEFORE identity, captured against the cache as it exists right now (so a
+    // stale cache shows up in the delta when ensure refreshes it).
+    let before_status = runtime.plugin_status()?;
+    let before = capture_chat_reload_identity(
+        dir,
+        cid,
+        executor,
+        model,
+        wg_binary,
+        pi_binary,
+        &before_status,
+    );
+
+    // Refuse BEFORE respawning the live handler: the chat must stay live when
+    // the preconditions for a clean reload are not met.
+    let ensured = runtime.ensure_plugin()?;
+    let after_ensure_status = runtime.plugin_status()?;
+    plugin_cache_freshness_gate(&after_ensure_status)?;
+    session_file_gate(before.session_file.as_deref(), cid)?;
+
+    // `request_chat_resume` signals the live handler to exit and the supervisor
+    // respawns it against the same session dir/id with the freshly materialized
+    // plugin. This is the exact proven path `wg chat resume` uses.
+    runtime.respawn_handler(dir, cid)?;
+    if !wait_for_chat_runtime_with(live_timeout, poll, || runtime.handler_is_live(dir, cid)) {
+        anyhow::bail!(
+            "WG-CHAT-RELOAD-NOT-LIVE: supervisor accepted the respawn for chat {cid}, but no live handler appeared within {}s. \
+             The chat is stopped but resumable with `wg chat resume {cid}`; inspect {}/service/daemon.log for the spawn error.",
+            live_timeout.as_secs(),
+            dir.display()
+        );
+    }
+
+    let after_status = runtime.plugin_status()?;
+    let after = capture_chat_reload_identity(
+        dir,
+        cid,
+        before.executor.clone(),
+        before.model.clone(),
+        wg_binary,
+        pi_binary,
+        &after_status,
+    );
+    let delta = compute_reload_delta(&before, &after);
+
+    Ok(ChatReloadOutcome {
+        chat_id: cid,
+        plugin: plugin_resolution(&ensured),
+        before,
+        after,
+        delta,
+    })
+}
+
+fn print_reload_outcome(outcome: &ChatReloadOutcome) {
+    let b = &outcome.before;
+    let a = &outcome.after;
+    let d = &outcome.delta;
+    println!("Reloaded chat {}.", outcome.chat_id);
+    println!(
+        "  plugin:   compat={} source={} entry={}",
+        outcome.plugin.compat, outcome.plugin.source, outcome.plugin.entry
+    );
+    println!(
+        "  before:   cache={} cache-digest={} embed-digest={}",
+        b.cache_state,
+        b.cache_digest.as_deref().unwrap_or("<none>"),
+        b.embed_digest
+    );
+    println!(
+        "  after:    cache={} cache-digest={} embed-digest={}",
+        a.cache_state,
+        a.cache_digest.as_deref().unwrap_or("<none>"),
+        a.embed_digest
+    );
+    println!(
+        "  session:  {} ({} messages)",
+        a.session_file.as_deref().unwrap_or("<none>"),
+        a.session_message_count
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "?".to_string())
+    );
+    println!(
+        "  delta:    wg-binary={} pi-binary={} plugin-digest={} session={}",
+        changed_label(d.wg_binary_changed),
+        changed_label(d.pi_binary_changed),
+        changed_label(d.plugin_digest_changed),
+        if d.session_file_preserved {
+            "preserved"
+        } else {
+            "NOT PRESERVED"
+        }
+    );
+    if d.message_count_before != d.message_count_after {
+        println!(
+            "            message count {} -> {}",
+            d.message_count_before
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "?".to_string()),
+            d.message_count_after
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "?".to_string())
+        );
+    }
+}
+
+fn changed_label(changed: bool) -> &'static str {
+    if changed { "CHANGED" } else { "unchanged" }
+}
+
+/// `wg chat reload <ref>` / `wg chat reload --all` — the one session-preserving
+/// reload verb. Requires the service daemon (the supervisor owns the handler).
+pub fn run_reload(dir: &Path, reference: Option<&str>, all: bool, json: bool) -> Result<()> {
+    if !service_is_running(dir) {
+        anyhow::bail!(
+            "Cannot reload: service daemon is not running. Reload needs the supervisor (which lives in the \
+             daemon) to stop and respawn the handler. Start it with 'wg service start'."
+        );
+    }
+
+    let graph =
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+
+    let targets: Vec<u32> = if all {
+        let mut ids: Vec<u32> = graph
+            .tasks()
+            .filter(|task| task.tags.iter().any(|tag| chat_id::is_chat_loop_tag(tag)))
+            .filter(|task| {
+                !task.status.is_terminal() && !task.tags.iter().any(|tag| tag == "archived")
+            })
+            .filter_map(|task| chat_id::parse_chat_task_id(&task.id))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    } else {
+        let reference = reference.context("chat reference required unless --all is passed")?;
+        vec![
+            resolve_chat_id(&graph, reference)
+                .with_context(|| format!("No chat matching '{}'", reference))?,
+        ]
+    };
+
+    if targets.is_empty() {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "reloaded": 0,
+                    "results": [],
+                }))?
+            );
+        } else {
+            println!("No active chats to reload.");
+        }
+        return Ok(());
+    }
+
+    let wg_binary = std::env::current_exe().ok();
+    let pi_binary = worksgood::executor_discovery::pi_route_availability().pi_binary;
+    let runtime = RealChatReloadRuntime;
+
+    let mut outcomes: Vec<ChatReloadOutcome> = Vec::new();
+    let mut failures: Vec<(u32, String)> = Vec::new();
+
+    for cid in targets {
+        // Terminal/archived state is authoritative — never reload into it.
+        if let Err(e) = validate_chat_resumable(&graph, cid) {
+            failures.push((cid, format!("{e}")));
+            continue;
+        }
+        match reload_one(
+            dir,
+            cid,
+            &runtime,
+            wg_binary.as_deref(),
+            pi_binary.as_deref(),
+            RELOAD_LIVE_TIMEOUT,
+            RELOAD_POLL,
+        ) {
+            Ok(outcome) => {
+                if !json {
+                    print_reload_outcome(&outcome);
+                }
+                outcomes.push(outcome);
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                if !json {
+                    eprintln!("\x1b[31m[wg chat reload]\x1b[0m chat {cid} FAILED: {msg}");
+                }
+                failures.push((cid, msg));
+            }
+        }
+    }
+
+    if json {
+        let results: Vec<serde_json::Value> = outcomes
+            .iter()
+            .map(|o| {
+                serde_json::json!({
+                    "chat_id": o.chat_id,
+                    "reloaded": true,
+                    "plugin": o.plugin,
+                    "before": o.before,
+                    "after": o.after,
+                    "delta": o.delta,
+                })
+            })
+            .collect();
+        let errors: Vec<serde_json::Value> = failures
+            .iter()
+            .map(|(cid, msg)| serde_json::json!({"chat_id": cid, "reloaded": false, "error": msg}))
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "reloaded": outcomes.len(),
+                "failed": failures.len(),
+                "results": results,
+                "errors": errors,
+            }))?
+        );
+    }
+
+    if !failures.is_empty() {
+        let named: Vec<String> = failures
+            .iter()
+            .map(|(cid, msg)| format!("chat {cid}: {msg}"))
+            .collect();
+        anyhow::bail!(
+            "{} of {} chat(s) failed to reload. Refusals are loud and leave each chat resumable:\n{}",
+            failures.len(),
+            outcomes.len() + failures.len(),
+            named.join("\n")
+        );
+    }
+
     Ok(())
 }
 
@@ -1755,5 +2272,300 @@ mod tests {
             classify_chat_task(&t3, false, &[]),
             ChatRuntimeStatus::Dormant
         );
+    }
+
+    // --- chat reload: fake handler/daemon -----------------------------------
+
+    fn fake_plugin_status(
+        source: Source,
+        cache_state: CacheState,
+        cache_digest: Option<&str>,
+    ) -> PluginStatus {
+        PluginStatus {
+            compat: pi_plugin::WG_PI_PLUGIN_COMPAT_VERSION.to_string(),
+            source,
+            dist_entry: PathBuf::from("/tmp/pi-worksgood/index.js"),
+            cache_version_dir: PathBuf::from("/tmp/cache/worksgood-pi/0.3.0"),
+            ready: cache_state == CacheState::Current,
+            settings_path: PathBuf::from("/tmp/.pi/agent/settings.json"),
+            console_wired: false,
+            embed_digest: "b3:embed".to_string(),
+            cache_digest: cache_digest.map(str::to_string),
+            cache_state,
+        }
+    }
+
+    fn fake_resolved_plugin() -> ResolvedPlugin {
+        ResolvedPlugin {
+            root: PathBuf::from("/tmp/cache/worksgood-pi/0.3.0"),
+            dist_entry: PathBuf::from("/tmp/cache/worksgood-pi/0.3.0/pi-worksgood/index.js"),
+            host_script: PathBuf::from("/tmp/cache/worksgood-pi/0.3.0/host/wg-pi-host.mjs"),
+            compat: pi_plugin::WG_PI_PLUGIN_COMPAT_VERSION.to_string(),
+            source: Source::Cache,
+            has_node_modules: false,
+            legacy_settings_migrated: false,
+            legacy_package_accepted: false,
+            console_settings_changed: false,
+        }
+    }
+
+    /// Injected fake handler + daemon: statuses are returned in call order
+    /// (before-capture, after-ensure, after-respawn); liveness flips on
+    /// stop/respawn.
+    struct FakeReloadRuntime {
+        statuses: std::cell::RefCell<Vec<PluginStatus>>,
+        live: std::cell::Cell<bool>,
+        live_after_respawn: bool,
+        respawn_calls: std::cell::Cell<u32>,
+    }
+
+    impl FakeReloadRuntime {
+        fn new(before: PluginStatus, after: PluginStatus, live_after_respawn: bool) -> Self {
+            Self {
+                statuses: std::cell::RefCell::new(vec![before, after.clone(), after]),
+                live: std::cell::Cell::new(true),
+                live_after_respawn,
+                respawn_calls: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl ChatReloadRuntime for FakeReloadRuntime {
+        fn ensure_plugin(&self) -> Result<ResolvedPlugin> {
+            Ok(fake_resolved_plugin())
+        }
+        fn plugin_status(&self) -> Result<PluginStatus> {
+            let mut statuses = self.statuses.borrow_mut();
+            if statuses.len() > 1 {
+                Ok(statuses.remove(0))
+            } else {
+                Ok(statuses[0].clone())
+            }
+        }
+        fn respawn_handler(&self, _dir: &Path, _cid: u32) -> Result<()> {
+            self.respawn_calls.set(self.respawn_calls.get() + 1);
+            self.live.set(self.live_after_respawn);
+            Ok(())
+        }
+        fn handler_is_live(&self, _dir: &Path, _cid: u32) -> bool {
+            self.live.get()
+        }
+    }
+
+    /// Create `<dir>/chat/chat-N/pi-sessions/<ts>_chat-N.jsonl` with `lines`
+    /// non-empty JSONL rows.
+    fn write_session_file(dir: &Path, cid: u32, lines: usize) -> PathBuf {
+        let session_dir = dir
+            .join("chat")
+            .join(format!("chat-{cid}"))
+            .join("pi-sessions");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let path = session_dir.join(format!("2026-01-01T00-00-00-000Z_chat-{cid}.jsonl"));
+        let body: String = (0..lines).map(|i| format!("{{\"turn\":{i}}}\n")).collect();
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn reload_identity_capture_counts_session_turns_and_delta_tracks_changes() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        let session = write_session_file(dir, 5, 3);
+
+        // Distinct fake binaries so content digest changes are observable.
+        let bin_a = dir.join("bin-a");
+        let bin_b = dir.join("bin-b");
+        std::fs::write(&bin_a, b"binary-a").unwrap();
+        std::fs::write(&bin_b, b"binary-b").unwrap();
+        let pi_a = dir.join("pi-a");
+        let pi_b = dir.join("pi-b");
+        std::fs::write(&pi_a, b"pi-a").unwrap();
+        std::fs::write(&pi_b, b"pi-b").unwrap();
+
+        let stale = fake_plugin_status(Source::Cache, CacheState::Drift, Some("b3:old"));
+        let fresh = fake_plugin_status(Source::Cache, CacheState::Current, Some("b3:embed"));
+
+        let before = capture_chat_reload_identity(
+            dir,
+            5,
+            Some("pi".into()),
+            Some("pi:openrouter:x".into()),
+            Some(&bin_a),
+            Some(&pi_a),
+            &stale,
+        );
+        let after = capture_chat_reload_identity(
+            dir,
+            5,
+            Some("pi".into()),
+            Some("pi:openrouter:x".into()),
+            Some(&bin_b),
+            Some(&pi_b),
+            &fresh,
+        );
+
+        assert_eq!(
+            before.session_file.as_deref(),
+            Some(session.display().to_string().as_str())
+        );
+        assert_eq!(before.session_message_count, Some(3));
+        assert_eq!(after.session_message_count, Some(3));
+        assert!(before.cache_digest.is_some());
+        assert_eq!(before.embed_digest, "b3:embed");
+
+        let delta = compute_reload_delta(&before, &after);
+        assert!(
+            delta.wg_binary_changed,
+            "different wg binary content => changed"
+        );
+        assert!(
+            delta.pi_binary_changed,
+            "different pi binary content => changed"
+        );
+        assert!(
+            delta.plugin_digest_changed,
+            "stale -> current cache digest => changed"
+        );
+        assert!(
+            delta.session_file_preserved,
+            "same transcript path => preserved"
+        );
+        assert_eq!(delta.message_count_before, Some(3));
+        assert_eq!(delta.message_count_after, Some(3));
+
+        // Same bytes + same cache digest => everything unchanged.
+        let same = capture_chat_reload_identity(
+            dir,
+            5,
+            Some("pi".into()),
+            Some("pi:openrouter:x".into()),
+            Some(&bin_a),
+            Some(&pi_a),
+            &stale,
+        );
+        let no_delta = compute_reload_delta(&before, &same);
+        assert!(!no_delta.wg_binary_changed);
+        assert!(!no_delta.pi_binary_changed);
+        assert!(!no_delta.plugin_digest_changed);
+        assert!(no_delta.session_file_preserved);
+    }
+
+    #[test]
+    fn reload_succeeds_and_shows_plugin_digest_change() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        write_session_file(dir, 5, 2);
+        let stale = fake_plugin_status(Source::Cache, CacheState::Drift, Some("b3:old"));
+        let fresh = fake_plugin_status(Source::Cache, CacheState::Current, Some("b3:embed"));
+        let runtime = FakeReloadRuntime::new(stale, fresh, true);
+
+        let outcome = reload_one(
+            dir,
+            5,
+            &runtime,
+            None,
+            None,
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+        )
+        .expect("reload should succeed with a live respawn");
+
+        assert_eq!(outcome.delta.plugin_digest_changed, true);
+        assert_eq!(outcome.delta.session_file_preserved, true);
+        assert_eq!(runtime.respawn_calls.get(), 1);
+    }
+
+    #[test]
+    fn reload_refuses_stale_unrefreshable_plugin_without_stopping() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        write_session_file(dir, 5, 1);
+        let stale = fake_plugin_status(Source::Cache, CacheState::Drift, Some("b3:old"));
+        // ensure-pi-plugin cannot refresh it: still Drift afterwards.
+        let runtime = FakeReloadRuntime::new(stale.clone(), stale, true);
+
+        let err = reload_one(
+            dir,
+            5,
+            &runtime,
+            None,
+            None,
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("WG-CHAT-RELOAD-PLUGIN-STALE"), "{msg}");
+        assert_eq!(
+            runtime.respawn_calls.get(),
+            0,
+            "refusal must happen before respawn"
+        );
+        assert!(
+            runtime.handler_is_live(dir, 5),
+            "live handler must survive refusal"
+        );
+    }
+
+    #[test]
+    fn reload_refuses_missing_session_file_without_stopping() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        let fresh_a = fake_plugin_status(Source::Cache, CacheState::Current, Some("b3:embed"));
+        let fresh_b = fake_plugin_status(Source::Cache, CacheState::Current, Some("b3:embed"));
+        let runtime = FakeReloadRuntime::new(fresh_a, fresh_b, true);
+
+        let err = reload_one(
+            dir,
+            7,
+            &runtime,
+            None,
+            None,
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("WG-CHAT-RELOAD-SESSION-MISSING"), "{msg}");
+        assert_eq!(runtime.respawn_calls.get(), 0);
+        assert!(
+            runtime.handler_is_live(dir, 7),
+            "live handler must survive refusal"
+        );
+    }
+
+    #[test]
+    fn reload_refuses_when_respawn_never_becomes_live() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        write_session_file(dir, 5, 1);
+        let fresh_a = fake_plugin_status(Source::Cache, CacheState::Current, Some("b3:embed"));
+        let fresh_b = fake_plugin_status(Source::Cache, CacheState::Current, Some("b3:embed"));
+        let runtime = FakeReloadRuntime::new(fresh_a, fresh_b, false);
+
+        let err = reload_one(
+            dir,
+            5,
+            &runtime,
+            None,
+            None,
+            Duration::from_millis(30),
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("WG-CHAT-RELOAD-NOT-LIVE"), "{msg}");
+        assert_eq!(runtime.respawn_calls.get(), 1);
+        assert!(!runtime.handler_is_live(dir, 5));
+    }
+
+    #[test]
+    fn plugin_cache_gate_skips_dev_and_env_override_sources() {
+        let dev = fake_plugin_status(Source::Dev, CacheState::Drift, None);
+        assert!(plugin_cache_freshness_gate(&dev).is_ok());
+        let env = fake_plugin_status(Source::EnvOverride, CacheState::Missing, None);
+        assert!(plugin_cache_freshness_gate(&env).is_ok());
+        let cache = fake_plugin_status(Source::Cache, CacheState::Drift, Some("b3:old"));
+        assert!(plugin_cache_freshness_gate(&cache).is_err());
     }
 }

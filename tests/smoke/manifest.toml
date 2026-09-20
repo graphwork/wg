@@ -2223,6 +2223,15 @@ description = "Pins fix-chat-resume through the real human CLI flow against an i
 timeout_seconds = 60
 
 [[scenario]]
+name = "chat_reload_session_preserving"
+script = "scenarios/chat_reload_session_preserving.sh"
+owners = [
+    "wg-chat-reload",
+]
+description = "Pins `wg chat reload` end-to-end against an isolated daemon and a credential-free fake Pi: a deliberately corrupted embedded plugin cache (stale bytes + wrong digest stamp) must be re-materialized by `ensure-pi-plugin`, the handler stopped and respawned resuming the SAME session transcript, and the printed before/after delta must show plugin-digest=CHANGED and session=preserved. Then removing the transcript must refuse loudly with WG-CHAT-RELOAD-SESSION-MISSING without touching the live handler, and a fake Pi that exits immediately must refuse loudly with WG-CHAT-RELOAD-NOT-LIVE."
+timeout_seconds = 150
+
+[[scenario]]
 name = "tui_pi_chat_uuid_migration_reopen"
 script = "scenarios/tui_pi_chat_uuid_migration_reopen.sh"
 owners = [
