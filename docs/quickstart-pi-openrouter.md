@@ -39,7 +39,7 @@ graph plus exact per-role `pi:<provider>:<model>` routes. See
 
 ## 1. Install WorksGood (`worksgood` + `wg` + `nex`)
 
-Requires the Rust toolchain ([rustup](https://rustup.rs/)).
+`cargo install` is the primary documented path and requires the Rust toolchain ([rustup](https://rustup.rs/)).
 
 ```bash
 cargo install --git https://github.com/graphwork/wg --locked
@@ -47,6 +47,24 @@ worksgood --help
 wg --version
 nex --version
 ```
+
+**npm route (prebuilt, additive, no Rust toolchain).** Node 20+; one command
+also installs the Pi coding agent CLI, so you can skip step 2:
+
+```bash
+npm install -g @worksgood/cli
+```
+
+It resolves prebuilt per-platform packages (`@worksgood/linux-x64-gnu`,
+`@worksgood/darwin-arm64`), ships zero postinstall scripts (works fully under
+`--ignore-scripts`), and declares `@earendil-works/pi-coding-agent ^0.85.1` as
+a dependency.
+
+> **macOS limitation:** the macOS binaries currently ship **unsigned** and
+> **un-notarized** (Apple Developer ID secrets are not configured), so
+> Gatekeeper may block the first run. Allow it with
+> `xattr -d com.apple.quarantine "$(which wg)"` (repeat for `worksgood` and
+> `nex`) or right-click → Open.
 
 From a source checkout instead:
 
@@ -66,6 +84,9 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
 ## 2. Install Pi
 
 Pi is an npm package. Requires Node.js 20+.
+
+> **Skip this step if you used the npm route in step 1** — `@worksgood/cli`
+> already installs `@earendil-works/pi-coding-agent ^0.85.1` as a dependency.
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
