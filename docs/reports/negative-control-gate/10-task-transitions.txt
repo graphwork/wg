@@ -1,0 +1,20 @@
+Log:
+  2026-09-20T22:33:11.998776739+00:00 Task paused
+  2026-09-20T22:33:12.053883790+00:00 Task published
+  2026-09-20T22:33:12.135380161+00:00 Task claimed by @ncg-worker [ncg-worker]
+  2026-09-20T22:33:14.593429064+00:00 Captured deterministic validation purpose=Configured command=b3:f757e707dd42bbcc3b40e7c8e19fe45ec9f30f34fd9b3148ae630e9bc877fd62 exit=Some(0) timeout=false duration_ms=25 evidence=b3:5327fc8a9d93822d838026ff9287fee26f177435f6623cfec5fe28378256d4e4 [deterministic-validation]
+  2026-09-20T22:33:14.795571122+00:00 Captured deterministic validation purpose=Baseline command=b3:b8ae37e5385a3e4541e8b2d708a026f075f30bb3e5715afcd0c85a7f660a36d4 exit=Some(0) timeout=false duration_ms=25 evidence=b3:cc80e222392578e098f41b5617fd6073f4cbf2c86226942d2138a0bf32af1183 [deterministic-validation]
+  2026-09-20T22:33:14.889414299+00:00 Selected immutable completion candidate; prior review receipts invalidated [completion-submit]
+  2026-09-20T22:33:27.229442303+00:00 Manifest b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f review outcome: FlipRejected [completion-review]
+  2026-09-20T22:33:27.240048883+00:00 Completion reviewing/Repairing: flip-semantic-recovery round=1 candidate=b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f opportunities=1/2; same generation/session/worktree, resumable Timer wait written. [completion-finalizer]
+  2026-09-20T22:33:38.121332871+00:00 Wait condition satisfied. Task ready for resume. [coordinator]
+  2026-09-20T22:33:40.518408709+00:00 Spawned by coordinator --executor pi --model lunaroute/deepseek-4.1-flash-background --isolation required-worktree [agent-1]
+  2026-09-20T22:35:48.868555511+00:00 Repair round 1: adding required ## Failure Modes section (concrete failure mode + symptom + mitigation), then resubmitting unchanged wg done.
+  2026-09-20T22:35:55.663472851+00:00 Committed: a8842fa — report.md now has exactly 4 sections incl. Failure Modes (mode/symptom/mitigation). No remote configured; nothing to push.
+  2026-09-20T22:35:56.532901057+00:00 Captured deterministic validation purpose=Configured command=b3:f757e707dd42bbcc3b40e7c8e19fe45ec9f30f34fd9b3148ae630e9bc877fd62 exit=Some(0) timeout=false duration_ms=25 evidence=b3:772409905433ceeac8508e18350d1e338be4e11c29b286442537b9cd7f2cf6e9 [deterministic-validation]
+  2026-09-20T22:35:56.631153564+00:00 Captured deterministic validation purpose=Baseline command=b3:b8ae37e5385a3e4541e8b2d708a026f075f30bb3e5715afcd0c85a7f660a36d4 exit=Some(0) timeout=false duration_ms=25 evidence=b3:8cd19ea840ded83129285057691dd489c7946af4e7a3528ef98b51732632d675 [deterministic-validation]
+  2026-09-20T22:35:56.633201380+00:00 Resolved deterministic completion repair after 1/2 opportunities [completion-repair]
+  2026-09-20T22:35:56.673132228+00:00 Selected immutable completion candidate; prior review receipts invalidated [completion-submit]
+  2026-09-20T22:36:16.664235792+00:00 Manifest b3:f1f1ca6a9f1d0e5c824806d0be84eb11ee0f9133c6f3c79c6b8d0f407dcc7799 review outcome: Accepted [completion-review]
+  2026-09-20T22:36:16.775117893+00:00 Reviewed manifest b3:f1f1ca6a9f1d0e5c824806d0be84eb11ee0f9133c6f3c79c6b8d0f407dcc7799 published to integration ref [land]
+  2026-09-20T22:36:16.824748385+00:00 Done derived from exact reviewed manifest b3:f1f1ca6a9f1d0e5c824806d0be84eb11ee0f9133c6f3c79c6b8d0f407dcc7799 and contract publication [completion-done]

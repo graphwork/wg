@@ -1,0 +1,40 @@
+{
+    "completion_contract": "land",
+    "generation": 0,
+    "manifest_version": 1,
+    "outputs": [
+        {
+            "commit_oid": "a8842fac39ffcd3e4f63bedf49f0e02e1c46fad7",
+            "diff_bundle_digest": "b3:8db69b7aad7316c1dd4750ee1d379d39e49c57e3e9b002303e74ef36390b1684",
+            "integrated_main_oid": "05e863fcd70133fb8ad6c0e5f9de997b2710f9c5",
+            "kind": "git",
+            "tree_oid": "6c8ff8f2c56dd51dae37d714fb50ccedce5287fc"
+        }
+    ],
+    "requirements_digest": "b3:e3dca6a7b708cf3189874978a99c7426b55fb5d8ecea7d9e03ae53ffacb63844",
+    "source_revision": "a8842fac39ffcd3e4f63bedf49f0e02e1c46fad7",
+    "task_id": "ncg-defective",
+    "validation_evidence": [
+        {
+            "content_digest": "b3:772409905433ceeac8508e18350d1e338be4e11c29b286442537b9cd7f2cf6e9",
+            "evidence_kind": "deterministic-validation/configured/v1",
+            "immutable_locator": {
+                "digest": "b3:772409905433ceeac8508e18350d1e338be4e11c29b286442537b9cd7f2cf6e9",
+                "kind": "completion_object"
+            },
+            "media_type": "application/vnd.worksgood.deterministic-validation+json",
+            "size": 2385
+        },
+        {
+            "content_digest": "b3:8cd19ea840ded83129285057691dd489c7946af4e7a3528ef98b51732632d675",
+            "evidence_kind": "deterministic-validation/baseline/v1",
+            "immutable_locator": {
+                "digest": "b3:8cd19ea840ded83129285057691dd489c7946af4e7a3528ef98b51732632d675",
+                "kind": "completion_object"
+            },
+            "media_type": "application/vnd.worksgood.deterministic-validation+json",
+            "size": 2404
+        }
+    ],
+    "worker_summary_digest": "b3:3408da40b9896471ac6b189d720da1cab927c3425d4ad37ce76d44a32bff16be"
+}

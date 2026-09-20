@@ -1,0 +1,86 @@
+[
+  {
+    "occurred_at": "2026-09-20T22:33:12.135318360+00:00",
+    "event_kind": "attempt-reserved",
+    "actor_kind": "dispatcher",
+    "actor_id": "ncg-worker",
+    "old_state": "open",
+    "new_state": "in-progress",
+    "attempt_id": "attempt-0-1",
+    "fence": 1,
+    "reason_code": "claim",
+    "event_id": "ev_01a0c0f3-b4c7-7242-9e2c-332f46262836"
+  },
+  {
+    "occurred_at": "2026-09-20T22:33:27.240030352+00:00",
+    "event_kind": "attempt-parked",
+    "actor_kind": "finalizer",
+    "actor_id": "completion-v3",
+    "old_state": "in-progress",
+    "new_state": "waiting",
+    "attempt_id": "attempt-0-1",
+    "fence": 1,
+    "reason_code": "completion_semantic_recovery",
+    "event_id": "ev_01a0c0f3-efc8-7fa1-ad0a-cc36969a6dac"
+  },
+  {
+    "occurred_at": "2026-09-20T22:33:38.121308750+00:00",
+    "event_kind": "wait-satisfied",
+    "actor_kind": "wait-matcher",
+    "actor_id": "coordinator",
+    "old_state": "waiting",
+    "new_state": "open",
+    "attempt_id": "attempt-0-1",
+    "fence": 1,
+    "reason_code": "wait_condition_satisfied",
+    "event_id": "ev_01a0c0f4-1a49-7ff3-8cd3-22c0a67645c1"
+  },
+  {
+    "occurred_at": "2026-09-20T22:33:40.429465665+00:00",
+    "event_kind": "attempt-reserved",
+    "actor_kind": "dispatcher",
+    "actor_id": "spawn",
+    "old_state": "open",
+    "new_state": "in-progress",
+    "attempt_id": "attempt-0-2",
+    "fence": 2,
+    "reason_code": "spawn_reservation",
+    "event_id": "ev_01a0c0f4-234d-7de2-993c-9561d117f822"
+  },
+  {
+    "occurred_at": "2026-09-20T22:33:40.509409693+00:00",
+    "event_kind": "attempt-running",
+    "actor_kind": "dispatcher",
+    "actor_id": "spawn-launch-gate",
+    "old_state": "in-progress",
+    "new_state": "in-progress",
+    "attempt_id": "attempt-0-2",
+    "fence": 2,
+    "reason_code": "launch_permitted",
+    "event_id": "ev_01a0c0f4-239d-7351-afea-2f4057039f9e"
+  },
+  {
+    "occurred_at": "2026-09-20T22:33:40.555613282+00:00",
+    "event_kind": "pi-continuation-authorized",
+    "actor_kind": "dispatcher",
+    "actor_id": "pi-spawn-bootstrap",
+    "old_state": "in-progress",
+    "new_state": "in-progress",
+    "attempt_id": "attempt-0-2",
+    "fence": 2,
+    "reason_code": "pi_authorized",
+    "event_id": "ev_01a0c0f4-23cb-71f0-bdea-5baf6b5ba055"
+  },
+  {
+    "occurred_at": "2026-09-20T22:36:16.827669245+00:00",
+    "event_kind": "attempt-succeeded",
+    "actor_kind": "finalizer",
+    "actor_id": "completion-v3",
+    "old_state": "in-progress",
+    "new_state": "done",
+    "attempt_id": "attempt-0-2",
+    "fence": 2,
+    "reason_code": "reviewed_publication_committed",
+    "event_id": "ev_01a0c0f6-863b-7170-8b89-01f84114c956"
+  }
+]

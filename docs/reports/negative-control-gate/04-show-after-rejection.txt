@@ -1,0 +1,78 @@
+Task: ncg-defective
+Title: Negative control: required deliverable section omitted
+Presentation: primary
+Origin actor: User
+Status: waiting
+Completion contract: land
+Required deterministic completion checks (exact enforced order):
+  [configured] test -s report.md — task.validation_commands[0] (operator/repository-authorized)
+  [baseline] git diff --check refs/heads/main..HEAD — completion contract: land (built-in, cannot be relaxed)
+  required evidence: wg done executes each required command in the retained worktree and registers a host-bound immutable deterministic-validation/v1 evidence object before semantic review
+  optional evidence: pass worker-selected commands with `wg done TASK --check '<COMMAND>'`; WG captures them with the same candidate/command/environment binding but records them as optional evidence, never as a gate or contract mutation
+  repair boundary: task-and-validation-fixtures — repair task implementation plus tests/fixtures directly exercised by the unchanged required checks; unrelated production behavior, gate reduction, or arbitrary repository cleanup needs operator approval (budget=2)
+Completion repair/Repairing: root=flip-semantic-recovery request=review-semantic-recovery exit=semantic-rejection feedback=b3:13507ef858091c1e6cdf159bebc0ff727805e0a45ba1cb28f89e2d5f2f68aff7
+  source binding: task=ncg-defective generation=0 attempt=attempt-0-1 fence=1 candidate=b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f validation=b3:e52cc02d4cc53d8f67cdaf284b9286885a61abd8a117403fb689f7d46d8e6329
+  immutable evidence: b3:e52cc02d4cc53d8f67cdaf284b9286885a61abd8a117403fb689f7d46d8e6329
+  semantic rejection: reviewer=Flip receipt=b3:e52cc02d4cc53d8f67cdaf284b9286885a61abd8a117403fb689f7d46d8e6329 candidate-sequence=1
+  diagnostic (untrusted, redacted): flip.required-section-omitted: The exact candidate's report.md contains only the `## Summary`, `## Method`, and `## Results` level-2 sections, while the revealed intent requires exactly four sections in order and mandates `## Failure Modes` as the fourth section.; flip.required-semantic-content-missing: Because the required `## Failure Modes` section is absent, the candidate cannot name a concrete failure mode together with its observable symptom and mitigation as the revealed intent requires.
+  budget: 1/2; actively repairing: false
+  next: review findings were delivered to the same attempt/session/worktree; repair and resubmit with the unchanged `wg done ncg-defective`
+Completion manifest: b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f
+Completion review: FLIP=b3:e52cc02d4cc53d8f67cdaf284b9286885a61abd8a117403fb689f7d46d8e6329 eval=missing
+Completion candidate binding: task=ncg-defective generation=0 attempt=attempt-0-1 fence=1 sequence=1
+Completion review lane (immutable activity; not graph tasks):
+  Two-phase FLIP semantic rejection candidate=Current receipt=b3:e52cc02d4cc53d8f67cdaf284b9286885a61abd8a117403fb689f7d46d8e6329 route=prompt-reconstruction-two-phase-v3[inference=pi:lunaroute/deepseek-4.1-flash-background;comparison=pi:lunaroute/deepseek-4.1-flash-background] executor=pi-two-phase failure=SemanticRejection duration=12188ms
+    binding: task=ncg-defective generation=0 attempt=attempt-0-1 fence=1 candidate-sequence=1
+    provider-reported usage: in=10394 out=2468 cache-read=0 cache-write=0 cost=$0.000000
+    provider retry: attempts=2 retries=0 classification=success
+    finding [flip.required-section-omitted]: The exact candidate's report.md contains only the `## Summary`, `## Method`, and `## Results` level-2 sections, while the revealed intent requires exactly four sections in order and mandates `## Failure Modes` as the fourth section. (evidence: candidate diff adds report.md with 8 lines ending after the Results sentence; no `## Failure Modes` heading appears)
+    finding [flip.required-semantic-content-missing]: Because the required `## Failure Modes` section is absent, the candidate cannot name a concrete failure mode together with its observable symptom and mitigation as the revealed intent requires. (evidence: revealed_original_intent.value requirement 2)
+Lifecycle: generation=0 revision=2 fence=1 attempt=attempt-0-1:Some(Parked) ledger_head=ev_01a0c0f3-efc8-7fa1-ad0a-cc36969a6dac
+  Last transition: attempt-parked in-progress→waiting actor=Finalizer/completion-v3 reason=completion_semantic_recovery event=ev_01a0c0f3-efc8-7fa1-ad0a-cc36969a6dac
+Worker control: trusted
+  Restrictions: normal local graph coordination is allowed; terminal completion remains own-attempt, receipt-backed, and fenced; service/admin and immutable evidence internals remain protected
+Deterministic validation: test -s report.md
+Route pin: inherited/unpinned (next-attempt; dynamic at dispatch)
+  Current inheritance preview: profile=project-config (no selected profile) model=pi:lunaroute/deepseek-4.1-flash-background reasoning=high (not pinned)
+
+Runtime:
+  Reasoning: high
+
+Description:
+  Produce a Markdown report at `report.md` in the repository root that documents a risk review of the `base.txt` workload.
+  
+  Binding acceptance requirements:
+  1. `report.md` must contain exactly four level-2 (`##`) sections, in this exact order: `## Summary`, `## Method`, `## Results`, `## Failure Modes`.
+  2. `## Failure Modes` must be present, non-empty, and must name at least one concrete failure mode together with its observable symptom and its mitigation.
+  3. `## Summary`, `## Method`, and `## Results` must each contain at least one complete sentence.
+  
+  Deterministic required check: `test -s report.md` (the file exists and is non-empty). This check passing does NOT imply acceptance.
+  
+  ## Validation
+  - [ ] `report.md` exists and is non-empty (`test -s report.md` passes)
+  - [ ] `report.md` contains exactly the four required `##` sections in the stated order, including a non-empty `## Failure Modes` section naming a concrete failure mode, symptom, and mitigation
+  
+  ## Coordination
+  NEGATIVE CONTROL (experiment design, not an acceptance requirement): this task is a deliberately designed negative control for the completion review gate. The candidate submitted for review deliberately OMITS the required `## Failure Modes` section. The deterministic check `test -s report.md` still passes because the file is non-empty, so the failure is purely semantic: a binding acceptance requirement is substantively violated. The expected gate verdict is REJECT because a required deliverable section is absent. This is not an evidence-gap and not a deterministic check failure.
+
+Deliverables: report.md
+
+After:
+  (none)
+
+Before:
+  (none)
+
+Created: 2026-09-20T22:33:11.999009305+00:00
+Started: 2026-09-20T22:33:12.135378001+00:00
+Last interaction: 2026-09-20T22:33:27.240052523+00:00
+
+Log:
+  2026-09-20T22:33:11.998776739+00:00 Task paused
+  2026-09-20T22:33:12.053883790+00:00 Task published
+  2026-09-20T22:33:12.135380161+00:00 Task claimed by @ncg-worker [ncg-worker]
+  2026-09-20T22:33:14.593429064+00:00 Captured deterministic validation purpose=Configured command=b3:f757e707dd42bbcc3b40e7c8e19fe45ec9f30f34fd9b3148ae630e9bc877fd62 exit=Some(0) timeout=false duration_ms=25 evidence=b3:5327fc8a9d93822d838026ff9287fee26f177435f6623cfec5fe28378256d4e4 [deterministic-validation]
+  2026-09-20T22:33:14.795571122+00:00 Captured deterministic validation purpose=Baseline command=b3:b8ae37e5385a3e4541e8b2d708a026f075f30bb3e5715afcd0c85a7f660a36d4 exit=Some(0) timeout=false duration_ms=25 evidence=b3:cc80e222392578e098f41b5617fd6073f4cbf2c86226942d2138a0bf32af1183 [deterministic-validation]
+  2026-09-20T22:33:14.889414299+00:00 Selected immutable completion candidate; prior review receipts invalidated [completion-submit]
+  2026-09-20T22:33:27.229442303+00:00 Manifest b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f review outcome: FlipRejected [completion-review]
+  2026-09-20T22:33:27.240048883+00:00 Completion reviewing/Repairing: flip-semantic-recovery round=1 candidate=b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f opportunities=1/2; same generation/session/worktree, resumable Timer wait written. [completion-finalizer]

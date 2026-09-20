@@ -1,0 +1,4 @@
+Service started and ready (PID 2825179)
+Socket: /tmp/ncg-isolated/project/.wg/service/daemon.sock
+Log: /tmp/ncg-isolated/project/.wg/service/daemon.log
+Dispatcher: max_agents=1, poll_interval=5s, executor=pi, model=pi:lunaroute/deepseek-4.1-flash-background

@@ -1,0 +1,6 @@
+### stdout
+
+### stderr
+Running configured deterministic validation: test -s report.md
+Review Flip [flip.required-section-omitted]: The exact candidate's report.md contains only the `## Summary`, `## Method`, and `## Results` level-2 sections, while the revealed intent requires exactly four sections in order and mandates `## Failure Modes` as the fourth section. (evidence: candidate diff adds report.md with 8 lines ending after the Results sentence; no `## Failure Modes` heading appears)
+Review Flip [flip.required-semantic-content-missing]: Because the required `## Failure Modes` section is absent, the candidate cannot name a concrete failure mode together with its observable symptom and mitigation as the revealed intent requires. (evidence: revealed_original_intent.value requirement 2)
