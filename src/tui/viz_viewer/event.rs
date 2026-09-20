@@ -1703,6 +1703,16 @@ pub(crate) fn open_retire_dialog_for_coordinator(app: &mut VizApp, cid: u32) {
             "Archive chat".into(),
             "Stops live session, marks Done + archived, preserves chat directory".into(),
         ),
+        (
+            'r',
+            "Reload (warm reboot)".into(),
+            "Close + resume the SAME session — picks up new pi binary/plugin".into(),
+        ),
+        (
+            'f',
+            "Fork chat".into(),
+            "Copy the transcript into a new independent chat; parent untouched".into(),
+        ),
         ('c', "Cancel".into(), "Make no changes".into()),
     ];
     app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
@@ -1938,6 +1948,31 @@ fn execute_choice_dialog_option(
             }
             1 => InputMode::Confirm(ConfirmAction::StopChat(context.clone())),
             2 => InputMode::Confirm(ConfirmAction::ArchiveChat(context.clone())),
+            3 => {
+                // Warm reboot: `wg chat reload` closes the handler and resumes
+                // the SAME pi session (adopting a new pi binary/plugin).
+                let chat_ref = format!("chat-{}", context.identity.coordinator_id);
+                app.exec_command(
+                    vec!["chat".into(), "reload".into(), chat_ref],
+                    CommandEffect::RefreshAndNotify(format!(
+                        "Warm-rebooting chat {} — close + resume same session…",
+                        context.identity.coordinator_id
+                    )),
+                );
+                InputMode::Normal
+            }
+            4 => {
+                // Fork: copy the transcript into a new independent chat.
+                let chat_ref = format!("chat-{}", context.identity.coordinator_id);
+                app.exec_command(
+                    vec!["chat".into(), "fork".into(), chat_ref],
+                    CommandEffect::RefreshAndNotify(format!(
+                        "Forking chat {} — new chat with the same history…",
+                        context.identity.coordinator_id
+                    )),
+                );
+                InputMode::Normal
+            }
             _ => InputMode::Normal,
         },
         ChoiceDialogAction::TaskContext(task_id) => {
@@ -12052,6 +12087,39 @@ mod chat_tab_navigation_tests {
             super::super::trace::capture_state_context(&app).chat_input_route,
             Some("embedded_vendor_pty")
         );
+    }
+
+    /// The chat Close… dialog exposes the warm reboot (reload) and fork
+    /// actions by hotkey; selecting them dispatches the `wg chat …` command
+    /// with the right effect and returns to Normal without mutating the tab.
+    #[test]
+    fn close_dialog_offers_warm_reboot_and_fork() {
+        use super::super::state::CommandResult;
+        for (hotkey, expected_effect) in [('r', "Warm-rebooting chat 4"), ('f', "Forking chat 4")] {
+            let (mut app, _tmp) = build_app_with_chats(&[0, 4]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            // exec_command sends its (test-synthesized) result through
+            // cmd_tx — keep rx on OUR side to assert the dispatched effect.
+            app.cmd_tx = tx;
+            app.right_panel_tab = RightPanelTab::Chat;
+            switch_chat_tab_to_index(&mut app, 1); // cid = 4
+            app.focused_panel = FocusedPanel::Graph;
+            super::handle_key(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
+            assert!(matches!(app.input_mode, InputMode::ChoiceDialog(_)));
+            assert!(app.active_tabs.contains(&4), "opening must not mutate tabs");
+
+            super::handle_key(&mut app, KeyCode::Char(hotkey), KeyModifiers::NONE);
+
+            assert_eq!(app.input_mode, InputMode::Normal);
+            assert!(app.active_tabs.contains(&4), "reload/fork keep the tab");
+            let CommandResult { effect, .. } = rx
+                .try_recv()
+                .expect("dialog selection must dispatch a command");
+            let super::super::state::CommandEffect::RefreshAndNotify(msg) = effect else {
+                panic!("expected RefreshAndNotify effect for hotkey {hotkey}");
+            };
+            assert!(msg.contains(expected_effect), "got: {msg}");
+        }
     }
 
     #[test]

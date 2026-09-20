@@ -6127,6 +6127,7 @@ pub enum ChatCommands {
     /// becomes live. Run it from another terminal or the TUI; a reload issued
     /// from inside the chat itself takes that console down expectedly and the
     /// agent session continues on respawn.
+    #[command(alias = "reboot")]
     Reload {
         /// Chat reference: numeric ID, `.chat-N` task ID, or name.
         #[arg(required_unless_present = "all")]
@@ -6135,6 +6136,24 @@ pub enum ChatCommands {
         /// Reload every active chat in this project.
         #[arg(long, conflicts_with = "chat")]
         all: bool,
+    },
+
+    /// Fork a Pi chat into a NEW independent chat starting from the same
+    /// conversation history. Copies the parent's pi transcript into the
+    /// fork's `pi-sessions/` under the fork's own `--session-id`, so the fork
+    /// opens with the full history and evolves independently — the parent is
+    /// untouched (still live if it was). This is the pi-native fork: the
+    /// transcript is just a file, no `pi --fork` flag required. Use it to try
+    /// a new pi binary/plugin or a different direction on a copy while the
+    /// original keeps running.
+    Fork {
+        /// Chat reference: numeric ID, `.chat-N` task ID, or name.
+        chat: String,
+
+        /// Human-readable name for the fork (becomes the task title).
+        /// Defaults to `fork of chat-<N>`.
+        #[arg(long, short = 'n')]
+        name: Option<String>,
     },
 
     /// Mark the chat as Done and tag it `archived`. Out of the active

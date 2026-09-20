@@ -478,10 +478,18 @@ impl PtyPane {
                     }
                     let last_start = ledger.last_start().map(|(_, event)| event);
                     if last_start.is_none_or(|event| {
-                        !worksgood::chat_runtime::runtime_identity_matches(
+                        // Warm-reboot tolerance: a start record from an older
+                        // binary may lack optional identity fields (schema
+                        // evolution) and may carry a different plugin entry
+                        // path (compat-bumped cache dir). Unknown ≠ different;
+                        // session-critical argv must still match.
+                        !worksgood::chat_runtime::runtime_identity_resumable(
                             &event.identity,
                             identity,
-                        ) || event.argv != worksgood::chat_runtime::sanitize_argv(&original_argv)
+                        ) || !worksgood::chat_runtime::argv_resumable(
+                            &event.argv,
+                            &worksgood::chat_runtime::sanitize_argv(&original_argv),
+                        )
                     }) {
                         anyhow::bail!(
                             "refusing Pi restart: exact identity or sanitized argv changed since the recorded start"

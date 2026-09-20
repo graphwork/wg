@@ -20,7 +20,7 @@
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use worksgood::chat_id;
 use worksgood::dispatch::handler_for_model;
@@ -81,8 +81,19 @@ pub fn resolve_chat_id(graph: &WorkGraph, reference: &str) -> Option<u32> {
         }
         return Some(n); // tolerate ID-without-task (still try downstream ops)
     }
-    // Full task ID form
-    if let Some(n) = chat_id::parse_chat_task_id(reference) {
+    // Full task ID form — including the bare "chat-N" spelling used by pi
+    // transcripts (`--session-id chat-N`), tmux session names, and the TUI.
+    // Users reach for exactly this string; make it addressable everywhere.
+    let dotted = if let Some(rest) = reference.strip_prefix("chat-") {
+        rest.parse::<u32>().ok().map(|_| format!(".chat-{rest}"))
+    } else {
+        None
+    };
+    let parsed = dotted
+        .as_deref()
+        .and_then(chat_id::parse_chat_task_id)
+        .or_else(|| chat_id::parse_chat_task_id(reference));
+    if let Some(n) = parsed {
         return Some(n);
     }
     // Name-based: scan chat tasks for a matching title suffix.
@@ -767,6 +778,241 @@ pub fn run_stop(dir: &Path, reference: &str, json: bool) -> Result<()> {
     crate::commands::service::run_stop_coordinator(dir, cid, json)
 }
 
+// ============================================================================
+// Subcommand: fork
+// ============================================================================
+
+/// Atomically install one forked transcript file: write to a unique temp name
+/// in the destination dir, then rename over the final name. A handler that
+/// races the copy observes either nothing or the complete file — never a
+/// partial transcript.
+fn atomic_copy(src: &Path, dst: &Path) -> Result<()> {
+    let bytes = std::fs::read(src).with_context(|| format!("read {:?}", src))?;
+    let tmp = dst.with_file_name(format!(
+        ".fork-tmp-{}-{}",
+        std::process::id(),
+        dst.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("transcript")
+    ));
+    std::fs::write(&tmp, &bytes).with_context(|| format!("write {:?}", tmp))?;
+    std::fs::rename(&tmp, dst).with_context(|| format!("rename {:?} -> {:?}", tmp, dst))
+}
+
+/// `wg chat fork <ref> [--name <name>]` — fork a Pi chat into a NEW,
+/// independent chat that starts from the same conversation history.
+///
+/// Mechanics: allocate the next chat id through the exact create path, copy
+/// the parent's pi transcript (`<ts>_chat-N.jsonl`, plus its wake cursor) into
+/// the fork's `pi-sessions/` under the fork's `--session-id` name, then let
+/// the supervisor spawn the fork. Pi's `--session-id chat-M` contract picks up
+/// the pre-seeded transcript — the fork opens with the full history and
+/// evolves independently; the parent is untouched (still live if it was).
+///
+/// This is the warm, pi-native fork: no `pi --fork` needed, the transcript is
+/// just a file any pi can open. Daemon-up, the fork's first (empty) handler
+/// spawn is stopped, the transcript is installed, and the handler is resumed —
+/// a warm reboot over the seeded session — so the live fork provably runs on
+/// the copied history. Daemon-down, the fork is created dormant with the
+/// transcript already in place (nothing can race: there is no supervisor).
+pub fn run_fork(dir: &Path, reference: &str, name: Option<&str>, json: bool) -> Result<()> {
+    migrate_existing_chat_tasks(dir)?;
+    let graph =
+        worksgood::parser::load_graph(&graph_path(dir)).with_context(|| "Failed to load graph")?;
+    let cid = resolve_chat_id(&graph, reference)
+        .with_context(|| format!("No chat matching '{}'", reference))?;
+    validate_chat_resumable(&graph, cid)?;
+
+    // Forking is Pi-chat-only today: the transcript-copy mechanism is keyed to
+    // pi's `--session-id` naming. A claude/codex chat fork needs its own
+    // transcript story; refuse loudly rather than silently forking nothing.
+    let (executor, model) = reconstruct_resume_metadata(dir, cid);
+    let task_executor =
+        chat_id::find_chat_task(&graph, cid).and_then(|task| task.executor_preset_name.clone());
+    let effective_executor = executor
+        .or(task_executor)
+        .unwrap_or_else(|| "pi".to_string());
+    if effective_executor != "pi" {
+        anyhow::bail!(
+            "Chat fork currently supports Pi chats only (chat {} runs {}). \
+             Fork `wg session` journals instead: `wg session fork chat-{cid}`.",
+            cid,
+            effective_executor
+        );
+    }
+
+    // The parent transcript must exist — forking a conversation that never
+    // started is just `wg chat create` with extra steps.
+    let source_ref = format!("chat-{cid}");
+    worksgood::chat_sessions::prepare_pi_chat_session(dir, cid)
+        .with_context(|| format!("prepare source chat storage for {source_ref}"))?;
+    let source_dir = worksgood::chat::chat_dir_for_ref(dir, &source_ref);
+    let source_session_dir = source_dir.join("pi-sessions");
+    let source_transcript =
+        worksgood::chat_sessions::newest_pi_transcript(&source_session_dir, cid).ok_or_else(
+            || {
+                anyhow::anyhow!(
+                    "Chat {cid} has no pi transcript under {} — nothing to fork. \
+                 Send the chat a message first, then retry.",
+                    source_session_dir.display()
+                )
+            },
+        )?;
+
+    // Allocate the fork through the exact create path (IPC when the daemon is
+    // up, direct graph commit when down). It inherits the parent's pinned
+    // model; the executor is pi by the gate above.
+    let fork_name = name
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("fork of chat-{cid}"));
+    let new_cid = crate::commands::service::create_chat_cid(
+        dir,
+        Some(&fork_name),
+        model.as_deref(),
+        Some("pi"),
+        None,
+        None,
+    )?;
+    let fork_ref = format!("chat-{new_cid}");
+
+    // Register the fork's session storage NOW (idempotent) so the transcript
+    // has a home regardless of spawn ordering.
+    worksgood::chat_sessions::prepare_pi_chat_session(dir, new_cid)
+        .with_context(|| format!("prepare fork storage for {fork_ref}"))?;
+    let fork_dir = worksgood::chat::chat_dir_for_ref(dir, &fork_ref);
+    let fork_session_dir = fork_dir.join("pi-sessions");
+
+    let install_fork_transcript = || -> Result<()> {
+        std::fs::create_dir_all(&fork_session_dir)
+            .with_context(|| format!("create {:?}", fork_session_dir))?;
+        let source_name = source_transcript
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("source transcript filename")?
+            .to_string();
+        let fork_stem = source_name
+            .strip_suffix(&format!("_chat-{cid}.jsonl"))
+            .unwrap_or(&source_name)
+            .to_string();
+        let fork_transcript = fork_session_dir.join(format!("{fork_stem}_chat-{new_cid}.jsonl"));
+        atomic_copy(&source_transcript, &fork_transcript)?;
+        // Carry the wake cursor so wake events the parent already consumed do
+        // not replay into the fork on its first turn.
+        let source_cursor =
+            source_transcript.with_file_name(format!("{}.wg-wake-cursor.json", source_name));
+        if source_cursor.exists() {
+            let fork_cursor = fork_transcript.with_file_name(format!(
+                "{fork_stem}_chat-{new_cid}.jsonl.wg-wake-cursor.json"
+            ));
+            atomic_copy(&source_cursor, &fork_cursor)?;
+        }
+        // If the supervisor raced the seed and pi already created its own empty
+        // transcript under the fork's session-id, retire the stray (and its
+        // cursor) so `--session-id chat-{new_cid}` resolves to exactly the
+        // forked history. Safe: install only runs while no legit fork turns
+        // exist (a raced handler is stopped before re-install).
+        let fork_suffix = format!("_chat-{new_cid}.jsonl");
+        for entry in std::fs::read_dir(&fork_session_dir)
+            .with_context(|| format!("read {:?}", fork_session_dir))?
+            .flatten()
+        {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.ends_with(&fork_suffix) && path != fork_transcript {
+                let _ = std::fs::remove_file(&path);
+                let _ = std::fs::remove_file(
+                    path.with_file_name(format!("{name}.wg-wake-cursor.json")),
+                );
+            }
+        }
+        Ok(())
+    };
+
+    if service_is_running(dir) {
+        // Deterministic sequencing over racing the supervisor's 5s poll: seed
+        // the transcript first, repair the rare race (supervisor spawned an
+        // empty handler mid-seed → stop it and re-assert the seed), then force
+        // the spawn and wait for stable liveness. The live fork provably runs
+        // the copied history.
+        install_fork_transcript()?;
+        if chat_handler_is_live(dir, new_cid) {
+            crate::commands::service::stop_chat_quiet(dir, new_cid)?;
+            install_fork_transcript()?;
+        }
+        request_chat_resume(dir, new_cid)?;
+        if !wait_for_stable_chat_runtime_with(RESUME_LIVE_TIMEOUT, RESUME_LIVE_POLL, || {
+            chat_handler_is_live(dir, new_cid)
+        }) {
+            // The fork may legitimately stay unspawned (idle rule, no
+            // consumer). The seed is already in place; the supervisor brings
+            // it up when a consumer attaches — not an error.
+            install_fork_transcript()?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "source_chat_id": cid,
+                        "fork_chat_id": new_cid,
+                        "fork_task_id": chat_id::format_chat_task_id(new_cid),
+                        "forked": true,
+                        "live": false,
+                        "note": "transcript seeded; handler not yet live (no consumer attached)"
+                    }))?
+                );
+            } else {
+                println!(
+                    "Forked chat {cid} → {new_cid} (task {}).",
+                    chat_id::format_chat_task_id(new_cid)
+                );
+                println!(
+                    "  history: {} → {}",
+                    source_transcript.display(),
+                    fork_session_dir.display()
+                );
+                println!(
+                    "  transcript seeded; the handler is not yet live (no consumer) — it spawns on attach"
+                );
+            }
+            return Ok(());
+        }
+    } else {
+        // Daemon down: no supervisor, no race. Seed and leave dormant.
+        install_fork_transcript()?;
+    }
+
+    let lines = vec![
+        format!(
+            "Forked chat {cid} → {new_cid} (task {}).",
+            chat_id::format_chat_task_id(new_cid)
+        ),
+        format!(
+            "  history: {} → {}",
+            source_transcript.display(),
+            fork_session_dir.display()
+        ),
+        format!(
+            "  parent untouched and still independent; open the fork in the TUI or `wg chat attach {fork_ref}`"
+        ),
+    ];
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "source_chat_id": cid,
+                "fork_chat_id": new_cid,
+                "fork_task_id": chat_id::format_chat_task_id(new_cid),
+                "forked": true,
+                "live": true,
+            }))?
+        );
+    } else {
+        for line in lines {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
 /// Reconstruct the `(executor, model)` a chat should resume with from
 /// its saved metadata, mirroring the precedence `wg chat show` uses:
 ///
@@ -874,6 +1120,44 @@ fn wait_for_chat_runtime_with(
     }
 }
 
+/// How long liveness must hold continuously before a (re)spawn counts as
+/// settled. The daemon-supervised adapter holds the `.handler.pid` session
+/// lock for a brief window even when the respawn is about to be REFUSED
+/// (identity mismatch / budget exhausted) — a single live observation at that
+/// moment is a false positive, and `wg chat resume` would report success for
+/// a chat that dies a second later. Requiring liveness to hold for this long
+/// closes that gap; a genuinely live pi handler holds it trivially.
+const RESUME_LIVE_SETTLE: Duration = Duration::from_millis(500);
+
+/// Like [`wait_for_chat_runtime_with`], but success requires liveness to hold
+/// CONTINUOUSLY for [`RESUME_LIVE_SETTLE`] (clamped to the timeout — a caller
+/// that explicitly asked for a 0s wait gets the old single-observation
+/// behavior rather than a guaranteed timeout). A blip (adapter lock acquired
+/// then released on refusal) resets the timer instead of passing.
+fn wait_for_stable_chat_runtime_with(
+    timeout: Duration,
+    poll: Duration,
+    mut is_live: impl FnMut() -> bool,
+) -> bool {
+    let settle = RESUME_LIVE_SETTLE.min(timeout);
+    let deadline = Instant::now() + timeout;
+    let mut live_since: Option<Instant> = None;
+    loop {
+        if is_live() {
+            let since = *live_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= settle {
+                return true;
+            }
+        } else {
+            live_since = None;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(poll.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
 /// `wg chat resume` — ask the supervisor to (re)spawn the handler and wait for
 /// concrete liveness. An accepted IPC is scheduling acknowledgement, not user
 /// success: this command returns success only after a handler lock or the
@@ -937,7 +1221,7 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
         }
         anyhow::bail!("{}", msg);
     }
-    if !wait_for_chat_runtime_with(RESUME_LIVE_TIMEOUT, RESUME_LIVE_POLL, || {
+    if !wait_for_stable_chat_runtime_with(RESUME_LIVE_TIMEOUT, RESUME_LIVE_POLL, || {
         chat_handler_is_live(dir, cid)
     }) {
         let msg = format!(
@@ -1118,17 +1402,7 @@ fn binary_identity(path: &Path) -> Option<BinaryIdentity> {
 fn find_chat_session_file(dir: &Path, cid: u32) -> Option<PathBuf> {
     let chat_ref = format!("chat-{cid}");
     let session_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref).join("pi-sessions");
-    let suffix = format!("_chat-{cid}.jsonl");
-    std::fs::read_dir(session_dir)
-        .ok()?
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(&suffix))
-        })
-        .max_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok())
+    worksgood::chat_sessions::newest_pi_transcript(&session_dir, cid)
 }
 
 /// Count JSONL turns in a pi transcript. Cheap: one read + line count.
@@ -1270,7 +1544,8 @@ pub(crate) fn reload_one(
     // respawns it against the same session dir/id with the freshly materialized
     // plugin. This is the exact proven path `wg chat resume` uses.
     runtime.respawn_handler(dir, cid)?;
-    if !wait_for_chat_runtime_with(live_timeout, poll, || runtime.handler_is_live(dir, cid)) {
+    if !wait_for_stable_chat_runtime_with(live_timeout, poll, || runtime.handler_is_live(dir, cid))
+    {
         anyhow::bail!(
             "WG-CHAT-RELOAD-NOT-LIVE: supervisor accepted the respawn for chat {cid}, but no live handler appeared within {}s. \
              The chat is stopped but resumable with `wg chat resume {cid}`; inspect {}/service/daemon.log for the spawn error.",
@@ -1749,6 +2024,96 @@ mod tests {
         )
         .unwrap();
         td
+    }
+
+    /// Seed a fake pi transcript for `chat-N` (two JSONL turns) and return
+    /// (transcript path, bytes written).
+    fn seed_pi_transcript(dir: &Path, cid: u32) -> (PathBuf, Vec<u8>) {
+        worksgood::chat_sessions::prepare_pi_chat_session(dir, cid).unwrap();
+        let chat_ref = format!("chat-{cid}");
+        let session_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref).join("pi-sessions");
+        let transcript = session_dir.join(format!("2026-01-01T00-00-00-000Z_chat-{cid}.jsonl"));
+        let bytes = b"{\"turn\":1}\n{\"turn\":2}\n".to_vec();
+        std::fs::write(&transcript, &bytes).unwrap();
+        (transcript, bytes)
+    }
+
+    /// Daemon-down fork: transcript is copied under the fork's session-id,
+    /// the parent transcript is untouched, and the fork task inherits the
+    /// parent's pinned model.
+    #[test]
+    fn fork_daemon_down_copies_transcript_into_new_chat() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        run_create_direct(
+            dir,
+            Some("origin"),
+            Some("pi:lunaroute:ds-4.1"),
+            Some("pi"),
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+        let (source_transcript, bytes) = seed_pi_transcript(dir, 0);
+
+        run_fork(dir, "chat-0", Some("my fork"), false).unwrap();
+
+        // The fork transcript exists under the fork's own session-id and
+        // carries the parent's history byte-for-byte.
+        worksgood::chat_sessions::prepare_pi_chat_session(dir, 1).unwrap();
+        let fork_session_dir = worksgood::chat::chat_dir_for_ref(dir, "chat-1").join("pi-sessions");
+        let fork_transcript = worksgood::chat_sessions::newest_pi_transcript(&fork_session_dir, 1)
+            .expect("fork must have a seeded transcript");
+        assert!(
+            fork_transcript
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with("_chat-1.jsonl")),
+            "fork transcript must be named for the fork's --session-id: {fork_transcript:?}"
+        );
+        assert_eq!(std::fs::read(&fork_transcript).unwrap(), bytes);
+
+        // Parent untouched.
+        assert_eq!(std::fs::read(&source_transcript).unwrap(), bytes);
+
+        // Fork task exists and inherited the parent's model.
+        let graph = worksgood::parser::load_graph(&graph_path(dir)).unwrap();
+        let fork_task = chat_id::find_chat_task(&graph, 1).unwrap();
+        assert_eq!(fork_task.model.as_deref(), Some("pi:lunaroute:ds-4.1"));
+        assert!(fork_task.tags.iter().any(|t| chat_id::is_chat_loop_tag(t)));
+
+        // No stray temp files left in the fork's session dir.
+        let entries: Vec<_> = std::fs::read_dir(&fork_session_dir)
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(entries.len(), 1, "no fork-tmp residue");
+    }
+
+    /// Forking a chat with no transcript is a clear refusal, not a silent
+    /// empty fork.
+    #[test]
+    fn fork_without_transcript_refuses_loudly() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        run_create_direct(dir, Some("origin"), None, Some("pi"), None, None, true).unwrap();
+
+        let err = run_fork(dir, "chat-0", None, false).unwrap_err();
+        assert!(format!("{err:#}").contains("no pi transcript"));
+    }
+
+    /// Forking is pi-only today; a nex chat forks at the session-journal
+    /// layer instead (`wg session fork`).
+    #[test]
+    fn fork_refuses_non_pi_executor() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        run_create_direct(dir, Some("legacy"), None, Some("nex"), None, None, true).unwrap();
+        seed_pi_transcript(dir, 0);
+
+        let err = run_fork(dir, "chat-0", None, false).unwrap_err();
+        assert!(format!("{err:#}").contains("Pi chats only"));
     }
 
     #[test]

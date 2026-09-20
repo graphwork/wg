@@ -5431,6 +5431,41 @@ pub fn run_create_coordinator(
     command: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    let response = create_chat_response(dir, request_id, name, model, executor, endpoint, command)?;
+
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if let Some(data) = &response.data {
+        println!("{}", serde_json::to_string_pretty(data)?);
+    }
+
+    Ok(())
+}
+
+/// Drive the durable chat-create IPC exchange (send → verify → reconcile a
+/// lost response → bounded retry) and return the committed response.
+/// Shared by `wg chat create` (which prints it) and `wg chat fork` (which
+/// needs the committed chat id without the JSON noise).
+fn create_chat_response(
+    dir: &Path,
+    request_id: &str,
+    name: Option<&str>,
+    model: Option<&str>,
+    executor: Option<&str>,
+    endpoint: Option<&str>,
+    command: Option<&str>,
+) -> Result<IpcResponse> {
     let baseline = ChatCreateBaseline::capture(dir)?;
     ensure_chat_service_compatible(dir)?;
     let request = IpcRequest::CreateChat {
@@ -5487,25 +5522,49 @@ pub fn run_create_coordinator(
             }
         }
     };
+    Ok(response)
+}
 
-    if !response.ok {
-        let msg = response
-            .error
-            .unwrap_or_else(|| "Unknown error".to_string());
-        if json {
-            let output = serde_json::json!({ "error": msg });
-            println!("{}", serde_json::to_string_pretty(&output)?);
-        } else {
-            eprintln!("Error: {}", msg);
+/// Create a chat and return only its committed numeric id — no stdout.
+/// The daemon-up path rides the exact durable request/reconcile exchange
+/// `wg chat create` uses; the daemon-down path commits directly to the
+/// graph (nothing can race the supervisor because there is none).
+pub fn create_chat_cid(
+    dir: &Path,
+    name: Option<&str>,
+    model: Option<&str>,
+    executor: Option<&str>,
+    endpoint: Option<&str>,
+    command: Option<&str>,
+) -> Result<u32> {
+    if crate::commands::chat_cmd::service_is_running(dir) {
+        #[cfg(unix)]
+        {
+            let request_id = format!("chat-create-{}", uuid::Uuid::now_v7());
+            let response =
+                create_chat_response(dir, &request_id, name, model, executor, endpoint, command)?;
+            if !response.ok {
+                anyhow::bail!(
+                    "{}",
+                    response
+                        .error
+                        .unwrap_or_else(|| "Unknown error".to_string())
+                );
+            }
+            response_chat_id(&response).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "chat-create response carried no chat id; the chat may still have committed — check `wg chat list` before retrying"
+                )
+            })
         }
-        anyhow::bail!("{}", msg);
+        #[cfg(not(unix))]
+        {
+            let _ = (name, model, executor, endpoint, command);
+            anyhow::bail!("Service IPC is only supported on Unix systems")
+        }
+    } else {
+        ipc::create_chat_in_graph(dir, name, model, executor, endpoint, command)
     }
-
-    if let Some(data) = &response.data {
-        println!("{}", serde_json::to_string_pretty(data)?);
-    }
-
-    Ok(())
 }
 
 fn reconcile_chat_create(dir: &Path, request_id: &str) -> Option<u32> {
@@ -5730,6 +5789,26 @@ pub fn run_stop_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Resu
         println!("{}", serde_json::to_string_pretty(data)?);
     }
 
+    Ok(())
+}
+
+/// Silent StopChat for internal sequencing (`wg chat fork`'s raced-spawn
+/// repair). No stdout: the caller owns the user-facing output.
+pub fn stop_chat_quiet(dir: &Path, coordinator_id: u32) -> Result<()> {
+    let response = send_request(
+        dir,
+        &IpcRequest::StopChat {
+            chat_id: coordinator_id,
+        },
+    )?;
+    if !response.ok {
+        anyhow::bail!(
+            "{}",
+            response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string())
+        );
+    }
     Ok(())
 }
 

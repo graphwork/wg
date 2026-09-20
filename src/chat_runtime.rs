@@ -579,11 +579,11 @@ pub fn request_recovery(
     };
     let identity_matches = ledger
         .last_start()
-        .is_some_and(|(_, start)| runtime_identity_matches(&start.identity, expected));
+        .is_some_and(|(_, start)| runtime_identity_resumable(&start.identity, expected));
     let argv_matches = expected_argv.is_none_or(|argv| {
         ledger
             .last_start()
-            .is_some_and(|(_, start)| start.argv == sanitize_argv(argv))
+            .is_some_and(|(_, start)| argv_resumable(&start.argv, &sanitize_argv(argv)))
     });
     if !identity_matches || !argv_matches {
         let event = decision_event(
@@ -718,9 +718,82 @@ pub fn runtime_identity_matches(previous: &RuntimeIdentity, expected: &RuntimeId
     previous == expected
 }
 
+fn optional_identity_field_known_equal<T: PartialEq>(
+    previous: &Option<T>,
+    expected: &Option<T>,
+) -> bool {
+    match (previous, expected) {
+        // Both sides recorded the field: it must match exactly. A known
+        // different value is a genuine identity change and still refuses.
+        (Some(previous_value), Some(expected_value)) => previous_value == expected_value,
+        // The previous runtime never recorded this field (older binary, field
+        // added to the schema afterwards) or the expected plan omits it. An
+        // UNKNOWN value is not evidence of a DIFFERENT value — treating it as
+        // one bricks every pre-existing chat forever (the chat-3 incident: the
+        // `route` field was added to `RuntimeIdentity` after chat-3's start
+        // record was written, and strict equality refused every subsequent
+        // warm reboot with "exact identity changed"). Fail-closed direction is
+        // preserved for the dangerous case: known-vs-known must match.
+        _ => true,
+    }
+}
+
+/// Warm-reboot (close-and-resume) identity validation.
+///
+/// Mandatory identity components (graph, task, chat UUID, tmux session,
+/// executor) must match exactly. Optional fields (`route`, `reasoning`,
+/// `session_dir`) must match only when BOTH sides recorded them — a field the
+/// previous runtime could not have recorded is schema evolution, not identity
+/// drift. This is the restart-path counterpart to
+/// [`runtime_identity_compatible`]; strict [`runtime_identity_matches`] stays
+/// available for callers that genuinely require byte-equality.
+pub fn runtime_identity_resumable(previous: &RuntimeIdentity, expected: &RuntimeIdentity) -> bool {
+    previous.graph_path == expected.graph_path
+        && previous.task_id == expected.task_id
+        && previous.chat_ref == expected.chat_ref
+        && previous.uuid == expected.uuid
+        && previous.tmux_session == expected.tmux_session
+        && previous.executor == expected.executor
+        && optional_identity_field_known_equal(&previous.route, &expected.route)
+        && optional_identity_field_known_equal(&previous.reasoning, &expected.reasoning)
+        && optional_identity_field_known_equal(&previous.session_dir, &expected.session_dir)
+}
+
+/// Warm-reboot argv validation.
+///
+/// Compares sanitized argvs while masking exactly the parts a warm reboot is
+/// SUPPOSED to change: `argv[0]` (the vendor binary — reloading onto a new pi
+/// build is the point) and the value following `-e` / `--extension` (the WG
+/// plugin entry — its cache path is keyed by the plugin compat version, so it
+/// legitimately changes across wg upgrades). Session-critical arguments
+/// (`--session-id`, `--session-dir`, `--provider`, `--model`, `--thinking`,
+/// …) still must match, so a plan pointing at a different conversation still
+/// refuses.
+pub fn argv_resumable(previous: &[String], expected: &[String]) -> bool {
+    if previous.len() != expected.len() {
+        return false;
+    }
+    let mut extension_value_next = false;
+    for (index, (previous_arg, expected_arg)) in previous.iter().zip(expected).enumerate() {
+        if index == 0 || extension_value_next {
+            // Masked slot: binary path / extension entry value.
+            extension_value_next = false;
+            continue;
+        }
+        extension_value_next = previous_arg == "-e" || previous_arg == "--extension";
+        if previous_arg != expected_arg {
+            return false;
+        }
+    }
+    true
+}
+
 /// Reattach validation permits an omitted optional field in the attach plan
 /// (the process is already running, so no argv/session-dir is reconstructed),
 /// but every supplied field and every mandatory identity component must match.
+/// An optional field the PREVIOUS runtime never recorded (schema evolution —
+/// e.g. `route` added after an old start record) is unknown, not different:
+/// refusing on it would block reattaching to a perfectly live session.
 pub fn runtime_identity_compatible(previous: &RuntimeIdentity, expected: &RuntimeIdentity) -> bool {
     previous.graph_path == expected.graph_path
         && previous.task_id == expected.task_id
@@ -728,18 +801,9 @@ pub fn runtime_identity_compatible(previous: &RuntimeIdentity, expected: &Runtim
         && previous.uuid == expected.uuid
         && previous.tmux_session == expected.tmux_session
         && previous.executor == expected.executor
-        && expected
-            .route
-            .as_ref()
-            .is_none_or(|route| previous.route.as_ref() == Some(route))
-        && expected
-            .reasoning
-            .as_ref()
-            .is_none_or(|reasoning| previous.reasoning.as_ref() == Some(reasoning))
-        && expected
-            .session_dir
-            .as_ref()
-            .is_none_or(|session_dir| previous.session_dir.as_ref() == Some(session_dir))
+        && optional_identity_field_known_equal(&previous.route, &expected.route)
+        && optional_identity_field_known_equal(&previous.reasoning, &expected.reasoning)
+        && optional_identity_field_known_equal(&previous.session_dir, &expected.session_dir)
 }
 
 /// Run the hidden inner-process wrapper.  The returned code is suitable for
@@ -1203,6 +1267,94 @@ mod tests {
             request_recovery(chat, &changed, Some(&argv), true).unwrap(),
             RecoveryRequest::RefusedIdentityMismatch,
             "a live tmux name is not authority to reattach a route-mismatched process"
+        );
+    }
+
+    /// Regression for the chat-3 blowout: the recorded start identity was
+    /// written by an older binary WITHOUT the `route` field; the resume plan
+    /// carries it. Unknown ≠ different — the warm reboot must proceed, not
+    /// brick the chat forever with "exact identity changed".
+    #[test]
+    fn restart_tolerates_optional_fields_the_previous_runtime_never_recorded() {
+        let root = tempfile::tempdir().unwrap();
+        let chat = root.path();
+        let mut id = identity(chat);
+        id.route = Some("pi:lunaroute:deepseek-4.1-flash-background".into());
+        id.reasoning = Some("high".into());
+        // Recorded start: pre-route/pre-reasoning schema (older binary).
+        let mut start = event(RuntimeEventKind::Start, RuntimeSource::InnerVendor, chat);
+        start.identity.route = None;
+        start.identity.reasoning = None;
+        let argv = vec!["pi".to_string(), "--session-id".into(), "chat-3".into()];
+        start.argv = sanitize_argv(&argv);
+        append_event(chat, &start).unwrap();
+        let mut exit = event(RuntimeEventKind::Exit, RuntimeSource::InnerVendor, chat);
+        exit.exit_code = Some(0);
+        append_event(chat, &exit).unwrap();
+
+        assert_eq!(
+            request_recovery(chat, &id, Some(&argv), false).unwrap(),
+            RecoveryRequest::ExplicitRestart { attempt: 1 },
+            "schema evolution must not brick the warm reboot"
+        );
+    }
+
+    /// A warm reboot onto a new pi build legitimately changes argv[0] and the
+    /// plugin `-e` entry (cache dir is keyed by plugin compat). Session-critical
+    /// arguments must still match.
+    #[test]
+    fn restart_tolerates_new_binary_and_plugin_paths_but_not_session_drift() {
+        let root = tempfile::tempdir().unwrap();
+        let chat = root.path();
+        let id = identity(chat);
+        let recorded = vec![
+            "/old/node/bin/pi".to_string(),
+            "--session-id".into(),
+            "chat-3".into(),
+            "--session-dir".into(),
+            "/wg/.wg/chat/uuid/pi-sessions".into(),
+            "-e".into(),
+            "/old/cache/wg/worksgood-pi/0.2.0/pi-worksgood/index.js".into(),
+        ];
+        let mut start = event(RuntimeEventKind::Start, RuntimeSource::InnerVendor, chat);
+        start.argv = sanitize_argv(&recorded);
+        append_event(chat, &start).unwrap();
+        let mut exit = event(RuntimeEventKind::Exit, RuntimeSource::InnerVendor, chat);
+        exit.exit_code = Some(0);
+        append_event(chat, &exit).unwrap();
+
+        let upgraded = vec![
+            "/new/node/bin/pi".to_string(),
+            "--session-id".into(),
+            "chat-3".into(),
+            "--session-dir".into(),
+            "/wg/.wg/chat/uuid/pi-sessions".into(),
+            "-e".into(),
+            "/new/cache/wg/worksgood-pi/0.4.0/pi-worksgood/index.js".into(),
+        ];
+        assert_eq!(
+            request_recovery(chat, &id, Some(&upgraded), false).unwrap(),
+            RecoveryRequest::ExplicitRestart { attempt: 1 },
+            "a plugin/binary upgrade is exactly what a warm reboot is for"
+        );
+
+        // A second incident with the session-id pointing elsewhere still refuses.
+        let mut start = event(RuntimeEventKind::Start, RuntimeSource::InnerVendor, chat);
+        start.argv = sanitize_argv(&recorded);
+        append_event(chat, &start).unwrap();
+        let mut exit = event(RuntimeEventKind::Exit, RuntimeSource::InnerVendor, chat);
+        exit.exit_code = Some(0);
+        append_event(chat, &exit).unwrap();
+        let mut hijacked = upgraded.clone();
+        let sid = hijacked
+            .iter_mut()
+            .position(|arg| arg == "--session-id")
+            .unwrap();
+        hijacked[sid + 1] = "chat-9".into();
+        assert_eq!(
+            request_recovery(chat, &id, Some(&hijacked), false).unwrap(),
+            RecoveryRequest::RefusedIdentityMismatch,
+            "session-id drift is a real identity change"
         );
     }
 

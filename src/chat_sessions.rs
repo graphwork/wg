@@ -645,6 +645,24 @@ fn merge_legacy_chat_dir(legacy: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Newest pi transcript for `chat-N` under `session_dir`, matching pi-handler's
+/// `--session-id <chat_ref>` naming (`*_chat-N.jsonl`). `None` means no
+/// transcript exists yet (a fresh session — pi's `--session-id` contract
+/// creates the file on the first turn).
+pub fn newest_pi_transcript(session_dir: &Path, n: u32) -> Option<PathBuf> {
+    let suffix = format!("_chat-{n}.jsonl");
+    fs::read_dir(session_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
+        })
+        .max_by_key(|path| fs::metadata(path).and_then(|m| m.modified()).ok())
+}
+
 /// Prepared storage for one Pi-backed chat pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PiChatSession {
@@ -668,19 +686,7 @@ pub fn prepare_pi_chat_session(workgraph_dir: &Path, n: u32) -> Result<PiChatSes
     let session_dir = chat_dir.join("pi-sessions");
     fs::create_dir_all(&session_dir)
         .with_context(|| format!("create Pi session dir {:?}", session_dir))?;
-    let suffix = format!("_chat-{n}.jsonl");
-    let existing_transcript = fs::read_dir(&session_dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(&suffix))
-        })
-        .max_by_key(|path| fs::metadata(path).and_then(|m| m.modified()).ok());
+    let existing_transcript = newest_pi_transcript(&session_dir, n);
 
     Ok(PiChatSession {
         chat_dir,

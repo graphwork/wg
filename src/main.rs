@@ -2410,6 +2410,12 @@ fn main() -> Result<()> {
                         all,
                         cli.json,
                     ),
+                    ChatCommands::Fork { chat, name } => commands::chat_cmd::run_fork(
+                        &workgraph_dir,
+                        &chat,
+                        name.as_deref(),
+                        cli.json,
+                    ),
                     ChatCommands::Archive { chat } => {
                         commands::chat_cmd::run_archive(&workgraph_dir, &chat, cli.json)
                     }
