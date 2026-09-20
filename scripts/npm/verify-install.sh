@@ -91,7 +91,7 @@ pass "tarballs packed: $(basename "${CLI_TGZ}"), $(basename "${PLAT_TGZ}")"
 # ------------------------------------------- 2. zero-install-scripts invariant
 for pj in "${PACK_DIR}"/@worksgood/*/package.json; do
   node -e '
-    const pkg = require(process.argv[1]);
+    const pkg = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
     const bad = Object.keys(pkg.scripts || {}).filter((k) => /install|prepare|pack/.test(k));
     if (bad.length) { console.error(`${pkg.name} has script(s): ${bad}`); process.exit(1); }
   ' "${pj}"
