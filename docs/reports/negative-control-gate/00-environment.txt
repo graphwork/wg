@@ -1,12 +1,16 @@
 # Isolated strict-policy instance — negative control
 binary: /home/bot/.cache/wg/build-targets/2555b39f5ac57f2742255f1e49be26e3a7e797942ae41327825a896d186091cd/layers/a614dd42f164b1ba35d59f9d9e7ed01ffcc30123706b43c6f190f665b29b209a/agent-170/target/debug/wg
-commit: a6a65e518c4693be9ab028904d0ba06712d89423 Merge branch 'refs/heads/main' into wg/agent-167/calib-test-deliverable-tokens
-date: 2026-09-20T22:36:50Z
+source commit under test: a6a65e518c4693be9ab028904d0ba06712d89423
+  (worktree HEAD at binary build time; report commit added later on top)
+date: 2026-09-20T22:38:36Z
 project: /tmp/ncg-isolated/project
 binary has COMPLETION REVIEW RECOVERY ROUND: 1
 
 ## Effective completion review policy (wg status)
+Completion review policy: mode=strict, applicability=required-for-structural-deliverables; otherwise-advisory, evaluator-threshold=0.70, FLIP-policy=required-strict-when-persisted-in-hard-gate, FLIP-threshold=0.70 (only the completion controller applies lifecycle policy)
 
 ## Completion contract of the probe task
 Completion contract: land
 Required deterministic completion checks (exact enforced order):
+  [configured] test -s report.md — task.validation_commands[0] (operator/repository-authorized)
+  [baseline] git diff --check refs/heads/main..HEAD — completion contract: land (built-in, cannot be relaxed)
