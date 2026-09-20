@@ -400,7 +400,10 @@ impl ManifestReviewer for CausalBoundaryReviewer {
         // and not the other's.
         match kind {
             ReviewerKind::Flip => {
-                assert!(prompt.contains("FAITHFUL"), "FLIP must judge fidelity: {prompt}");
+                assert!(
+                    prompt.contains("FAITHFUL"),
+                    "FLIP must judge fidelity: {prompt}"
+                );
                 assert!(
                     !prompt.contains("reject solely because they are absent"),
                     "FLIP must not carry the Eval temporal-boundary clause: {prompt}"
