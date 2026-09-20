@@ -94,6 +94,6 @@ export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_WIDGET_KEY, VIZ_W
 export { fetchVizSnapshot, resolveSocketPath, socketCandidates, vizSnapshotWithFallback, VizPoller, } from "./viz-snapshot.js";
 export { buildTree, detailLines, lineTaskMap, orderTasks, taskCounts, treeText, widgetLine, ageOf, tokenDisplay, } from "./viz-readmodel.js";
 export { installModelBridge, wgSpecFromModel, buildProviderConfig } from "./model-bridge.js";
-export { DEFAULT_COMPLETION_WAKE_CONFIG, CompletionWatcher, MemoryCursorStore, fileCursorStore, formatWakeMessage, installCompletionWatcher, isInternalTask, isTopLevelTask, planWakes, readCompletionWakeConfig, readTaskDetail, } from "./completion-watcher.js";
+export { DEFAULT_COMPLETION_WAKE_CONFIG, WAKE_PRESENTATION, CompletionWatcher, MemoryCursorStore, fileCursorStore, formatWakeMessage, installCompletionWatcher, isInternalTask, isTopLevelTask, kindOf, planWakes, readCompletionWakeConfig, readTaskDetail, wakeNotifyLevel, wakePresentation, } from "./completion-watcher.js";
 export { WG_PI_PLUGIN_COMPAT_VERSION } from "./version.js";
 //# sourceMappingURL=index.js.map

@@ -16,15 +16,40 @@
 import { rename, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+/**
+ * The single presentation table, so glyph/label/notify-level can never drift
+ * apart across the message formatter and the delivery path.
+ */
+export const WAKE_PRESENTATION = {
+    completed: { glyph: "✓", label: "completed", notify: "info" },
+    failed: { glyph: "✗", label: "failed", notify: "warning" },
+    abandoned: { glyph: "⊘", label: "abandoned", notify: "info" },
+    attention: { glyph: "⏸", label: "needs attention", notify: "info" },
+};
+/** Presentation (glyph/label/notify level) for a wake kind. */
+export function wakePresentation(kind) {
+    return WAKE_PRESENTATION[kind];
+}
+/** The `ctx.ui.notify` level for a wake kind: only genuine failures alarm. */
+export function wakeNotifyLevel(kind) {
+    return WAKE_PRESENTATION[kind].notify;
+}
 export const DEFAULT_COMPLETION_WAKE_CONFIG = {
     enabled: true,
     failures: true,
+    abandoned: "top-level",
     completions: "top-level",
     attention: "top-level",
     quiet: false,
     intervalMs: 15_000,
 };
-const FAILURE_STATUSES = new Set(["failed", "abandoned"]);
+const FAILURE_STATUSES = new Set(["failed"]);
+/**
+ * Deliberate abandonment is a *terminal*, operator-approved triage outcome —
+ * NOT a failure. It gets its own wake kind so it is never rendered as an ✗
+ * alarm (see `docs/design-pi-completion-wakeups.md` §2.1).
+ */
+const ABANDONED_STATUSES = new Set(["abandoned"]);
 const COMPLETION_STATUSES = new Set(["done"]);
 const ATTENTION_STATUSES = new Set(["blocked", "waiting", "incomplete"]);
 /** Internal/plumbing ids (`.chat-N`, `.evaluate-*`, `.flip-*`, `.assign-*`, …). */
@@ -47,9 +72,12 @@ function scopeAllows(scope, topLevel) {
         return topLevel;
     return false;
 }
-function kindOf(status) {
+/** Map a WG status to its wake kind (or `null` for in-flight/unknown). */
+export function kindOf(status) {
     if (FAILURE_STATUSES.has(status))
         return "failed";
+    if (ABANDONED_STATUSES.has(status))
+        return "abandoned";
     if (COMPLETION_STATUSES.has(status))
         return "completed";
     if (ATTENTION_STATUSES.has(status))
@@ -91,7 +119,9 @@ export function planWakes(prev, tasks, config) {
             ? config.failures
             : kind === "completed"
                 ? scopeAllows(config.completions, topLevel)
-                : scopeAllows(config.attention, topLevel);
+                : kind === "abandoned"
+                    ? scopeAllows(config.abandoned, topLevel)
+                    : scopeAllows(config.attention, topLevel);
         if (!gate || config.quiet)
             continue;
         wakes.push({
@@ -107,8 +137,7 @@ export function planWakes(prev, tasks, config) {
 }
 /** Render one actionable wake. Never a bare "something changed". */
 export function formatWakeMessage(wake, detail = null) {
-    const glyph = wake.kind === "failed" ? "✗" : wake.kind === "completed" ? "✓" : "⏸";
-    const label = wake.kind === "failed" ? "failed" : wake.kind === "completed" ? "completed" : "needs attention";
+    const { glyph, label } = wakePresentation(wake.kind);
     const lines = [`[WG] ${glyph} ${wake.taskId} ${label} (${wake.from} → ${wake.to})`];
     lines.push(`Task: ${wake.title}`);
     if (wake.kind === "failed") {
@@ -126,6 +155,13 @@ export function formatWakeMessage(wake, detail = null) {
             lines.push(`Receipt: ${detail.completion_receipt}`);
         if (detail?.actual_model)
             lines.push(`Model: ${detail.actual_model}`);
+    }
+    else if (wake.kind === "abandoned") {
+        // Deliberate stop: neutral wording, never a "Reason" alarm.
+        if (detail?.failure_reason)
+            lines.push(`Note: ${detail.failure_reason}`);
+        else if (detail?.last_log)
+            lines.push(`Summary: ${detail.last_log}`);
     }
     else if (detail?.last_log) {
         lines.push(`Summary: ${detail.last_log}`);
@@ -155,6 +191,7 @@ export function readCompletionWakeConfig(env = process.env) {
     return {
         enabled: asBool(env.WG_PI_COMPLETION_WAKES, DEFAULT_COMPLETION_WAKE_CONFIG.enabled),
         failures: asBool(env.WG_PI_COMPLETION_FAILURES, DEFAULT_COMPLETION_WAKE_CONFIG.failures),
+        abandoned: asScope(env.WG_PI_COMPLETION_ABANDONED, DEFAULT_COMPLETION_WAKE_CONFIG.abandoned),
         completions: asScope(env.WG_PI_COMPLETION_COMPLETIONS, DEFAULT_COMPLETION_WAKE_CONFIG.completions),
         attention: asScope(env.WG_PI_COMPLETION_ATTENTION, DEFAULT_COMPLETION_WAKE_CONFIG.attention),
         quiet: asBool(env.WG_PI_COMPLETION_QUIET, DEFAULT_COMPLETION_WAKE_CONFIG.quiet),
@@ -346,7 +383,7 @@ function configSummary(config) {
         return "off (disabled by WG_PI_COMPLETION_WAKES)";
     if (config.quiet)
         return "muted for this session";
-    return `on · failures always · completions ${config.completions} · attention ${config.attention} · every ${config.intervalMs}ms`;
+    return `on · failures always · abandonments ${config.abandoned} · completions ${config.completions} · attention ${config.attention} · every ${config.intervalMs}ms`;
 }
 /**
  * Install the completion watcher: `/wg-wake` plus the session lifecycle that
@@ -416,7 +453,7 @@ function defaultDeliver(pi, wake, message, _detail, ctx) {
     }
     try {
         if (ctx.hasUI)
-            ctx.ui.notify(message, wake.kind === "failed" ? "warning" : "info");
+            ctx.ui.notify(message, wakeNotifyLevel(wake.kind));
     }
     catch {
         /* best-effort ping only */

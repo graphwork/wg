@@ -28,7 +28,9 @@ import {
   CompletionWatcher,
   DEFAULT_COMPLETION_WAKE_CONFIG,
   MemoryCursorStore,
+  formatWakeMessage,
   readTaskDetail,
+  wakeNotifyLevel,
 } from "../pi-worksgood/completion-watcher.js";
 
 interface RunResult {
@@ -162,6 +164,83 @@ describe.skipIf(!wgOnPath)("completion watcher against a real graph", () => {
       // Repeated poll: no re-announce.
       const again = await watcher.refresh();
       expect(again).toEqual([]);
+      expect(delivered).toHaveLength(1);
+    },
+    180_000,
+  );
+
+  it(
+    "renders a deliberate abandonment as a quiet ⊘ wake, distinguishable from a failure",
+    async () => {
+      const project = await mkdtemp(join(tmpdir(), "wg-wake-abandon-"));
+      const home = join(project, "home");
+      await mkdir(home, { recursive: true });
+      const env = cleanEnv(home);
+
+      expect((await run("git", ["init", "-q", "-b", "main"], project, env)).code).toBe(0);
+      await run("git", ["config", "user.email", "smoke@example.invalid"], project, env);
+      await run("git", ["config", "user.name", "WG Smoke"], project, env);
+      await writeFile(join(project, "seed.txt"), "seed\n", "utf8");
+      await run("git", ["add", "seed.txt"], project, env);
+      expect((await run("git", ["commit", "-q", "-m", "seed"], project, env)).code).toBe(0);
+
+      const host = wgHost(project, env);
+      const backend = new WgBackend(host as never, {});
+      expect((await backend.run(["init"])).code).toBe(0);
+      await run("git", ["add", "-A"], project, env);
+      expect((await run("git", ["commit", "-q", "-m", "wg init"], project, env)).code).toBe(0);
+
+      const add = await backend.run(["add", "Stale scaffold", "--id", "stale-scaffold"]);
+      expect(add.code, add.stderr).toBe(0);
+
+      const delivered: Array<{ message: string; kind: string; level: string; text: string }> = [];
+      const watcher = new CompletionWatcher(
+        () =>
+          backend.runJson<Array<{ id: string; title?: string; status: string; after?: string[] }>>(
+            ["list"],
+          ),
+        new MemoryCursorStore(),
+        (wake, message, detail) => {
+          delivered.push({
+            message,
+            kind: wake.kind,
+            level: wakeNotifyLevel(wake.kind),
+            text: formatWakeMessage(wake, detail),
+          });
+        },
+        { ...DEFAULT_COMPLETION_WAKE_CONFIG, intervalMs: 3_600_000 },
+        (id) => readTaskDetail(backend, id),
+      );
+
+      await watcher.refresh(); // baseline: the open task emits nothing
+      expect(delivered).toEqual([]);
+
+      // Real transition: open → abandoned (operator triage).
+      const abandon = await backend.run([
+        "abandon",
+        "stale-scaffold",
+        "--reason",
+        "superseded by the new design",
+      ]);
+      expect(abandon.code, abandon.stderr).toBe(0);
+
+      const wakes = await watcher.refresh();
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0]!.kind).toBe("abandoned");
+      expect(wakes[0]!.kind).not.toBe("failed");
+      expect(delivered).toHaveLength(1);
+      expect(delivered[0]!.message).toBe(delivered[0]!.text);
+
+      const message = delivered[0]!.message;
+      expect(message).toContain("⊘ stale-scaffold abandoned (open → abandoned)");
+      expect(message).not.toContain("✗");
+      expect(message).not.toContain("stale-scaffold failed");
+      expect(message).toContain("Note: superseded by the new design");
+      expect(message).toContain("wg_show");
+      expect(delivered[0]!.level).toBe("info");
+
+      // Repeated poll: no re-announce.
+      await watcher.refresh();
       expect(delivered).toHaveLength(1);
     },
     180_000,

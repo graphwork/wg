@@ -23,8 +23,11 @@ import {
   installCompletionWatcher,
   isInternalTask,
   isTopLevelTask,
+  kindOf,
   planWakes,
   readCompletionWakeConfig,
+  wakeNotifyLevel,
+  wakePresentation,
 } from "../pi-worksgood/index.js";
 
 const TASKS = {
@@ -92,6 +95,26 @@ describe("planWakes — transition detection + scope gating", () => {
     expect(planWakes({ root: "open" }, tasks, { ...cfg(), attention: "off" }).wakes).toEqual([]);
   });
 
+  it("wakes a deliberate abandonment as its own quiet kind, not a failure", () => {
+    const tasks = [{ ...TASKS.root, status: "abandoned" }];
+    const plan = planWakes({ root: "open" }, tasks, cfg());
+    expect(ids(plan.wakes)).toEqual(["root:abandoned"]);
+    expect(plan.wakes[0]!.kind).not.toBe("failed");
+    // Scope-filtered like completions (top-level default), not always-on.
+    const child = planWakes(
+      { dep: "done", child: "open" },
+      [{ ...TASKS.dep, status: "done" }, { ...TASKS.child, status: "abandoned" }],
+      cfg(),
+    );
+    expect(child.wakes).toEqual([]);
+    // ... and independently disable-able without touching failures.
+    expect(planWakes({ root: "open" }, tasks, { ...cfg(), abandoned: "off" }).wakes).toEqual([]);
+    // `failures: false` no longer silences abandonment; only `failed` is gated by it.
+    expect(ids(planWakes({ root: "open" }, tasks, { ...cfg(), failures: false }).wakes)).toEqual([
+      "root:abandoned",
+    ]);
+  });
+
   it("never wakes internal ids and never wakes in-flight transitions", () => {
     const tasks = [
       { ...TASKS.internal, status: "done" },
@@ -128,6 +151,90 @@ describe("planWakes — transition detection + scope gating", () => {
     expect(isTopLevelTask(TASKS.child, byId)).toBe(false);
     expect(isInternalTask(".chat-3")).toBe(true);
     expect(isInternalTask("normal-task")).toBe(false);
+  });
+});
+
+describe("kindOf — status → wake kind mapping", () => {
+  it("maps terminal/needs-attention statuses and rejects in-flight ones", () => {
+    expect(kindOf("failed")).toBe("failed");
+    expect(kindOf("abandoned")).toBe("abandoned");
+    expect(kindOf("done")).toBe("completed");
+    expect(kindOf("blocked")).toBe("attention");
+    expect(kindOf("waiting")).toBe("attention");
+    expect(kindOf("incomplete")).toBe("attention");
+    for (const inFlight of ["open", "in-progress", "pending-validation", "whatever"]) {
+      expect(kindOf(inFlight)).toBeNull();
+    }
+  });
+
+  it("never folds abandonment into the failure kind", () => {
+    expect(kindOf("abandoned")).not.toBe(kindOf("failed"));
+  });
+});
+
+describe("wake presentation — glyph, label, notify level per kind", () => {
+  it("gives every kind a distinct glyph and an honest label", () => {
+    const failed = wakePresentation("failed");
+    const abandoned = wakePresentation("abandoned");
+    const completed = wakePresentation("completed");
+    const attention = wakePresentation("attention");
+
+    expect(failed).toEqual({ glyph: "✗", label: "failed", notify: "warning" });
+    expect(abandoned).toEqual({ glyph: "⊘", label: "abandoned", notify: "info" });
+    expect(completed.glyph).toBe("✓");
+    expect(completed.notify).toBe("info");
+    expect(attention.glyph).toBe("⏸");
+    expect(attention.label).toBe("needs attention");
+    expect(attention.notify).toBe("info");
+    // Distinct glyphs so abandonment can never read as a failure.
+    expect(abandoned.glyph).not.toBe(failed.glyph);
+    expect(new Set([failed.glyph, abandoned.glyph, completed.glyph, attention.glyph]).size).toBe(4);
+  });
+
+  it("only a genuine failure alarms", () => {
+    expect(wakeNotifyLevel("failed")).toBe("warning");
+    expect(wakeNotifyLevel("abandoned")).toBe("info");
+    expect(wakeNotifyLevel("completed")).toBe("info");
+    expect(wakeNotifyLevel("attention")).toBe("info");
+  });
+
+  it("formats abandoned distinctly from failed in both message and level", () => {
+    const base = {
+      taskId: "stale-scaffold",
+      title: "Stale scaffold",
+      from: "open",
+      to: "abandoned",
+      topLevel: true,
+    };
+    const abandonedWake = { ...base, kind: "abandoned" as const };
+    const failedWake = { ...base, kind: "failed" as const, to: "failed" };
+    const detail = { failure_reason: "operator triaged the stale scaffold" };
+
+    const abandonedMsg = formatWakeMessage(abandonedWake, detail);
+    const failedMsg = formatWakeMessage(failedWake, detail);
+
+    // Own glyph + label; no ✗ alarm and no "failed" label on abandonment.
+    expect(abandonedMsg).toContain("⊘ stale-scaffold abandoned (open → abandoned)");
+    expect(abandonedMsg).not.toContain("✗");
+    expect(abandonedMsg).not.toContain("stale-scaffold failed");
+    expect(abandonedMsg).toContain("Note: operator triaged the stale scaffold");
+
+    expect(failedMsg).toContain("✗ stale-scaffold failed (open → failed)");
+    expect(failedMsg).toContain("Reason: operator triaged the stale scaffold");
+
+    expect(failedMsg).not.toEqual(abandonedMsg);
+    expect(wakeNotifyLevel("abandoned")).not.toBe(wakeNotifyLevel("failed"));
+    expect(wakeNotifyLevel("abandoned")).toBe("info");
+    expect(wakeNotifyLevel("failed")).toBe("warning");
+  });
+
+  it("falls back to the last log for an abandonment with no recorded reason", () => {
+    const msg = formatWakeMessage(
+      { taskId: "t", title: "T", kind: "abandoned", from: "open", to: "abandoned", topLevel: true },
+      { last_log: "Task abandoned" },
+    );
+    expect(msg).toContain("Summary: Task abandoned");
+    expect(msg).not.toContain("Reason:");
   });
 });
 
@@ -179,6 +286,7 @@ describe("readCompletionWakeConfig", () => {
     const cfg = readCompletionWakeConfig({
       WG_PI_COMPLETION_WAKES: "off",
       WG_PI_COMPLETION_FAILURES: "off",
+      WG_PI_COMPLETION_ABANDONED: "off",
       WG_PI_COMPLETION_COMPLETIONS: "all",
       WG_PI_COMPLETION_ATTENTION: "off",
       WG_PI_COMPLETION_QUIET: "on",
@@ -187,6 +295,7 @@ describe("readCompletionWakeConfig", () => {
     expect(cfg).toEqual({
       enabled: false,
       failures: false,
+      abandoned: "off",
       completions: "all",
       attention: "off",
       quiet: true,

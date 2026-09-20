@@ -123,6 +123,7 @@ export type { VizCounts, TreeRender, DetailLines } from "./viz-readmodel.js";
 export { installModelBridge, wgSpecFromModel, buildProviderConfig } from "./model-bridge.js";
 export {
   DEFAULT_COMPLETION_WAKE_CONFIG,
+  WAKE_PRESENTATION,
   CompletionWatcher,
   MemoryCursorStore,
   fileCursorStore,
@@ -130,9 +131,12 @@ export {
   installCompletionWatcher,
   isInternalTask,
   isTopLevelTask,
+  kindOf,
   planWakes,
   readCompletionWakeConfig,
   readTaskDetail,
+  wakeNotifyLevel,
+  wakePresentation,
 } from "./completion-watcher.js";
 export type {
   CompletionCursor,
@@ -141,6 +145,7 @@ export type {
   GraphTask,
   TaskDetail,
   WakeKind,
+  WakePresentation,
   WakeScope,
   WakeTransition,
 } from "./completion-watcher.js";

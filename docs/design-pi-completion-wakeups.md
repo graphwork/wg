@@ -49,37 +49,50 @@ WG's canonical statuses (`src/graph.rs`, `enum Status`) group as:
 | Class | Statuses | Meaning for the session |
 |---|---|---|
 | **Terminal success** | `done` | the deliverable landed |
-| **Terminal failure** | `failed`, `abandoned` | the task will not proceed without intervention |
+| **Terminal failure** | `failed` | the task could not complete — a genuine failure (failed attempt, review/validation failure, terminal NeedsAttention) |
+| **Deliberate abandonment** | `abandoned` | an intentional, operator-approved triage outcome (`wg abandon`, `wg fail --intent deliberate-stop`); **not** a failure |
 | **Needs attention** | `blocked`, `waiting`, `incomplete` | the task is stopped and a human decision or input is required |
 | **In flight** | `open`, `in-progress`, `pending-validation`, `pending-eval`, `failed-pending-eval` | normal progress; **never** a wake on its own |
 | **Internal** | any id beginning with `.` (`.chat-N`, `.evaluate-*`, `.flip-*`, `.assign-*`, completion-review satellites) | plumbing; never a wake |
 
 A wake is emitted only for a transition whose **new** status is in one of the
-first three classes. In-flight transitions are recorded in the cursor (so the
+first four classes. In-flight transitions are recorded in the cursor (so the
 next read is compared against the right baseline) but produce no message.
+
+Abandonment is deliberately **not** folded into the failure class: a stale
+scaffold that an operator triaged away must not be reported to a live session
+as an alarming `✗ failed`. It is its own wake kind with its own glyph/label and
+its own (quiet) notify level — see §2.2 and §3.2.
 
 ### 2.2 Which tasks matter
 
 Two knobs bound the volume:
 
-1. **Failures are always surfaced.** A transition to `failed`/`abandoned` wakes
+1. **Failures are always surfaced.** A transition to `failed` wakes
    regardless of position in the graph — the human needs to know the moment
-   something breaks. This is the one non-negotiable default.
-2. **Completions and attention are scope-filtered.** The default is
-   `top-level`: only a *top-level* task wakes. A task is top-level when it has
-   **no in-graph prerequisite** (`after` contains no task in the current
-   snapshot) — i.e. it is a root of the dependency tree the VizView panel
-   renders (`buildTree`, `worksgood-pi/src/viz-readmodel.ts`). In WG's
-   decomposition convention a user's headline task is created first and
+   something genuinely breaks. This is the one non-negotiable default.
+2. **Completions, abandonments and attention are scope-filtered.** The default
+   for all three is `top-level`: only a *top-level* task wakes. A task is
+   top-level when it has **no in-graph prerequisite** (`after` contains no task
+   in the current snapshot) — i.e. it is a root of the dependency tree the
+   VizView panel renders (`buildTree`, `worksgood-pi/src/viz-readmodel.ts`). In
+   WG's decomposition convention a user's headline task is created first and
    subtasks are then added `--after <headline>`, so the headline is the root;
    subtask churn stays quiet unless a subtask *fails*.
+
+Abandonment has its **own** scope knob (independent of `failures`), so it can
+be muted without also muting genuine failures and vice versa. It notifies by
+default, but quietly: its wake uses the `⊘` glyph, the label `abandoned`, and
+an `info` notify level, and cites the operator's note neutrally (`Note: …`)
+rather than a failure `Reason:`. `failures` now gates **only** `failed`.
 
 The scopes are per class and configurable:
 
 ```text
 completions = "top-level" | "all" | "off"     # default "top-level"
+abandoned   = "top-level" | "all" | "off"     # default "top-level" (quiet, never alarming)
 attention   = "top-level" | "all" | "off"     # default "top-level"
-failures    = on (default)                     # off only via explicit opt-out
+failures    = on (default)                     # off only via explicit opt-out; gates `failed` only
 ```
 
 A shared **quiet** toggle mutes everything for one session.
@@ -147,10 +160,13 @@ Detail: call wg_show / run /wg graph, or open /wg-viz.
 ```
 
 Failed and attention wakes swap `Summary`/`Receipt` for `Reason:` (from the
-graph's `failure_reason`) or `Waiting on:` (the unfinished prerequisites). The
-enrichment read (`wg show <id> --json`) is best-effort: if it fails, the wake
-still carries id, title, status, and the detail pointer — never a bare
-"something changed".
+graph's `failure_reason`) or `Waiting on:` (the unfinished prerequisites).
+Abandonment is presented separately: `⊘ <id> abandoned (<from> → abandoned)`
+with a neutral `Note:` line (the operator's reason) and an `info` notify level;
+the `✗` glyph, the `failed` label, the `Reason:` line, and the `warning` level
+are reserved for genuine failures. The enrichment read (`wg show <id> --json`)
+is best-effort: if it fails, the wake still carries id, title, status, and the
+detail pointer — never a bare "something changed".
 
 ## 4. Subscription / dedup model
 
@@ -206,7 +222,8 @@ already reads `WG_*` env this way) with safe defaults:
 | Env | Values | Default | Effect |
 |---|---|---|---|
 | `WG_PI_COMPLETION_WAKES` | `on`/`off` | `on` | master switch for the watcher |
-| `WG_PI_COMPLETION_FAILURES` | `on`/`off` | `on` | failures always (opt-out escape hatch) |
+| `WG_PI_COMPLETION_FAILURES` | `on`/`off` | `on` | genuine failures always (opt-out escape hatch) |
+| `WG_PI_COMPLETION_ABANDONED` | `top-level`/`all`/`off` | `top-level` | deliberate-abandonment scope (quiet, never alarming) |
 | `WG_PI_COMPLETION_COMPLETIONS` | `top-level`/`all`/`off` | `top-level` | completion scope |
 | `WG_PI_COMPLETION_ATTENTION` | `top-level`/`all`/`off` | `top-level` | blocked/waiting scope |
 | `WG_PI_COMPLETION_INTERVAL_MS` | integer ≥ 1000 | `15000` | poll cadence |
@@ -232,6 +249,10 @@ interrupted by graph chatter.
 * `DEFAULT_COMPLETION_WAKE_CONFIG`, `readCompletionWakeConfig(env)` — §5.
 * `planWakes(prevStatuses, tasks, config)` — pure transition detection, scope
   gating, internal-task filtering, baseline handling (§2, §4.1).
+* `kindOf(status)` — the status → wake-kind mapping (`failed` / `abandoned` /
+  `completed` / `attention`).
+* `WAKE_PRESENTATION` / `wakePresentation(kind)` / `wakeNotifyLevel(kind)` — the
+  single glyph + label + notify-level table (only `failed` is `warning`).
 * `formatWakeMessage(wake, detail?)` — §3.2.
 * `CompletionWatcher` — bounded poller (fixed interval, no overlapping
   in-flight reads, change-guarded cursor persistence) over an injected
@@ -271,15 +292,20 @@ live daemon):
 
 * **transition detection** — baseline emits nothing; top-level `done` wakes;
   child `done` stays quiet by default and wakes under `"all"`; failure of a
-  child always wakes; `blocked`/`waiting` attention wakes top-level only;
-  internal ids never wake; in-flight transitions never wake.
+  child always wakes; `abandoned` is its own non-alarming kind (scope-filtered,
+  independent of the `failures` knob); `blocked`/`waiting` attention wakes
+  top-level only; internal ids never wake; in-flight transitions never wake.
 * **dedup / cursor persistence** — a repeated snapshot emits once; a
   re-open→re-complete announces again; `fileCursorStore` round-trips and
   tolerates a missing/corrupt file; the watcher bounds in-flight reads.
 * **config gating** — quiet mutes everything; `off` scopes; invalid env falls
   back to defaults; `readCompletionWakeConfig` parsing.
-* **message shape** — id, title, status, receipt/reason, and the wg-tools
-  detail pointer are always present.
+* **status→kind mapping** — `failed`/`abandoned`/`done`/`blocked`/`waiting` and
+  the in-flight rejections, with `abandoned !== failed`.
+* **message shape + level** — id, title, status, receipt/reason, and the
+  wg-tools detail pointer are always present; each kind has its own glyph/label
+  and notify level; an abandoned wake is distinguishable from a failed one in
+  both message and level (`⊘`/`info`/`Note:` vs `✗`/`warning`/`Reason:`).
 * **install** — a fake `ExtensionAPI` records the `session_start` /
   `session_shutdown` subscriptions and `/wg-wake`; a `session_start` over a
   fake backend produces exactly one `sendMessage` for one `done` transition and
@@ -287,8 +313,10 @@ live daemon):
 
 A real-graph integration check drives the actual `CompletionWatcher` (and the
 installed watcher with a fake Pi API) against a scratch WG graph created with
-the real `wg` binary (`wg init` in a temp git repo, `wg add` / `wg done`), with
-a real exec host — no live daemon and no model credentials required. A true
+the real `wg` binary (`wg init` in a temp git repo, `wg add` / `wg done` /
+`wg abandon`), with a real exec host — no live daemon and no model credentials
+required. It asserts the real `open → done` and `open → abandoned` transitions
+produce the correct kind and message. A true
 `pi --mode rpc` scratch session is feasible only where a model credential is
 available; the plugin's own load path is already pinned credential-free by the
 `pi_vizview_embedded_panel_contract` smoke scenario, and the wake delivery is
