@@ -136,63 +136,66 @@ rotation_threshold = 10485760
 [mcp]
 
 [models.assigner]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "low"
 
 [models.chat_compactor]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "low"
 
 [models.compactor]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "low"
 
+[models.coordinator_eval]
+model = "pi:lunaroute/deepseek-4.1-flash-background"
+
 [models.creator]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "xhigh"
 
 [models.default]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "high"
 
 [models.evaluator]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "low"
 
 [models.evolver]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "xhigh"
 
 [models.flip_comparison]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "low"
 
 [models.flip_inference]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "low"
 
 [models.merger]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "xhigh"
 
 [models.placer]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "low"
 
 [models.reviewer]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "low"
 
 [models.task_agent]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "high"
 
 [models.triage]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "low"
 
 [models.verification]
-model = "pi:lunaroute/deepseek-4.1-flash"
+model = "pi:lunaroute/deepseek-4.1-flash-background"
 reasoning = "xhigh"
 
 [project]
@@ -202,10 +205,10 @@ keep_done_threshold = 0.9
 snapshot_agent_output = false
 
 [tiers]
-fast = "pi:lunaroute/deepseek-4.1-flash"
+fast = "pi:lunaroute/deepseek-4.1-flash-background"
 fast_reasoning = "low"
-premium = "pi:lunaroute/deepseek-4.1-flash"
-standard = "pi:lunaroute/deepseek-4.1-flash"
+premium = "pi:lunaroute/deepseek-4.1-flash-background"
+standard = "pi:lunaroute/deepseek-4.1-flash-background"
 
 [tui]
 chat_history = true
