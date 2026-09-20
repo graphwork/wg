@@ -149,6 +149,26 @@ lifecycle, enter a project and run `worksgood`; use `worksgood --help` for its
 focused setup/status/stop/restart/TUI verbs. The complete expert commands below
 remain under `wg`.
 
+### Install
+
+```bash
+# primary documented path (needs the Rust toolchain)
+cargo install --git https://github.com/graphwork/wg --locked
+
+# additive npm route (Node 20+): prebuilt per-platform packages, no Rust
+# toolchain, zero postinstall scripts; also installs the Pi coding agent CLI
+npm install -g @worksgood/cli
+```
+
+> **macOS limitation:** the macOS binaries currently ship **unsigned** and
+> **un-notarized** (Apple Developer ID secrets are not configured), so
+> Gatekeeper may block the first run. Allow it with
+> `xattr -d com.apple.quarantine "$(which wg)"` (repeat for `worksgood` and
+> `nex`) or right-click → Open.
+
+See [Install WG](./guides/install.md) for the full installer, channels, and
+verification details.
+
 ### First-Time Setup
 
 Before initializing a project, configure your global defaults:

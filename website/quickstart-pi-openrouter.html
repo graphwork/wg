@@ -136,11 +136,26 @@
 
   <section id="install-wg">
     <h2><span class="num">1</span>Install WorksGood (<code>worksgood</code> + <code>wg</code> + <code>nex</code>)</h2>
-    <p>Requires the Rust toolchain (<a href="https://rustup.rs">rustup</a>).</p>
+    <p><code>cargo install</code> is the primary documented path and requires the Rust toolchain
+    (<a href="https://rustup.rs">rustup</a>).</p>
 <pre><code>cargo install --git https://github.com/graphwork/wg --locked
 worksgood --help
 wg --version
 nex --version</code></pre>
+    <p><strong>npm route (prebuilt, additive, no Rust toolchain).</strong> Node 20+; one command
+    also installs the Pi coding agent CLI, so you can skip step 2:</p>
+<pre><code>npm install -g @worksgood/cli</code></pre>
+    <p>It resolves prebuilt per-platform packages (<code>@worksgood/linux-x64-gnu</code>,
+    <code>@worksgood/darwin-arm64</code>), ships zero postinstall scripts (works fully under
+    <code>--ignore-scripts</code>), and declares
+    <code>@earendil-works/pi-coding-agent ^0.85.1</code> as a dependency.</p>
+    <div class="wg-callout warn">
+      <strong>macOS limitation:</strong> the macOS binaries currently ship <strong>unsigned</strong>
+      and <strong>un-notarized</strong> (Apple Developer ID secrets are not configured), so
+      Gatekeeper may block the first run. Allow it with
+      <code>xattr -d com.apple.quarantine "$(which wg)"</code> (repeat for <code>worksgood</code>
+      and <code>nex</code>) or right-click &rarr; Open.
+    </div>
     <p>From a source checkout: <code>cargo install --path . --locked</code>. Make
     <code>~/.cargo/bin</code> reachable:</p>
 <pre><code><span class="c-comment"># bash/zsh — add once, then: source ~/.bashrc</span>
@@ -150,6 +165,11 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' &gt;&gt; ~/.bashrc</code></pre>
   <section id="install-pi">
     <h2><span class="num">2</span>Install Pi</h2>
     <p>Pi is an npm package. Requires Node.js 20+.</p>
+    <div class="wg-callout info">
+      <strong>Skip this step if you used the npm route in step 1</strong> &mdash;
+      <code>@worksgood/cli</code> already installs
+      <code>@earendil-works/pi-coding-agent ^0.85.1</code> as a dependency.
+    </div>
 <pre><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 pi --version</code></pre>
     <p><strong>macOS</strong> — install Node first (<code>brew install node</code>, or

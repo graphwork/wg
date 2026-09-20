@@ -94,19 +94,27 @@ A normal install places three commands on `PATH`: `worksgood` (the attended huma
 
 ```bash
 cargo install --git https://github.com/graphwork/wg --locked
-# or, from npm (Node 22+): same three commands plus the Pi coding agent CLI,
+# or, from npm (Node 20+): same three commands plus the Pi coding agent CLI,
 # from prebuilt per-platform packages — no install scripts, no Rust toolchain:
 npm install -g @worksgood/cli
 mkdir -p ~/work/my-project && cd ~/work/my-project
 worksgood
 ```
 
-The npm route ships the same signed release binaries via
+The npm route ships the same prebuilt release binaries via
 [`@worksgood/cli`](https://www.npmjs.com/package/@worksgood/cli) (esbuild/biome-style
 `optionalDependencies` — zero postinstall; fully functional under
-`--ignore-scripts`; `WG_BINARY_PATH` overrides the packaged binary). On an
+`--ignore-scripts`; `WG_BINARY_PATH` overrides the packaged binary). The
+metapackage declares `@earendil-works/pi-coding-agent ^0.85.1` as a
+dependency, so one command brings the whole WG + Pi stack. On an
 unsupported platform (or with `--no-optional`) the shim prints the `cargo
 install` fallback instead of failing. See `scripts/npm/README.md`.
+
+> **macOS limitation:** the macOS binaries currently ship **unsigned** and
+> **un-notarized** (Apple Developer ID secrets are not configured), so
+> Gatekeeper may block the first run. Allow it with
+> `xattr -d com.apple.quarantine "$(which wg)"` (repeat for `worksgood` and
+> `nex`) or right-click → Open. This is a known temporary limitation.
 
 ### This system is yours
 
@@ -168,7 +176,7 @@ for the graphwork.github.io site).
 The spine:
 
 ```bash
-# 1. install WorksGood (worksgood + wg + nex) and Pi (needs Node 22+).
+# 1. install WorksGood (worksgood + wg + nex) and Pi (needs Node 20+).
 #    Rust route (primary):    cargo install --git https://github.com/graphwork/wg --locked
 #    npm route (prebuilt):    npm install -g @worksgood/cli        # brings WG + Pi in one install
 cargo install --git https://github.com/graphwork/wg --locked

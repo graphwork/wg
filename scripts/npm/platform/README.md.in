@@ -8,7 +8,10 @@ automatically as an optional dependency of [`@worksgood/cli`](https://www.npmjs.
 which provides the `wg` / `nex` / `worksgood` commands.
 
 - The binaries in this package are exactly the release artifacts from the
-  matching GitHub release (`wg-v__WG_VERSION____ARCHIVE_SUFFIX__`); on macOS
-  they are Developer-ID signed and notarized before packaging.
+  matching GitHub release (`wg-v__WG_VERSION____ARCHIVE_SUFFIX__`). On macOS
+  they currently ship **unsigned and un-notarized** (Apple Developer ID
+  secrets are not configured), so Gatekeeper may block the first run;
+  allow it with `xattr -d com.apple.quarantine "$(which wg)"` or
+  right-click → Open.
 - Verify the release: `gh attestation verify wg-v__WG_VERSION____ARCHIVE_SUFFIX__.tar.gz --repo graphwork/wg`
 - npm additionally enforces SHA-512 integrity on the package tarball itself.

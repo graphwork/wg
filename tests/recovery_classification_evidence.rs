@@ -39,14 +39,28 @@ fn real_live_rejection_classification_evidence() {
     println!("REAL_LIVE_MULTI_CHECK_REJECTION => {real_class:?}");
 
     let one_command = vec![
-        reserved("completion.missing_authoritative_runtime_evidence", "missing", "cargo test --lib"),
-        reserved("completion.missing_authoritative_runtime_evidence", "missing", "cargo test --lib"),
+        reserved(
+            "completion.missing_authoritative_runtime_evidence",
+            "missing",
+            "cargo test --lib",
+        ),
+        reserved(
+            "completion.missing_authoritative_runtime_evidence",
+            "missing",
+            "cargo test --lib",
+        ),
     ];
-    println!("SINGLE_EXACT_COMMAND_EVIDENCE_GAP => {:?}", classify_semantic_rejection(&one_command));
+    println!(
+        "SINGLE_EXACT_COMMAND_EVIDENCE_GAP => {:?}",
+        classify_semantic_rejection(&one_command)
+    );
 
     println!(
         "SUBSTANTIVE_GAP => {:?}",
-        classify_semantic_rejection(&[ReviewFinding::new("eval.substantive-gap", "missing section")])
+        classify_semantic_rejection(&[ReviewFinding::new(
+            "eval.substantive-gap",
+            "missing section"
+        )])
     );
     println!(
         "DEFECT => {:?}",
@@ -55,7 +69,11 @@ fn real_live_rejection_classification_evidence() {
     println!(
         "MIXED => {:?}",
         classify_semantic_rejection(&[
-            reserved("completion.missing_authoritative_runtime_evidence", "missing", "cargo test"),
+            reserved(
+                "completion.missing_authoritative_runtime_evidence",
+                "missing",
+                "cargo test"
+            ),
             ReviewFinding::new("eval.substantive-gap", "missing section"),
         ])
     );
