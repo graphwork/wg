@@ -1,9 +1,26 @@
 # Design: FLIP is fidelity-only, Eval is the acceptance gate, and a recoverable rejection resumes the node in place
 
-**Status:** proposed design (no production code changed by this task)
+**Status:** implemented through milestone 2. Milestone 1 (FLIP fidelity-only +
+Eval calibration) landed in `9228862f`; milestone 2 (recoverable rejection
+resumes the same node in place) landed in `7f7e600c`. Milestone 3
+(observability polish) and milestone 4 are not implemented — §9 remains the
+rollout plan for those.
 **Scope:** the completion review valve (`FLIP` then `Eval`), the completion-repair
 attention state, and the waiting/resume machinery.
-**Follow-on implementation:** see §9 (milestone 1 is a prompt-only change).
+**Follow-on implementation:** see §9 (milestones 1 and 2 are landed).
+
+## Operator quick reference
+
+Map an observed review outcome to how to inspect it (all commands are
+read-only when used as below):
+
+| Observed | How to inspect |
+|---|---|
+| A task sits in the completion valve, or was rejected | `wg show <task>` — the **Completion review lane** section lists the immutable FLIP/Eval receipts (`candidate`, `receipt`, `route`, `executor`), each receipt's `failure` class, and the per-finding `code`/`message`/`evidence`. |
+| Why the gate blocks, and how far a repair may go | `wg contract <task>` — prints the enforced deterministic checks (in order), the required evidence, and the permitted repair boundary / deterministic repair budget, without mutating the task. |
+| Whether a task is stalled vs. actively recovering | `wg status` — `NeedsAttention` rows are surfaced as stalls; a `Repairing` disposition is surfaced as active recovery rather than a stall. |
+
+See §5 for where each of these surfaces is populated.
 
 ## 0. Decision summary
 
