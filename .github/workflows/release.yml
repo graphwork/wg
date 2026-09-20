@@ -652,7 +652,7 @@ jobs:
         run: |
           set -euo pipefail
           for dir in npm-dist/@worksgood/*/; do
-            pkg_name="$(node -p "require(process.argv[1]).name" "${dir}package.json")"
+            pkg_name="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).name" "${dir}package.json")"
             if [[ "${pkg_name}" == "@worksgood/cli" ]]; then continue; fi
             (cd "${dir}" && npm publish --provenance --access public)
             echo "published ${pkg_name}"
