@@ -806,7 +806,20 @@ wg list [--status <STATUS>]
 |--------|-------------|
 | `--status <STATUS>` | Filter by status (open, in-progress, done, failed, abandoned) |
 | `--paused` | Only show paused tasks |
+| `--cron` | Only show cron-scheduled tasks |
 | `--tag <TAG>` | Filter by tag (repeatable, multiple `--tag` flags use AND semantics) |
+| `--all` | Show all graph tasks plus internal completion-review activity as virtual audit rows |
+
+**Notes:**
+`--all` appends immutable completion-review records alongside graph tasks. Review
+rows are virtual audit rows, not graph tasks: they have no dependency, claim,
+retry, or lifecycle authority.
+
+**Example:**
+```bash
+wg list --all
+# Graph tasks plus immutable completion-review audit rows
+```
 
 ---
 
