@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 
-use worksgood::pi_plugin::{self, EnsureMode, Source};
+use worksgood::pi_plugin::{self, CacheState, EnsureMode, Source};
 
 use crate::cli::PiPluginCommands;
 
@@ -72,17 +72,32 @@ fn run_status() -> Result<()> {
         Source::Cache => "Cache (embedded → versioned cache)",
         Source::EnvOverride => "EnvOverride (WG_PI_PLUGIN_DIR)",
     };
+    let cache_state = match s.cache_state {
+        CacheState::Current => "current (matches this binary's embedded build)",
+        CacheState::Missing => "MISSING — run `wg pi-plugin install`",
+        CacheState::Drift => {
+            "DRIFTED — stale/incompatible cache vs this binary's embedded build; run `wg pi-plugin install`"
+        }
+    };
     println!("WorksGood Pi integration status (pi-worksgood / @worksgood/pi)");
     println!("  compat version:   {}", s.compat);
     println!("  source:           {}", source);
     println!("  resolved entry:   {}", s.dist_entry.display());
     println!("  cache dir:        {}", s.cache_version_dir.display());
+    println!("  embed digest:     {}", s.embed_digest);
+    println!(
+        "  cache digest:     {}",
+        s.cache_digest.as_deref().unwrap_or("<none>")
+    );
+    println!("  cache state:      {}", cache_state);
     println!(
         "  build ready:      {}",
         if s.ready {
-            "yes"
+            "yes".to_string()
+        } else if s.source == Source::Cache {
+            "NO — run `wg pi-plugin install` to repair".to_string()
         } else {
-            "NO — run `wg pi-plugin install` to repair"
+            "no (resolved dev/override entry is missing)".to_string()
         }
     );
     println!("  pi settings:      {}", s.settings_path.display());
@@ -94,6 +109,16 @@ fn run_status() -> Result<()> {
             "no (run `wg pi-plugin install`)"
         }
     );
+    if s.cache_state != CacheState::Current {
+        println!(
+            "  WARNING: the embedded cache is {} — a live `pi` session may be running stale wg tools until you run `wg pi-plugin install`.",
+            match s.cache_state {
+                CacheState::Drift => "DRIFTED from this binary's embedded build",
+                CacheState::Missing => "not populated",
+                CacheState::Current => unreachable!(),
+            }
+        );
+    }
     Ok(())
 }
 

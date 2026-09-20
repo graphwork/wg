@@ -1857,6 +1857,15 @@ description = "Pins implement-pi-plugin: the `ensure-pi-plugin` install primitiv
 timeout_seconds = 60
 
 [[scenario]]
+name = "pi_plugin_cache_embed_digest"
+script = "scenarios/pi_plugin_cache_embed_digest.sh"
+owners = [
+    "fix-plugin-cache",
+]
+description = "Pins fix-plugin-cache: the wg-pi plugin cache silently served a six-week-stale build because cache_is_correct() validated only file existence + the compat string, so an embed change that did not bump WG_PI_PLUGIN_COMPAT_VERSION never re-materialized. Credential-free (pure `wg` binary, isolated HOME/XDG_CACHE_HOME, WG_PI_PLUGIN_FORCE_CACHE=1): a real install writes a `.wg-embed-digest` content stamp and lands EVERY embedded file including the shipped completion wakeups (completion-watcher.js) and VizView panel (viz-panel.js); `wg pi-plugin status` reports the embed digest and a 'current' cache state; a simulated stale cache (bogus digest stamp + a missing shipped file, same compat) is reported as DRIFTED with build-ready NO and a WARNING instead of 'build ready: yes'; the next install re-materializes the embedded truth (restoring the missing file + digest stamp) and is idempotent. node --check runs on the materialized entry when node is present."
+timeout_seconds = 60
+
+[[scenario]]
 name = "pi_install_e2e"
 script = "scenarios/pi_install_e2e.sh"
 owners = [

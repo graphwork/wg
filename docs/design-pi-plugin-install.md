@@ -280,7 +280,11 @@ a future regression fails loudly rather than silently.
    dev forgot to rebuild; the compat tripwire (§Decision below / §5) catches a
    *version* mismatch but not a same-version stale build — devs must
    `npm run build`. (`make embed-worksgood-pi` and a `/reload` in attended pi are the
-   two ways to refresh.)
+   two ways to refresh.) **Worktree guard:** a compile-time tree under a
+   `.wg-worktrees/` (or `.claude/worktrees/`) path is *never* a legitimate Dev
+   source for an installed binary — it is prunable, and a `cargo install
+   --path .` run from a worktree bakes that path into the global binary. Such a
+   path is rejected loudly on stderr and the source falls back to **Cache**.
 3. **User (cargo-installed, no repo):** the compile-time `worksgood-pi/` path is
    absent (or fails the repo guard) → **extract the embedded bundle into the
    versioned cache** and use that. Node-free, offline, version-locked.
@@ -302,16 +306,29 @@ For a target location `T` (the chosen cache version dir, or the dev build),
 3. **Intact:** the `.wg-ok` integrity stamp is present (proves a complete atomic
    extraction). *(The dev build is exempt from the stamp — it is managed by `tsc`,
    not by extraction; presence + version are sufficient there.)*
+4. **Content-identical (cache only):** a `.wg-embed-digest` BLAKE3 stamp written
+   at extraction must equal the running binary's `embedded_digest()`, **and** a
+   recomputed content digest of the cache must match too. This closes the
+   six-week-stale-cache failure: a changed embed that did **not** bump
+   `WG_PI_PLUGIN_COMPAT_VERSION` (e.g. the shipped `completion-watcher.js` +
+   `viz-panel.js`) left the old bytes in place forever because only existence +
+   the compat string were checked. Content identity also catches corruption and
+   half-written caches.
 4. **(Console mode only) Wired:** `~/.pi/agent/settings.json` contains an
    `extensions` entry whose absolute path resolves to `T/pi-worksgood/index.js` (or the
    current cache `pi-worksgood/index.js`).
+
+`wg pi-plugin status` reports the binary's `embed digest`, the cache's recomputed
+`cache digest`, and a `cache state` of `current` / `DRIFTED` / `MISSING`, with a
+loud `WARNING` for anything but `current` — so a stale cache is visible even when
+the resolved source is a Dev/EnvOverride tree.
 
 If all hold → **no-op** (cost: a handful of `stat`s + one small JSON read).
 Otherwise **repair**, always by *re-materializing the embedded truth* (never
 partial patching of suspect bytes):
 
 - Present/intact/version fails (cache) → atomic re-extract of the embedded bundle
-  (§Decision 3), rewrite `version.json` + `.wg-ok`.
+  (§Decision 3), rewrite `version.json` + `.wg-ok` + `.wg-embed-digest`.
 - Console wiring fails → rewrite the single `extensions` entry idempotently
   (replace any existing wg-managed entry; leave the user's other `extensions`/
   `packages` untouched).

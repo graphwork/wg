@@ -60,6 +60,14 @@ static EMBEDDED_PI_PLUGIN: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/worksgood
 /// presence proves the version dir is not a half-written cache.
 const OK_STAMP: &str = ".wg-ok";
 
+/// Content-identity stamp written at extraction: the BLAKE3 digest of the exact
+/// embedded file set this cache was materialized from. Compared against the
+/// running binary's [`embedded_digest`] so an embed change that does NOT bump
+/// `WG_PI_PLUGIN_COMPAT_VERSION` still forces re-materialization (the
+/// six-week-stale-cache failure: `cache_is_correct` used to validate only file
+/// *existence* + the compat string, so the stale build was served forever).
+const EMBED_DIGEST_STAMP: &str = ".wg-embed-digest";
+
 /// Which lifecycle point is asking. `Console` additionally wires `~/.pi`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnsureMode {
@@ -79,6 +87,21 @@ pub enum Source {
     Cache,
     /// An explicit `WG_PI_PLUGIN_DIR` override, used verbatim.
     EnvOverride,
+}
+
+/// Health of the populated cache version dir, versus the running binary's
+/// embedded build. Reported by `wg pi-plugin status` so a stale cache is
+/// visible without manual forensics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheState {
+    /// No usable, stamped cache version dir exists for the current compat.
+    Missing,
+    /// A cache exists but its content no longer matches the binary's embed:
+    /// an embed change under an unchanged compat, a stale/partial cache, or
+    /// outright corruption.
+    Drift,
+    /// Cache content digest matches the binary's embed exactly.
+    Current,
 }
 
 /// The resolved, ready-to-load plugin build.
@@ -163,6 +186,47 @@ fn is_wg_plugin_repo(dir: &Path) -> bool {
         == Some(NPM_PACKAGE)
 }
 
+/// True when `path` lives inside a WG-managed (or Claude-managed) git worktree.
+/// Such a path is prunable and must never be baked into a globally installed
+/// binary as its Dev source (the `cargo install --path .`-from-a-worktree
+/// hazard: the baked `CARGO_MANIFEST_DIR` pointed at
+/// `/home/bot/wg/.wg-worktrees/agent-NNN`, so `wg pi-plugin install` rewrote
+/// `~/.pi/agent/settings.json` at a directory that would later be pruned).
+fn is_worktree_path(path: &Path) -> bool {
+    let parts: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+    parts.iter().any(|p| p == ".wg-worktrees")
+        || parts
+            .windows(2)
+            .any(|w| w[0] == ".claude" && w[1] == "worktrees")
+}
+
+/// Reject a compile-time plugin tree that is not a legitimate Dev source.
+/// Returns a human-readable reason when `plugin_dir` is a valid wg plugin tree
+/// **but** lives under a prunable worktree. Returns `None` when the dir is
+/// simply not a built wg plugin tree (the caller falls back to Cache silently).
+fn worktree_dev_rejection(plugin_dir: &Path) -> Option<String> {
+    let dev_present =
+        is_wg_plugin_repo(plugin_dir) && plugin_dir.join("pi-worksgood").join("index.js").is_file();
+    if !dev_present {
+        return None;
+    }
+    if is_worktree_path(plugin_dir) {
+        return Some(format!(
+            "compile-time plugin dir {} is inside a WG worktree (.wg-worktrees); \
+             a prunable worktree must never be an installed binary's Dev source \
+             — falling back to the embedded cache",
+            plugin_dir.display()
+        ));
+    }
+    None
+}
+
 /// Pick the plugin source by the §Decision-4 precedence:
 /// `WG_PI_PLUGIN_DIR` override → in-repo dev tree → embedded→cache.
 ///
@@ -170,19 +234,35 @@ fn is_wg_plugin_repo(dir: &Path) -> bool {
 /// (user) path can be exercised from inside a checkout — used by the smoke gate
 /// and anyone validating the cargo-installed behavior without leaving the repo.
 fn pick_source(plugin_dir: &Path) -> (Source, Option<PathBuf>) {
-    if let Some(explicit) = std::env::var_os("WG_PI_PLUGIN_DIR")
-        && !explicit.is_empty()
-    {
-        return (Source::EnvOverride, Some(PathBuf::from(explicit)));
-    }
+    let env_override = std::env::var_os("WG_PI_PLUGIN_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
     let force_cache = std::env::var("WG_PI_PLUGIN_FORCE_CACHE")
         .map(|v| !v.is_empty() && v != "0")
         .unwrap_or(false);
-    if !force_cache
-        && is_wg_plugin_repo(plugin_dir)
-        && plugin_dir.join("pi-worksgood").join("index.js").is_file()
-    {
-        return (Source::Dev, Some(plugin_dir.to_path_buf()));
+    pick_source_with(plugin_dir, force_cache, env_override)
+}
+
+/// Environment-free core of [`pick_source`] (unit-testable without env
+/// mutation). A worktree Dev path is rejected loudly and falls back to Cache.
+fn pick_source_with(
+    plugin_dir: &Path,
+    force_cache: bool,
+    env_override: Option<PathBuf>,
+) -> (Source, Option<PathBuf>) {
+    if let Some(explicit) = env_override {
+        return (Source::EnvOverride, Some(explicit));
+    }
+    if !force_cache {
+        match worktree_dev_rejection(plugin_dir) {
+            Some(reason) => eprintln!("warning: WorksGood pi-plugin: {reason}"),
+            None if is_wg_plugin_repo(plugin_dir)
+                && plugin_dir.join("pi-worksgood").join("index.js").is_file() =>
+            {
+                return (Source::Dev, Some(plugin_dir.to_path_buf()));
+            }
+            None => {}
+        }
     }
     (Source::Cache, None)
 }
@@ -204,8 +284,83 @@ fn extract_dir(dir: &Dir<'_>, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+// --- content-identity digest --------------------------------------------------
+
+/// Deterministic digest over a `(relative-path, bytes)` file set: BLAKE3 over
+/// each path + a length-prefixed body, in sorted-path order. Stable across runs
+/// and platforms, so the digest the extracting binary writes always equals the
+/// digest a later verify computes.
+fn digest_files(files: &mut [(String, Vec<u8>)]) -> String {
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hasher = blake3::Hasher::new();
+    for (path, contents) in files.iter() {
+        hasher.update(path.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(&(contents.len() as u64).to_le_bytes());
+        hasher.update(contents);
+    }
+    format!("b3:{}", hasher.finalize().to_hex())
+}
+
+fn collect_embedded_files(dir: &Dir<'_>, out: &mut Vec<(String, Vec<u8>)>) {
+    for file in dir.files() {
+        out.push((
+            file.path().to_string_lossy().replace('\\', "/"),
+            file.contents().to_vec(),
+        ));
+    }
+    for sub in dir.dirs() {
+        collect_embedded_files(sub, out);
+    }
+}
+
+/// The content digest of the exact file set this binary embeds. Computed once.
+fn embedded_digest() -> &'static str {
+    static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIGEST.get_or_init(|| {
+        let mut files = Vec::new();
+        collect_embedded_files(&EMBEDDED_PI_PLUGIN, &mut files);
+        digest_files(&mut files)
+    })
+}
+
+/// Recompute the content digest of an extracted cache dir, ignoring the two
+/// integrity stamps (which are not part of the embedded set). `None` when the
+/// dir cannot be walked.
+fn cache_content_digest(version_dir: &Path) -> Option<String> {
+    let mut files = Vec::new();
+    for entry in walkdir::WalkDir::new(version_dir).sort_by_file_name() {
+        let entry = entry.ok()?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy();
+        if name == OK_STAMP || name == EMBED_DIGEST_STAMP {
+            continue;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(version_dir)
+            .ok()?
+            .to_string_lossy()
+            .replace('\\', "/");
+        files.push((rel, std::fs::read(entry.path()).ok()?));
+    }
+    Some(digest_files(&mut files))
+}
+
+fn read_digest_stamp(version_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(version_dir.join(EMBED_DIGEST_STAMP)).ok()?;
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
 /// The §Decision-5 "already correct" predicate for a cache version dir `T`:
-/// present (extension + host) **and** version-matched **and** intact (`.wg-ok`).
+/// present (extension + host) **and** version-matched **and** intact (`.wg-ok`)
+/// **and** content-identical to the running binary's embed — both by the
+/// extraction-time digest stamp and by recomputing the content digest, so a
+/// changed embed (same compat), a half-written cache, or corruption all force
+/// re-materialization.
 fn cache_is_correct(version_dir: &Path) -> bool {
     if !version_dir.join("pi-worksgood").join("index.js").is_file() {
         return false;
@@ -216,8 +371,30 @@ fn cache_is_correct(version_dir: &Path) -> bool {
     if !version_dir.join(OK_STAMP).is_file() {
         return false;
     }
-    read_version_json(&version_dir.join("version.json")).as_deref()
-        == Some(WG_PI_PLUGIN_COMPAT_VERSION)
+    if read_version_json(&version_dir.join("version.json")).as_deref()
+        != Some(WG_PI_PLUGIN_COMPAT_VERSION)
+    {
+        return false;
+    }
+    let expected = embedded_digest();
+    if read_digest_stamp(version_dir).as_deref() != Some(expected) {
+        return false;
+    }
+    cache_content_digest(version_dir).as_deref() == Some(expected)
+}
+
+/// Classify the populated cache dir for `wg pi-plugin status`.
+fn cache_state(version_dir: &Path) -> CacheState {
+    if !version_dir.join("pi-worksgood").join("index.js").is_file()
+        || !version_dir.join(OK_STAMP).is_file()
+    {
+        return CacheState::Missing;
+    }
+    if cache_is_correct(version_dir) {
+        CacheState::Current
+    } else {
+        CacheState::Drift
+    }
 }
 
 /// Read the `compat` field out of a `version.json`.
@@ -290,7 +467,11 @@ fn materialize_cache(parent: &Path) -> Result<PathBuf> {
             WG_PI_PLUGIN_COMPAT_VERSION
         );
     }
-    // Integrity stamp written LAST, then swap into place.
+    // Content-identity stamp (the embedded file-set digest), then the
+    // integrity stamp written LAST, then swap into place.
+    let digest = embedded_digest();
+    std::fs::write(tmp.join(EMBED_DIGEST_STAMP), format!("{digest}\n"))
+        .context("write .wg-embed-digest content stamp")?;
     std::fs::write(tmp.join(OK_STAMP), b"ok\n").context("write .wg-ok integrity stamp")?;
     let _ = std::fs::remove_dir_all(&version_dir);
     std::fs::rename(&tmp, &version_dir)
@@ -594,13 +775,24 @@ pub struct PluginStatus {
     pub settings_path: PathBuf,
     /// Whether `settings.json` already lists the resolved dist entry.
     pub console_wired: bool,
+    /// Content digest of the file set this binary embeds.
+    pub embed_digest: String,
+    /// Content digest recomputed from the populated cache dir, if any.
+    pub cache_digest: Option<String>,
+    /// Cache health vs this binary's embed (Missing / Drift / Current).
+    pub cache_state: CacheState,
 }
 
 /// Read-only resolution for `wg pi-plugin status` / `path`.
 pub fn status() -> PluginStatus {
-    let (source, override_root) = pick_source(&compile_time_plugin_dir());
-    let cache_version_dir =
-        pi_plugin_cache_parent(&wg_cache_dir()).join(WG_PI_PLUGIN_COMPAT_VERSION);
+    let pick = pick_source(&compile_time_plugin_dir());
+    status_at(pick, &wg_cache_dir(), &home_dir())
+}
+
+/// Environment-free core of [`status`] (unit-testable).
+fn status_at(pick: (Source, Option<PathBuf>), cache_dir: &Path, home: &Path) -> PluginStatus {
+    let (source, override_root) = pick;
+    let cache_version_dir = pi_plugin_cache_parent(cache_dir).join(WG_PI_PLUGIN_COMPAT_VERSION);
     let root = match source {
         Source::Cache => cache_version_dir.clone(),
         Source::Dev | Source::EnvOverride => {
@@ -608,20 +800,24 @@ pub fn status() -> PluginStatus {
         }
     };
     let dist_entry = root.join("pi-worksgood").join("index.js");
+    let cache_state = cache_state(&cache_version_dir);
     let ready = match source {
-        Source::Cache => cache_is_correct(&cache_version_dir),
+        Source::Cache => cache_state == CacheState::Current,
         Source::Dev | Source::EnvOverride => dist_entry.is_file(),
     };
-    let settings_path = pi_settings_path(&home_dir());
+    let settings_path = pi_settings_path(home);
     let console_wired = settings_lists_entry(&settings_path, &dist_entry);
     PluginStatus {
         compat: WG_PI_PLUGIN_COMPAT_VERSION.to_string(),
         source,
         dist_entry,
-        cache_version_dir,
+        cache_version_dir: cache_version_dir.clone(),
         ready,
         settings_path,
         console_wired,
+        embed_digest: embedded_digest().to_string(),
+        cache_digest: cache_content_digest(&cache_version_dir),
+        cache_state,
     }
 }
 
@@ -999,5 +1195,201 @@ mod tests {
             serde_json::json!(["/home/u/.cache/wg/worksgood-pi/0.2.0/pi-worksgood/index.js"])
         );
         assert!(settings_lists_entry(&settings, &canonical));
+    }
+
+    // --- embed-digest / cache-drift regression (fix-plugin-cache) -----------
+
+    #[test]
+    fn test_materialize_cache_carries_shipped_features_and_digest_stamp() {
+        // A real re-extract must land EVERY embedded file, including the ones
+        // whose absence defined the six-week-stale-cache incident: the
+        // completion wakeups (completion-watcher.js) and the VizView panel
+        // (viz-panel.js).
+        let tmp = TempDir::new().unwrap();
+        let parent = pi_plugin_cache_parent(tmp.path());
+        let v = materialize_cache(&parent).unwrap();
+
+        for shipped in [
+            "pi-worksgood/completion-watcher.js",
+            "pi-worksgood/viz-panel.js",
+            "pi-worksgood/index.js",
+            "host/wg-pi-host.mjs",
+        ] {
+            assert!(
+                v.join(shipped).is_file(),
+                "re-extracted cache missing shipped file {shipped}"
+            );
+        }
+        assert!(v.join(EMBED_DIGEST_STAMP).is_file());
+        assert_eq!(
+            std::fs::read_to_string(v.join(EMBED_DIGEST_STAMP))
+                .unwrap()
+                .trim(),
+            embedded_digest()
+        );
+        assert_eq!(cache_content_digest(&v).as_deref(), Some(embedded_digest()));
+        assert_eq!(cache_state(&v), CacheState::Current);
+    }
+
+    #[test]
+    fn test_embed_digest_mismatch_forces_reextraction() {
+        // Simulate a changed embed under an UNCHANGED compat version: the cache
+        // stamp no longer matches the binary's embedded digest. The stale cache
+        // must be rejected even though index.js/host/version.json/.wg-ok are all
+        // present and version-matched — this is exactly the bug that served a
+        // six-week-old build forever.
+        let tmp = TempDir::new().unwrap();
+        let parent = pi_plugin_cache_parent(tmp.path());
+        let v = materialize_cache(&parent).unwrap();
+        std::fs::write(v.join(EMBED_DIGEST_STAMP), b"b3:0000000000stale\n").unwrap();
+        assert!(
+            !cache_is_correct(&v),
+            "stale digest stamp must invalidate the cache"
+        );
+        assert_eq!(cache_state(&v), CacheState::Drift);
+
+        let v2 = materialize_cache(&parent).unwrap();
+        assert!(cache_is_correct(&v2));
+        assert_eq!(
+            std::fs::read_to_string(v2.join(EMBED_DIGEST_STAMP))
+                .unwrap()
+                .trim(),
+            embedded_digest()
+        );
+
+        // A legacy cache written before the digest stamp existed (no stamp at
+        // all) is also drift, not "correct".
+        std::fs::remove_file(v2.join(EMBED_DIGEST_STAMP)).unwrap();
+        assert!(!cache_is_correct(&v2));
+        assert_eq!(cache_state(&v2), CacheState::Drift);
+    }
+
+    #[test]
+    fn test_missing_embedded_file_forces_reextraction() {
+        // Content identity, not just index.js + host presence: a stale cache
+        // that lost a shipped runtime file (e.g. completion-watcher.js) but kept
+        // index.js, .wg-ok and a matching compat must be repaired.
+        let tmp = TempDir::new().unwrap();
+        let parent = pi_plugin_cache_parent(tmp.path());
+        let v = materialize_cache(&parent).unwrap();
+        std::fs::remove_file(v.join("pi-worksgood").join("completion-watcher.js")).unwrap();
+        assert!(
+            !cache_is_correct(&v),
+            "a missing shipped file must invalidate the cache"
+        );
+
+        let v2 = materialize_cache(&parent).unwrap();
+        assert!(
+            v2.join("pi-worksgood")
+                .join("completion-watcher.js")
+                .is_file()
+        );
+        assert!(cache_is_correct(&v2));
+    }
+
+    #[test]
+    fn test_worktree_dev_source_is_rejected_in_favor_of_cache() {
+        // A `cargo install --path .` run from a WG worktree bakes
+        // CARGO_MANIFEST_DIR=<repo>/.wg-worktrees/agent-NNN. That prunable path
+        // must never be used as the installed binary's Dev source.
+        let tmp = TempDir::new().unwrap();
+        let wt = tmp
+            .path()
+            .join(".wg-worktrees")
+            .join("agent-144")
+            .join("worksgood-pi");
+        std::fs::create_dir_all(wt.join("pi-worksgood")).unwrap();
+        std::fs::write(wt.join("package.json"), r#"{"name":"@worksgood/pi"}"#).unwrap();
+        std::fs::write(wt.join("pi-worksgood").join("index.js"), b"// dev").unwrap();
+
+        assert!(is_worktree_path(&wt));
+        let reason = worktree_dev_rejection(&wt).expect("worktree dev tree must be rejected");
+        assert!(
+            reason.contains(".wg-worktrees") && reason.contains("falling back"),
+            "rejection reason must name the worktree + fallback: {reason}"
+        );
+
+        let (source, root) = pick_source_with(&wt, false, None);
+        assert_eq!(
+            source,
+            Source::Cache,
+            "worktree path must fall back to Cache"
+        );
+        assert!(root.is_none());
+    }
+
+    #[test]
+    fn test_non_worktree_dev_source_remains_eligible() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("worksgood-pi");
+        std::fs::create_dir_all(repo.join("pi-worksgood")).unwrap();
+        std::fs::write(repo.join("package.json"), r#"{"name":"@worksgood/pi"}"#).unwrap();
+        std::fs::write(repo.join("pi-worksgood").join("index.js"), b"// dev").unwrap();
+
+        assert!(!is_worktree_path(&repo));
+        assert!(worktree_dev_rejection(&repo).is_none());
+        let (source, root) = pick_source_with(&repo, false, None);
+        assert_eq!(source, Source::Dev);
+        assert_eq!(root.as_deref(), Some(repo.as_path()));
+    }
+
+    #[test]
+    fn test_status_reports_cache_missing_drift_and_current() {
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+
+        // No cache yet.
+        let s = status_at((Source::Cache, None), cache.path(), home.path());
+        assert_eq!(s.cache_state, CacheState::Missing);
+        assert!(!s.ready);
+        assert_eq!(s.embed_digest, embedded_digest());
+        assert!(s.cache_digest.is_none());
+
+        // Populated + matching.
+        let parent = pi_plugin_cache_parent(cache.path());
+        let v = materialize_cache(&parent).unwrap();
+        let s = status_at((Source::Cache, None), cache.path(), home.path());
+        assert_eq!(s.cache_state, CacheState::Current);
+        assert!(s.ready);
+        assert_eq!(s.cache_digest.as_deref(), Some(embedded_digest()));
+
+        // The six-week-stale cache: content no longer matches the binary embed.
+        std::fs::write(v.join(EMBED_DIGEST_STAMP), b"b3:stale-six-weeks\n").unwrap();
+        let s = status_at((Source::Cache, None), cache.path(), home.path());
+        assert_eq!(s.cache_state, CacheState::Drift);
+        assert!(!s.ready, "a drifted cache must not report build ready: yes");
+    }
+
+    #[test]
+    fn test_status_surfaces_cache_drift_even_for_dev_source() {
+        // The resolved Dev build can be present while the embedded cache is
+        // stale; status must still surface the drift (the live incident showed
+        // `source: EnvOverride` + `build ready: yes` with a six-week-stale
+        // cache).
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let parent = pi_plugin_cache_parent(cache.path());
+        let v = materialize_cache(&parent).unwrap();
+        std::fs::write(v.join(EMBED_DIGEST_STAMP), b"b3:stale\n").unwrap();
+
+        let dev_root = TempDir::new().unwrap();
+        std::fs::create_dir_all(dev_root.path().join("pi-worksgood")).unwrap();
+        std::fs::write(
+            dev_root.path().join("pi-worksgood").join("index.js"),
+            b"// dev",
+        )
+        .unwrap();
+        let s = status_at(
+            (Source::Dev, Some(dev_root.path().to_path_buf())),
+            cache.path(),
+            home.path(),
+        );
+        assert_eq!(s.source, Source::Dev);
+        assert!(s.ready, "the resolved dev entry is present");
+        assert_eq!(
+            s.cache_state,
+            CacheState::Drift,
+            "dev source must not mask a stale embedded cache"
+        );
     }
 }
