@@ -2840,3 +2840,14 @@ mod projection_tests {
         assert!(stored.receipt.findings_digest.as_str().starts_with("b3:"));
     }
 }
+
+#[cfg(test)]
+mod protocol_invariant_tests {
+    use super::{COMPLETION_REVIEW_RECEIPT_VERSION, FLIP_PROTOCOL};
+
+    #[test]
+    fn flip_protocol_is_v3_and_receipt_version_is_still_2() {
+        assert_eq!(FLIP_PROTOCOL, "prompt-reconstruction-two-phase-v3");
+        assert_eq!(COMPLETION_REVIEW_RECEIPT_VERSION, 2);
+    }
+}

@@ -447,8 +447,11 @@ pub(crate) fn run_at_with_checks(
         .is_some_and(|task| {
             (task.status == worksgood::graph::Status::Waiting && task.completion_blocker.is_some())
                 || task.completion_repair.as_ref().is_some_and(|repair| {
-                    repair.disposition
-                        == worksgood::graph::CompletionRepairDisposition::NeedsAttention
+                    matches!(
+                        repair.disposition,
+                        worksgood::graph::CompletionRepairDisposition::NeedsAttention
+                            | worksgood::graph::CompletionRepairDisposition::Repairing
+                    )
                 })
         })
     {

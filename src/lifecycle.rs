@@ -971,7 +971,9 @@ impl LifecycleKernel {
                     && task.completion_candidate.is_some()
                     && matches!(
                         request.reason_code.as_str(),
-                        "completion_needs_review" | "completion_landing_pending"
+                        "completion_needs_review"
+                            | "completion_landing_pending"
+                            | "completion_semantic_recovery"
                     );
                 if completion_finalizer_wait {
                     let attempt = projection.current_attempt.as_mut().ok_or_else(|| {

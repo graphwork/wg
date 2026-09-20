@@ -5,10 +5,14 @@ use worksgood::completion_manifest::{
     COMPLETION_MANIFEST_VERSION, CompletionManifest, ContentDigest, OutputRef,
 };
 use worksgood::completion_review::{
-    ManifestReviewer, ReviewerKind, ReviewerUnavailable, SemanticReview, SemanticVerdict,
+    ManifestReviewer, ReviewValveStatus, ReviewerKind, ReviewerUnavailable, SemanticReview,
+    SemanticVerdict,
 };
 use worksgood::completion_task::requirements_digest;
-use worksgood::graph::{CompletionContract, Node, Status, Task, WorkGraph};
+use worksgood::graph::{
+    CompletionContract, CompletionRepairDisposition, Node, Status, Task, WaitCondition, WaitSpec,
+    WorkGraph,
+};
 use worksgood::lifecycle::AttemptRef;
 use worksgood::parser::{load_graph, save_graph};
 use worksgood::simple_land::CompletionContract as ManifestContract;
@@ -17,6 +21,7 @@ use worksgood::simple_land::CompletionContract as ManifestContract;
 enum Script {
     Pass,
     Reject,
+    RejectWith(&'static str),
     Unavailable,
 }
 
@@ -64,6 +69,26 @@ impl ManifestReviewer for ScriptedReviewer {
             Script::Reject => {
                 let findings = vec![worksgood::completion_review::ReviewFinding::new(
                     "canary.rejected",
+                    "scripted semantic rejection",
+                )];
+                Ok(SemanticReview {
+                    verdict: SemanticVerdict::Reject,
+                    flip_proof: (kind == ReviewerKind::Flip).then(|| {
+                        super::completion_test_support::test_flip_proof(
+                            artifact_store,
+                            bundle,
+                            binding.expect("FLIP canary binding"),
+                            &self.route,
+                            SemanticVerdict::Reject,
+                            &findings,
+                        )
+                    }),
+                    findings,
+                })
+            }
+            Script::RejectWith(code) => {
+                let findings = vec![worksgood::completion_review::ReviewFinding::new(
+                    code,
                     "scripted semantic rejection",
                 )];
                 Ok(SemanticReview {
@@ -759,4 +784,185 @@ fn ten_concurrent_attempts_use_one_immutable_review_and_done_authority() {
     std::fs::create_dir_all(&target_root).unwrap();
     let evidence_path = target_root.join("worker-owned-completion-canary.json");
     std::fs::write(evidence_path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+}
+
+/// Build a minimal strict-mode Report fixture whose immutable candidate can be
+/// rejected by the review valve without any model or network call.
+fn recovery_fixture() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let temp = tempdir().unwrap();
+    let project = temp.path();
+    let wg_dir = project.join(".wg");
+    let candidate_dir = project.join("candidate");
+    std::fs::create_dir_all(&wg_dir).unwrap();
+    std::fs::create_dir_all(&candidate_dir).unwrap();
+    std::fs::write(
+        wg_dir.join("config.toml"),
+        "[agency]\ncompletion_review_strict = true\ngate_max_attempts = 2\n",
+    )
+    .unwrap();
+    let task = Task {
+        id: "recovery-report".to_string(),
+        title: "Recoverable review rejection".to_string(),
+        description: Some(
+            "Publish the exact report bytes.\n\n## Validation\nVerify the report bytes."
+                .to_string(),
+        ),
+        status: Status::InProgress,
+        assigned: Some("recovery-agent".to_string()),
+        session_id: Some("canary-session".to_string()),
+        completion_contract: CompletionContract::Report,
+        ..Task::default()
+    };
+    let mut task = task;
+    task.lifecycle.fence = 1;
+    task.lifecycle.attempt_sequence = 1;
+    task.lifecycle.current_attempt = Some(AttemptRef {
+        id: "attempt-0-1".to_string(),
+        generation: 0,
+        fence: 1,
+        actor_id: "recovery-agent".to_string(),
+        disposition: None,
+    });
+    let store = completion_submit::store(&wg_dir).unwrap();
+    let output = store.put_bytes(b"candidate bytes\n", "text/plain").unwrap();
+    let evidence = store
+        .evidence_from_bytes(b"validation ok\n", "validation", "text/plain")
+        .unwrap();
+    let summary = b"recovery summary\n";
+    let manifest = CompletionManifest {
+        manifest_version: COMPLETION_MANIFEST_VERSION,
+        task_id: task.id.clone(),
+        generation: task.lifecycle.generation,
+        completion_contract: ManifestContract::Report,
+        requirements_digest: requirements_digest(&task).unwrap(),
+        source_revision: "recovery-fixture".to_string(),
+        outputs: vec![OutputRef::Artifact(output)],
+        validation_evidence: vec![evidence],
+        worker_summary_digest: ContentDigest::of_bytes(summary),
+    };
+    let manifest_path = candidate_dir.join("manifest.json");
+    let summary_path = candidate_dir.join("summary.txt");
+    std::fs::write(&manifest_path, manifest.canonical_bytes().unwrap()).unwrap();
+    std::fs::write(&summary_path, summary).unwrap();
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(task));
+    save_graph(&graph, wg_dir.join("graph.jsonl")).unwrap();
+    (temp, wg_dir, manifest_path, summary_path)
+}
+
+fn reject_eval(
+    wg_dir: &std::path::Path,
+    manifest_path: &std::path::Path,
+    summary_path: &std::path::Path,
+    code: &'static str,
+) -> (
+    ReviewValveStatus,
+    worksgood::completion_review::ReviewValveOutcome,
+) {
+    let mut flip = ScriptedReviewer::new("pi:canary/flip", Script::Pass);
+    let mut eval = ScriptedReviewer::new("pi:canary/eval", Script::RejectWith(code));
+    let outcome = completion_submit::run_with_reviewers(
+        wg_dir,
+        "recovery-report",
+        manifest_path,
+        summary_path,
+        &mut flip,
+        &mut eval,
+    )
+    .unwrap();
+    (outcome.status, outcome)
+}
+
+#[test]
+fn recoverable_rejection_resumes_same_node_with_bounded_checkpoint() {
+    let (_temp, wg_dir, manifest_path, summary_path) = recovery_fixture();
+    let (status, outcome) = reject_eval(
+        &wg_dir,
+        &manifest_path,
+        &summary_path,
+        "eval.substantive-gap",
+    );
+    assert_eq!(status, ReviewValveStatus::EvalRejected);
+    let handled =
+        completion_submit::handle_semantic_rejection(&wg_dir, "recovery-report", &outcome).unwrap();
+    assert!(
+        handled,
+        "recoverable rejection must park for in-place recovery"
+    );
+
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("recovery-report").unwrap();
+    assert_eq!(task.status, Status::Waiting);
+    assert_eq!(task.session_id.as_deref(), Some("canary-session"));
+    assert!(task.completion_blocker.is_none());
+    let repair = task.completion_repair.as_ref().unwrap();
+    assert_eq!(repair.disposition, CompletionRepairDisposition::Repairing);
+    assert_eq!(repair.recovery_round, Some(1));
+    assert_eq!(repair.opportunities_used, 1);
+    assert_eq!(repair.opportunity_limit, 2);
+    assert_eq!(repair.failed_candidates.len(), 1);
+    assert!(repair.semantic_review.is_some());
+
+    match task.wait_condition.as_ref().expect("resumable wait") {
+        WaitSpec::All(conditions) => match conditions.as_slice() {
+            [WaitCondition::Timer { resume_after }] => {
+                assert!(
+                    resume_after
+                        .parse::<chrono::DateTime<chrono::Utc>>()
+                        .is_ok()
+                );
+            }
+            other => panic!("expected one Timer condition, got {other:?}"),
+        },
+        other => panic!("expected WaitSpec::All, got {other:?}"),
+    }
+    let checkpoint = task.checkpoint.as_deref().expect("bounded checkpoint");
+    assert!(checkpoint.contains("untrusted reviewer output"));
+    assert!(checkpoint.contains("eval.substantive-gap"));
+    assert!(checkpoint.contains("wg done recovery-report"));
+    assert!(checkpoint.contains("RECOVERY ROUND 1"));
+    assert_ne!(task.status, Status::Done);
+    assert_ne!(
+        task.completion_disposition,
+        Some(worksgood::graph::CompletionDisposition::Landed)
+    );
+}
+
+#[test]
+fn each_irrecoverable_class_fails_closed_to_needs_attention() {
+    for (code, expected) in [
+        ("eval.gate-weakening", "gate-weakening"),
+        ("eval.scope-ambiguity", "scope-ambiguity"),
+        ("eval.missing-authority", "missing-authority"),
+        ("eval.defect", "defect-or-incomplete-implementation"),
+    ] {
+        let (_temp, wg_dir, manifest_path, summary_path) = recovery_fixture();
+        let (status, outcome) = reject_eval(&wg_dir, &manifest_path, &summary_path, code);
+        assert_eq!(status, ReviewValveStatus::EvalRejected, "{code}");
+        let handled =
+            completion_submit::handle_semantic_rejection(&wg_dir, "recovery-report", &outcome)
+                .unwrap();
+        assert!(handled, "{code}");
+        let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("recovery-report").unwrap();
+        assert_eq!(task.status, Status::Waiting, "{code}");
+        let repair = task.completion_repair.as_ref().unwrap();
+        assert_eq!(
+            repair.disposition,
+            CompletionRepairDisposition::NeedsAttention,
+            "{code}"
+        );
+        assert_eq!(repair.reason_code, expected, "{code}");
+        assert_eq!(
+            task.completion_blocker.as_ref().map(|blocker| blocker.kind),
+            Some(worksgood::graph::CompletionBlockerKind::NeedsReview),
+            "{code}"
+        );
+        assert_ne!(task.status, Status::Done, "{code}");
+    }
 }

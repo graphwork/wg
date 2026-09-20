@@ -503,6 +503,12 @@ pub struct CompletionRepairState {
     /// Present only when the evidence is a verified current semantic rejection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_review: Option<CompletionSemanticRepairBinding>,
+    /// Bounded, additive episode round number for an in-place semantic review
+    /// recovery. A `Repairing` row that is auto-resumed carries the round that
+    /// produced its corrective checkpoint; absent for legacy rows and every
+    /// non-review repair. Observation only: it grants no completion authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_round: Option<u32>,
     /// The current attention/repair disposition reason (for example, the
     /// operator decision being requested).
     pub reason_code: String,

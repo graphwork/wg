@@ -17,6 +17,9 @@ use worksgood::completion_review_model::ExactModelReviewer;
 use worksgood::completion_task::{
     CompletionCandidateRefs, completion_contract, requirements_digest, task_requirements_bytes,
 };
+use worksgood::completion_validation::{
+    SemanticRejectionClass, classify_semantic_rejection, record_semantic_repair_attention,
+};
 use worksgood::config::{Config, DispatchRole};
 use worksgood::graph::{CompletionBlockerKind, LogEntry, Status, Task, WorkGraph};
 use worksgood::parser::{load_graph, modify_graph};
@@ -284,14 +287,19 @@ pub fn run(dir: &Path, id: &str, manifest_path: &Path, summary_path: &Path) -> R
             );
             Ok(())
         }
-        ReviewValveStatus::FlipRejected => bail!(
-            "FLIP semantically rejected manifest {} under explicit strict review policy; publication and Done are refused. Repair the candidate, or request one precise decision with `wg fail {id} --intent request-help --reason <DECISION>` / `--intent request-contract-correction --reason <ONE EXACT MISSING CHECK AND WHY>`; the candidate and source authority remain retained",
-            outcome.flip.receipt.manifest_digest
-        ),
-        ReviewValveStatus::EvalRejected => bail!(
-            "Eval semantically rejected manifest {} under explicit strict review policy; publication and Done are refused. Repair the candidate, or request one precise decision with `wg fail {id} --intent request-help --reason <DECISION>` / `--intent request-contract-correction --reason <ONE EXACT MISSING CHECK AND WHY>`; the candidate and source authority remain retained",
-            outcome.flip.receipt.manifest_digest
-        ),
+        ReviewValveStatus::FlipRejected | ReviewValveStatus::EvalRejected => {
+            if handle_semantic_rejection(dir, id, &outcome)? {
+                return Ok(());
+            }
+            bail!(
+                "{} semantically rejected manifest {} under explicit strict review policy; publication and Done are refused. Repair the candidate, or request one precise decision with `wg fail {id} --intent request-help --reason <DECISION>` / `--intent request-contract-correction --reason <ONE EXACT MISSING CHECK AND WHY>`; the candidate and source authority remain retained",
+                match outcome.status {
+                    ReviewValveStatus::FlipRejected => "FLIP",
+                    _ => "Eval",
+                },
+                outcome.flip.receipt.manifest_digest
+            )
+        }
         ReviewValveStatus::ReviewUnavailable if !config.agency.completion_review_strict => {
             eprintln!(
                 "WARNING: semantic review was UNAVAILABLE (not accepted and not rejected) for manifest {}. Advisory availability policy permits deterministic publication; inspect `wg show {id}` for the separate infrastructure finding.",
@@ -345,6 +353,102 @@ fn current_rejection_is_authoritative_runtime_evidence_gap(
             && activity.failure_class == Some(ReviewFailureClass::SemanticRejection)
             && is_authoritative_runtime_evidence_gap(&activity.findings)
     }))
+}
+
+/// Handle a strict-policy FLIP/Eval semantic rejection. Returns `true` when the
+/// rejection was fully handled by parking the task (either a resumable
+/// `Repairing` recovery round or a fail-closed `NeedsAttention` escalation);
+/// `false` lets the caller fall through to the existing strict bail.
+pub(crate) fn handle_semantic_rejection(
+    dir: &Path,
+    id: &str,
+    outcome: &ReviewValveOutcome,
+) -> Result<bool> {
+    let rejected = match outcome.status {
+        ReviewValveStatus::FlipRejected => &outcome.flip,
+        ReviewValveStatus::EvalRejected => outcome
+            .eval
+            .as_ref()
+            .context("Eval rejection has no immutable Eval receipt")?,
+        ReviewValveStatus::Accepted
+        | ReviewValveStatus::ReviewUnavailable
+        | ReviewValveStatus::IncompleteEvidence => return Ok(false),
+    };
+    let graph_path = dir.join("graph.jsonl");
+    let graph = load_graph(&graph_path)?;
+    let task = graph
+        .get_task(id)
+        .with_context(|| format!("task '{id}' disappeared after semantic review"))?
+        .clone();
+    let projection = worksgood::completion_review::verified_review_activities(dir, &task);
+    let activity = projection.activities.into_iter().find(|activity| {
+        activity.candidate_state == ReviewCandidateState::Current
+            && activity.activity_id == rejected.receipt_object.content_digest.as_str()
+            && activity.failure_class == Some(ReviewFailureClass::SemanticRejection)
+    });
+    let Some(activity) = activity else {
+        return Ok(false);
+    };
+    let recovery_round = task
+        .completion_repair
+        .as_ref()
+        .and_then(|repair| repair.recovery_round)
+        .unwrap_or(0)
+        .saturating_add(1);
+    match classify_semantic_rejection(&activity.findings) {
+        // The reserved evidence-gap-only case keeps its dedicated
+        // contract-correction help path, handled before this function.
+        SemanticRejectionClass::EvidenceGap => Ok(false),
+        SemanticRejectionClass::Irrecoverable(class) => {
+            let reason = format!(
+                "irrecoverable semantic rejection class `{}` requires an operator decision; the candidate and source authority remain retained",
+                class.reason_code()
+            );
+            let state = record_semantic_repair_attention(
+                &mut task.clone(),
+                &activity,
+                &rejected.receipt_object,
+                class.reason_code(),
+                format!("operator: {reason}"),
+            )
+            .map_err(anyhow::Error::msg)?;
+            let mut refusal = None;
+            modify_graph(&graph_path, |graph| {
+                let Some(current) = graph.get_task_mut(id) else {
+                    refusal = Some(anyhow::anyhow!(
+                        "task disappeared while escalating irrecoverable rejection"
+                    ));
+                    return false;
+                };
+                current.completion_repair = Some(state.clone());
+                current.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some("completion-finalizer".to_string()),
+                    user: Some(worksgood::current_user()),
+                    message: format!(
+                        "Completion reviewing/NeedsAttention: irrecoverable semantic class `{}` (recovery_round={recovery_round}); no recovery round scheduled.",
+                        class.reason_code()
+                    ),
+                });
+                true
+            })?;
+            if let Some(error) = refusal {
+                return Err(error);
+            }
+            super::completion_wait::park_needs_review(dir, id, &reason)?;
+            Ok(true)
+        }
+        SemanticRejectionClass::Recoverable => {
+            super::completion_wait::park_semantic_recovery(
+                dir,
+                id,
+                &activity,
+                &rejected.receipt_object,
+                recovery_round,
+            )?;
+            Ok(true)
+        }
+    }
 }
 
 fn task_is_waiting_for_review(dir: &Path, id: &str) -> bool {
@@ -1229,7 +1333,7 @@ mod tests {
     use worksgood::completion_task::{
         load_exact_review_pair, load_submission_bytes, task_submission,
     };
-    use worksgood::graph::{CompletionContract, Node};
+    use worksgood::graph::{CompletionContract, CompletionRepairDisposition, Node};
     use worksgood::lifecycle::{AttemptDisposition, AttemptRef};
     use worksgood::parser::save_graph;
 
@@ -2392,5 +2496,209 @@ mod tests {
         );
         assert!(task.completion_candidate.is_some());
         assert_eq!(task.completion_review_activity.len(), 1);
+    }
+
+    fn rejection_outcome(findings: Vec<ReviewFinding>) -> (Fixture, ReviewValveOutcome) {
+        let fixture = fixture();
+        bind_running_attempt(&fixture);
+        configure_strict_review(&fixture, 2);
+        modify_graph(&fixture.dir.join("graph.jsonl"), |graph| {
+            let task = graph.get_task_mut("report").unwrap();
+            task.session_id = Some("session-recovery".to_string());
+            true
+        })
+        .unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut flip = FakeReviewer {
+            route: "pi:test/flip".to_string(),
+            result: Ok(semantic(SemanticVerdict::Pass)),
+            calls: calls.clone(),
+        };
+        let mut eval = FakeReviewer {
+            route: "pi:test/eval".to_string(),
+            result: Ok(SemanticReview {
+                verdict: SemanticVerdict::Reject,
+                findings,
+                flip_proof: None,
+            }),
+            calls: calls.clone(),
+        };
+        let outcome = run_with_reviewers(
+            &fixture.dir,
+            "report",
+            &fixture.manifest_path,
+            &fixture.summary_path,
+            &mut flip,
+            &mut eval,
+        )
+        .unwrap();
+        assert_eq!(outcome.status, ReviewValveStatus::EvalRejected);
+        (fixture, outcome)
+    }
+
+    fn verified_rejection(
+        fixture: &Fixture,
+        outcome: &ReviewValveOutcome,
+    ) -> worksgood::completion_review::VerifiedCompletionReviewActivity {
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        let projection =
+            worksgood::completion_review::verified_review_activities(&fixture.dir, task);
+        let rejected = outcome.eval.as_ref().unwrap();
+        projection
+            .activities
+            .into_iter()
+            .find(|activity| {
+                activity.candidate_state
+                    == worksgood::completion_review::ReviewCandidateState::Current
+                    && activity.activity_id == rejected.receipt_object.content_digest.as_str()
+            })
+            .expect("current verified eval rejection")
+    }
+
+    #[test]
+    fn recoverable_eval_rejection_parks_repairing_with_auto_resumable_timer() {
+        let (fixture, outcome) = rejection_outcome(vec![ReviewFinding::new(
+            "eval.substantive-gap",
+            "the missing branch must be implemented",
+        )]);
+        let handled = handle_semantic_rejection(&fixture.dir, "report", &outcome).unwrap();
+        assert!(handled, "recoverable rejection must be handled by parking");
+
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert_eq!(task.session_id.as_deref(), Some("session-recovery"));
+        assert!(
+            task.completion_blocker.is_none(),
+            "a consumed recovery pause must not leave a stale completion blocker"
+        );
+        let repair = task.completion_repair.as_ref().unwrap();
+        assert_eq!(repair.disposition, CompletionRepairDisposition::Repairing);
+        assert_eq!(repair.recovery_round, Some(1));
+        assert_eq!(repair.opportunities_used, 1);
+        assert_eq!(repair.opportunity_limit, 2);
+        assert_eq!(repair.attempt_id.as_deref(), Some("attempt-3-1"));
+        assert_eq!(repair.fence, 1);
+        assert!(repair.semantic_review.is_some());
+        let manifest = outcome
+            .eval
+            .as_ref()
+            .unwrap()
+            .receipt
+            .manifest_digest
+            .clone();
+        assert_eq!(repair.failed_candidates, vec![manifest.clone()]);
+
+        let conditions = match task.wait_condition.as_ref().expect("resumable wait") {
+            worksgood::graph::WaitSpec::All(conditions) => conditions,
+            other => panic!("unexpected wait spec: {other:?}"),
+        };
+        match conditions.as_slice() {
+            [worksgood::graph::WaitCondition::Timer { resume_after }] => {
+                assert!(
+                    resume_after
+                        .parse::<chrono::DateTime<chrono::Utc>>()
+                        .is_ok()
+                );
+            }
+            other => panic!("expected one Timer condition, got {other:?}"),
+        }
+
+        let checkpoint = task.checkpoint.as_deref().expect("bounded checkpoint");
+        assert!(checkpoint.contains("untrusted reviewer output"));
+        assert!(checkpoint.contains("eval.substantive-gap"));
+        assert!(checkpoint.contains("wg done report"));
+        assert!(checkpoint.contains(manifest.as_str()));
+        assert!(checkpoint.len() < 4096, "checkpoint must stay bounded");
+        assert_ne!(task.status, Status::Done);
+    }
+
+    #[test]
+    fn repeated_candidate_rejection_escalates_with_no_further_model_call() {
+        let (fixture, outcome) = rejection_outcome(vec![ReviewFinding::new(
+            "eval.substantive-gap",
+            "the missing branch must be implemented",
+        )]);
+        handle_semantic_rejection(&fixture.dir, "report", &outcome).unwrap();
+        let activity = verified_rejection(&fixture, &outcome);
+        let rejected = outcome.eval.as_ref().unwrap();
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let mut task = graph.get_task("report").unwrap().clone();
+        // Replaying the exact same candidate identity (no new bytes) can only
+        // escalate; the writer never calls a reviewer.
+        let state = worksgood::completion_validation::record_semantic_repair_recovery(
+            &mut task,
+            &activity,
+            &rejected.receipt_object,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            state.disposition,
+            CompletionRepairDisposition::NeedsAttention
+        );
+        assert_eq!(state.reason_code, "unchanged-candidate-repeated");
+        assert_eq!(state.opportunities_used, 1);
+        assert!(state.recovery_round.is_some());
+    }
+
+    #[test]
+    fn each_irrecoverable_class_parks_needs_attention() {
+        for (code, expected_reason) in [
+            ("eval.gate-weakening", "gate-weakening"),
+            ("eval.scope-ambiguity", "scope-ambiguity"),
+            ("eval.missing-authority", "missing-authority"),
+            ("eval.defect", "defect-or-incomplete-implementation"),
+        ] {
+            let (fixture, outcome) = rejection_outcome(vec![ReviewFinding::new(
+                code,
+                "this rejection must fail closed",
+            )]);
+            let handled = handle_semantic_rejection(&fixture.dir, "report", &outcome).unwrap();
+            assert!(handled, "irrecoverable class {code} must be parked");
+            let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+            let task = graph.get_task("report").unwrap();
+            assert_eq!(task.status, Status::Waiting, "{code}");
+            let repair = task.completion_repair.as_ref().unwrap();
+            assert_eq!(
+                repair.disposition,
+                CompletionRepairDisposition::NeedsAttention,
+                "{code}"
+            );
+            assert_eq!(repair.reason_code, expected_reason, "{code}");
+            assert_eq!(
+                task.completion_blocker.as_ref().map(|blocker| blocker.kind),
+                Some(worksgood::graph::CompletionBlockerKind::NeedsReview),
+                "{code}"
+            );
+            assert_ne!(task.status, Status::Done, "{code}");
+        }
+    }
+
+    #[test]
+    fn recovery_round_is_never_an_acceptance_path() {
+        let (fixture, outcome) = rejection_outcome(vec![ReviewFinding::new(
+            "eval.substantive-gap",
+            "the missing branch must be implemented",
+        )]);
+        handle_semantic_rejection(&fixture.dir, "report", &outcome).unwrap();
+        let graph = load_graph(fixture.dir.join("graph.jsonl")).unwrap();
+        let task = graph.get_task("report").unwrap();
+        assert_ne!(task.status, Status::Done);
+        assert_ne!(
+            task.completion_disposition,
+            Some(worksgood::graph::CompletionDisposition::Landed)
+        );
+        assert_eq!(
+            task.completion_repair.as_ref().unwrap().disposition,
+            CompletionRepairDisposition::Repairing
+        );
+        // The recovery writer only parks; acceptance still requires the
+        // unchanged deterministic contract plus a fresh FLIP and fresh Eval.
+        assert!(!task.log.iter().any(|entry| {
+            entry.actor.as_deref() == Some("completion-done")
+                || entry.actor.as_deref() == Some("land")
+        }));
     }
 }

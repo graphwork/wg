@@ -6,7 +6,10 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::path::Path;
-use worksgood::graph::{CompletionBlocker, CompletionBlockerKind, LogEntry, Status, Task};
+use worksgood::graph::{
+    CompletionBlocker, CompletionBlockerKind, CompletionRepairDisposition, LogEntry, Status, Task,
+    WaitCondition, WaitSpec,
+};
 use worksgood::lifecycle::{
     FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest, apply_transition,
 };
@@ -29,6 +32,200 @@ pub(crate) struct LandingWait<'a> {
 
 pub(crate) fn park_needs_review(dir: &Path, id: &str, reason: &str) -> Result<()> {
     park(dir, id, CompletionBlockerKind::NeedsReview, reason, None)
+}
+
+/// Deterministic backoff before a recovery round auto-resumes. Small enough to
+/// keep a repaired node moving, large enough that the coordinator cannot spin.
+const SEMANTIC_RECOVERY_BACKOFF_SECS: i64 = 2;
+
+/// Park a recoverable semantic rejection so the SAME node auto-resumes with a
+/// bounded corrective checkpoint. This writes the shared `CompletionRepairState`
+/// episode budget (no parallel counter) and, when the budget is still
+/// available, a coordinator-auto-resumable `Timer` wait. A repeated candidate
+/// or exhausted budget escalates to `NeedsAttention` via the existing park.
+///
+/// Returns the chosen disposition so the caller can stop without an acceptance.
+pub(crate) fn park_semantic_recovery(
+    dir: &Path,
+    id: &str,
+    activity: &worksgood::completion_review::VerifiedCompletionReviewActivity,
+    receipt_ref: &worksgood::completion_manifest::ArtifactOutput,
+    recovery_round: u32,
+) -> Result<CompletionRepairDisposition> {
+    let graph_path = dir.join("graph.jsonl");
+    let graph = load_graph(&graph_path)?;
+    let expected = graph
+        .get_task(id)
+        .with_context(|| format!("task '{id}' not found"))?
+        .clone();
+    let mut decision_task = expected.clone();
+    let state = worksgood::completion_validation::record_semantic_repair_recovery(
+        &mut decision_task,
+        activity,
+        receipt_ref,
+        recovery_round,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let disposition = state.disposition;
+
+    if disposition == CompletionRepairDisposition::NeedsAttention {
+        // Persist the escalation projection, then reuse the existing
+        // fail-closed NeedsReview park (its completion blocker is the operator
+        // surface). The episode budget row is retained for observability.
+        let mut refusal = None;
+        modify_graph(&graph_path, |graph| {
+            let Some(task) = graph.get_task_mut(id) else {
+                refusal = Some(anyhow::anyhow!(
+                    "task disappeared while escalating recovery"
+                ));
+                return false;
+            };
+            task.completion_repair = Some(state.clone());
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("completion-finalizer".to_string()),
+                user: Some(worksgood::current_user()),
+                message: format!(
+                    "Completion recovery escalated to NeedsAttention: {} (recovery_round={}, opportunities_used={}/{}). No further model call is made.",
+                    state.reason_code,
+                    recovery_round,
+                    state.opportunities_used,
+                    state.opportunity_limit
+                ),
+            });
+            true
+        })?;
+        if let Some(error) = refusal {
+            return Err(error);
+        }
+        park_needs_review(
+            dir,
+            id,
+            &format!(
+                "semantic review recovery did not resume: {} (recovery_round={}, opportunities_used={}/{})",
+                state.reason_code,
+                recovery_round,
+                state.opportunities_used,
+                state.opportunity_limit
+            ),
+        )?;
+        return Ok(disposition);
+    }
+
+    // Recoverable round: same generation/session/worktree, bounded checkpoint.
+    let session_selector = super::wait::attested_pi_session_id(dir, &expected)
+        .ok()
+        .flatten();
+    let resume_after =
+        (Utc::now() + chrono::Duration::seconds(SEMANTIC_RECOVERY_BACKOFF_SECS)).to_rfc3339();
+    let checkpoint = worksgood::completion_validation::build_semantic_recovery_checkpoint(
+        id,
+        activity,
+        receipt_ref,
+        recovery_round,
+        state.opportunities_used,
+        state.opportunity_limit,
+    );
+    let expected_attempt = expected
+        .lifecycle
+        .current_attempt
+        .as_ref()
+        .map(|attempt| attempt.id.clone());
+    let mut error = None;
+    let mut released_agent = None;
+    modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            error = Some(anyhow::anyhow!("task disappeared while parking recovery"));
+            return false;
+        };
+        if task.status != Status::InProgress
+            || task.lifecycle.generation != expected.lifecycle.generation
+            || task.lifecycle.fence != expected.lifecycle.fence
+            || task
+                .lifecycle
+                .current_attempt
+                .as_ref()
+                .map(|attempt| attempt.id.clone())
+                != expected_attempt
+            || task.completion_candidate.as_ref() != expected.completion_candidate.as_ref()
+        {
+            error = Some(anyhow::anyhow!(
+                "completion recovery binding changed before durable wait"
+            ));
+            return false;
+        }
+        let request = TransitionRequest::new(
+            TransitionKind::AttemptParked,
+            LifecycleActor {
+                kind: worksgood::lifecycle::ActorKind::Finalizer,
+                id: "completion-v3".to_string(),
+            },
+            "completion_semantic_recovery",
+            format!(
+                "completion-semantic-recovery:{id}:{}:{}:{}:{}",
+                expected.lifecycle.generation,
+                expected_attempt.as_deref().unwrap_or("none"),
+                expected.lifecycle.fence,
+                expected
+                    .completion_candidate
+                    .as_ref()
+                    .map(|candidate| candidate.manifest.content_digest.as_str())
+                    .unwrap_or("none")
+            ),
+        )
+        .expecting(FenceExpectation::current(task));
+        if let Err(rejection) = apply_transition(task, request) {
+            error = Some(anyhow::anyhow!(rejection));
+            return false;
+        }
+        released_agent = task.assigned.take();
+        task.completion_repair = Some(state.clone());
+        // The satisfied wait and the continuing episode are distinct: no stale
+        // completion blocker is bound to the consumed pause.
+        task.completion_blocker = None;
+        task.session_id = session_selector.clone().or_else(|| task.session_id.clone());
+        task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::Timer {
+            resume_after: resume_after.clone(),
+        }]));
+        task.message_wait = None;
+        task.failure_reason = None;
+        task.failure_class = None;
+        task.failure_signal = None;
+        task.checkpoint = Some(checkpoint.clone());
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: Some("completion-finalizer".to_string()),
+            user: Some(worksgood::current_user()),
+            message: format!(
+                "Completion reviewing/Repairing: {}-semantic-recovery round={recovery_round} candidate={} opportunities={}/{}; same generation/session/worktree, resumable Timer wait written.",
+                match activity.reviewer_kind {
+                    worksgood::completion_review::ReviewerKind::Flip => "flip",
+                    worksgood::completion_review::ReviewerKind::Eval => "eval",
+                },
+                activity.manifest_digest.as_str(),
+                state.opportunities_used,
+                state.opportunity_limit
+            ),
+        });
+        true
+    })?;
+    if let Some(error) = error {
+        return Err(error);
+    }
+
+    if let Some(agent_id) = released_agent
+        && let Ok(mut registry) = AgentRegistry::load_locked(dir)
+    {
+        if let Some(agent) = registry.registry.get_agent_mut(&agent_id) {
+            agent.status = AgentStatus::Parked;
+            agent.completed_at = Some(Utc::now().to_rfc3339());
+        }
+        let _ = registry.save();
+    }
+    let lease_owner = worksgood::disk_sentinel::caller_agent_for_task(id);
+    let _ = worksgood::disk_sentinel::release_owned_cache_leases(dir, id, lease_owner.as_deref());
+    super::notify_graph_changed(dir);
+    Ok(disposition)
 }
 
 pub(crate) fn park_landing_pending(
