@@ -395,10 +395,30 @@ impl ManifestReviewer for CausalBoundaryReviewer {
             )),
             ReviewerKind::Eval => render_review_prompt(kind, bundle),
         };
-        assert!(prompt.contains("reject solely because they are absent"));
-        assert!(prompt.contains("historical receipt"));
-        assert!(prompt.contains("validation output"));
-
+        // FLIP is fidelity-only; Eval is the acceptance gate (design
+        // review-recovery §10). Assert each prompt carries its own contract
+        // and not the other's.
+        match kind {
+            ReviewerKind::Flip => {
+                assert!(
+                    prompt.contains("FAITHFUL"),
+                    "FLIP must judge fidelity: {prompt}"
+                );
+                assert!(
+                    !prompt.contains("reject solely because they are absent"),
+                    "FLIP must not carry the Eval temporal-boundary clause: {prompt}"
+                );
+                assert!(
+                    !prompt.contains("completion.missing_authoritative_runtime_evidence"),
+                    "FLIP must not carry the Eval evidence-gap code: {prompt}"
+                );
+            }
+            ReviewerKind::Eval => {
+                assert!(prompt.contains("reject solely because they are absent"));
+                assert!(prompt.contains("historical receipt"));
+                assert!(prompt.contains("validation output"));
+            }
+        }
         let missing_present_evidence = bundle.validation_evidence.is_empty();
         let verdict = if missing_present_evidence {
             SemanticVerdict::Reject
