@@ -291,6 +291,13 @@ fn wait_for_service_ready(wg_dir: &Path, timeout: Duration) -> bool {
     })
 }
 
+/// Read the daemon PID recorded in the service state file.
+fn state_daemon_pid(wg_dir: &Path) -> Option<u32> {
+    let bytes = fs::read(wg_dir.join("service/state.json")).ok()?;
+    let state: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    state["pid"].as_u64().map(|pid| pid as u32)
+}
+
 /// Helper: read the agent registry, returning None if the file doesn't exist or can't be parsed.
 fn read_registry(wg_dir: &Path) -> Option<serde_json::Value> {
     let registry_path = wg_dir.join("service").join("registry.json");
@@ -1310,4 +1317,149 @@ fn test_service_start_does_not_admit_implicit_coordinator_config() {
             caller_graph.display()
         );
     }
+}
+
+/// fix-attempt-loss (Fix A) end-to-end regression: a daemon restart must NOT
+/// kill a live worker the daemon spawned. The worker is `setsid()`-detached
+/// but is still a PPID child of the daemon, so the lifecycle's old broad
+/// ppid-tree walk reached it and lost in-flight attempts. This proves the
+/// worker process survives the restart, the task stays `in-progress` (adopted
+/// by the new daemon), and subsequent reconcile ticks do not mark the attempt
+/// lost.
+#[test]
+#[serial]
+fn test_service_restart_preserves_live_worker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
+
+    // The shell worker is dispatched via `task.exec` regardless of route, but
+    // the coordinator's route-admission gate validates every configured role
+    // route. The pi starter template pins pi models that are absent from the
+    // offline registry (a deliberate SKIP/refusal in production), so replace
+    // the whole local config with the claude profile: it is self-authenticating
+    // and passes route admission credential-free. The shell payload never
+    // invokes it.
+    let mut route_config: worksgood::config::Config =
+        toml::from_str(worksgood::profile::named::starter_template("claude").unwrap()).unwrap();
+    route_config.coordinator.worktree_isolation = false;
+    route_config.agency.auto_assign = false;
+    route_config.agency.auto_evaluate = false;
+    route_config.save(&wg_dir).unwrap();
+
+    let socket = socket_path_for(&wg_dir);
+    wg_ok(
+        &wg_dir,
+        &[
+            "service",
+            "start",
+            "--socket",
+            &socket,
+            "--max-agents",
+            "2",
+            "--interval",
+            "2",
+        ],
+    );
+    assert!(
+        wait_for_service_ready(&wg_dir, Duration::from_secs(10)),
+        "service daemon socket did not become ready"
+    );
+
+    // The shell `exec` payload keeps the wrapper (the registered worker) alive
+    // for the whole test; it is the exact detached process a restart used to
+    // kill.
+    add_shell_task(&wg_dir, "long-worker", "Long worker", "sleep 300");
+    notify_graph_changed(&wg_dir);
+
+    let mut worker_pid: u32 = 0;
+    let found = wait_for(Duration::from_secs(30), 100, || {
+        if let Some(registry) = read_registry(&wg_dir)
+            && let Some(agents) = registry["agents"].as_object()
+            && let Some(entry) = agents.values().find(|agent| {
+                agent["task_id"].as_str() == Some("long-worker")
+                    && agent["status"].as_str() != Some("dead")
+            })
+        {
+            worker_pid = entry["pid"].as_u64().unwrap_or(0) as u32;
+            return worker_pid != 0;
+        }
+        false
+    });
+    if !found {
+        let daemon_log = fs::read_to_string(wg_dir.join("service/daemon.log"))
+            .unwrap_or_else(|_| "<no daemon log>".to_string());
+        let tail: String = daemon_log
+            .lines()
+            .rev()
+            .take(40)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let status = wg_cmd(&wg_dir, &["status", "--json"]);
+        let show = wg_cmd(&wg_dir, &["show", "long-worker", "--json"]);
+        panic!(
+            "daemon never spawned a worker for long-worker.\nregistry: {}\nstatus: {}\nshow: {}\ndaemon log tail:\n{tail}",
+            read_registry(&wg_dir)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            String::from_utf8_lossy(&status.stdout),
+            String::from_utf8_lossy(&show.stdout)
+        );
+    }
+
+    // The worker is a PPID descendant of the daemon — precisely why the old
+    // tree kill reached it — while living in its own detached session.
+    let daemon_pid = state_daemon_pid(&wg_dir).expect("daemon pid recorded in state.json");
+    assert!(
+        worksgood::service::collect_process_descendants(daemon_pid).contains(&worker_pid),
+        "worker {worker_pid} is not a PPID child of daemon {daemon_pid}; the test no longer exercises the restart-tree-kill bug"
+    );
+    assert_eq!(task_status(&wg_dir, "long-worker"), "in-progress");
+
+    // Simulate the daemon losing its persisted state while it and the worker
+    // are still alive, then restart. `run_restart` -> `run_start --force` now
+    // reaches the lifecycle's fallback orphan reaper, which uses exactly the
+    // supervisor/daemon ppid-tree kill that lost the four production attempts
+    // (a clean IPC shutdown exits before the fallback, so the bug only fires on
+    // this path). The registered worker must survive it.
+    fs::remove_file(wg_dir.join("service/state.json"))
+        .expect("remove state.json to force the orphan-reap fallback");
+    let restart = wg_cmd(&wg_dir, &["service", "restart"]);
+    assert!(
+        restart.status.success(),
+        "service restart failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&restart.stdout),
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    assert!(
+        wait_for_service_ready(&wg_dir, Duration::from_secs(10)),
+        "restarted daemon did not become ready"
+    );
+
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        worksgood::service::is_process_alive(worker_pid),
+        "worker {worker_pid} was killed by the daemon restart"
+    );
+    assert_eq!(
+        task_status(&wg_dir, "long-worker"),
+        "in-progress",
+        "task must remain in-progress (adopted) after restart"
+    );
+
+    // Let the new daemon run several reconcile ticks; the live worker must not
+    // be converted into a lost attempt.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        worksgood::service::is_process_alive(worker_pid),
+        "worker {worker_pid} died after restart reconciler ticks"
+    );
+    assert_eq!(
+        task_status(&wg_dir, "long-worker"),
+        "in-progress",
+        "reconciler must not lose a live adopted attempt"
+    );
 }

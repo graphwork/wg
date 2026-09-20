@@ -25,9 +25,45 @@ use worksgood::lifecycle::{
     apply_transition,
 };
 use worksgood::parser::{load_graph, modify_graph};
-use worksgood::service::registry::{AgentRegistry, AgentStatus};
+use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 
 use super::{graph_path, is_process_alive};
+
+/// Grace window before a claim-without-binding (`InProgress`, `assigned=None`)
+/// projection is treated as a lost attempt.
+///
+/// Matches the >5-minute `started_at` grace already applied by the
+/// absent-from-registry arm. A transient split-save / binding-that-lands-a-
+/// tick-later is not a lost attempt, and destroying a possibly-live worker is
+/// far more expensive than waiting one tick window.
+const CLAIM_GRACE_MINUTES: i64 = 5;
+
+/// True when `started_at` is older than [`CLAIM_GRACE_MINUTES`].
+///
+/// A missing or unparseable `started_at` yields `false` (fail-closed: leave
+/// the task visibly blocked for explicit repair instead of inferring a lost
+/// attempt with no age evidence).
+fn claim_grace_elapsed(started_at: Option<&str>) -> bool {
+    let Some(started) = started_at else {
+        return false;
+    };
+    match started.parse::<chrono::DateTime<chrono::Utc>>() {
+        Ok(started_dt) => (Utc::now() - started_dt).num_minutes() > CLAIM_GRACE_MINUTES,
+        Err(_) => false,
+    }
+}
+
+/// True when the registry's recorded start time is consistent with the live
+/// process at `agent.pid`. A false result means the numeric PID was reused by
+/// a different process, so the recorded attempt's owner is genuinely gone.
+/// Inconclusive cases (non-Linux, unreadable `/proc`, unparseable timestamp)
+/// conservatively return `true`.
+fn agent_identity_matches(agent: &AgentEntry) -> bool {
+    match agent.started_at.parse::<chrono::DateTime<chrono::Utc>>() {
+        Ok(started) => worksgood::service::verify_process_identity(agent.pid, started.timestamp()),
+        Err(_) => true,
+    }
+}
 
 /// Information about an orphaned task found by sweep
 #[derive(Debug, Clone)]
@@ -433,7 +469,9 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                     Some(agent_id) => match registry.get_agent(agent_id) {
                         Some(agent) => {
                             agent.status == AgentStatus::Dead
-                                || (agent.is_alive() && !is_process_alive(agent.pid))
+                                || (agent.is_alive()
+                                    && (!is_process_alive(agent.pid)
+                                        || !agent_identity_matches(agent)))
                         }
                         None => {
                             // Agent absent from registry. For InProgress we
@@ -461,17 +499,21 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                     },
                     None => {
                         // Status=Open with no assigned is normal — skip.
-                        // Status=InProgress with no assigned IS orphaned
-                        // (split-save race), unless this is a long-lived
-                        // loop task without an agent (chat/compact). Chat-loop
-                        // tasks are kept InProgress between user messages by
-                        // design — orphan-recovery would race the supervisor
-                        // and reset newly-created chats to Open before the
-                        // first user message arrives.
+                        // Status=InProgress with no assigned may be a
+                        // transient claim-without-binding projection (a
+                        // split-save race, or a binding write that lands a
+                        // tick later), so it is NOT immediately a lost
+                        // attempt. Chat/compact loop tasks legitimately sit
+                        // InProgress without an inline agent between
+                        // messages/cycles. For everything else, apply the same
+                        // 5-minute `started_at` grace as the absent-from-
+                        // registry arm; a genuinely stale claim still fails
+                        // once the window has elapsed.
                         task.status == Status::InProgress
                             && !task.tags.iter().any(|t| {
                                 worksgood::chat_id::is_chat_loop_tag(t) || t == "compact-loop"
                             })
+                            && claim_grace_elapsed(task.started_at.as_deref())
                     }
                 };
 
@@ -1087,8 +1129,10 @@ mod tests {
         let mut compact = make_task(".compact-0", "Compact 0", Status::InProgress);
         compact.tags = vec!["compact-loop".to_string()];
         graph.add_node(Node::Task(compact));
-        // Untagged InProgress with no assigned: SHOULD be flipped (control)
-        let plain = make_task("plain-stuck", "Plain Stuck", Status::InProgress);
+        // Untagged InProgress with no assigned and a stale started_at: SHOULD
+        // be flipped (control). A fresh one is covered by the grace test below.
+        let mut plain = make_task("plain-stuck", "Plain Stuck", Status::InProgress);
+        plain.started_at = Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339());
         graph.add_node(Node::Task(plain));
         save_graph(&graph, &gpath).unwrap();
 
@@ -1174,5 +1218,72 @@ mod tests {
             "untagged orphan should still be reported: {:?}",
             ids
         );
+    }
+
+    /// fix-attempt-loss (Fix B): a fresh `InProgress` task with `assigned=None`
+    /// is a transient claim-without-binding projection (split-save race, or a
+    /// binding write that lands a tick later). The dispatcher reconciler must
+    /// NOT convert it into a lost attempt inside the grace window. A stale one
+    /// (past the window) is still reconciled, so genuine orphaning is not lost.
+    #[test]
+    fn test_reconcile_fresh_claim_without_binding_is_not_lost() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        std::fs::create_dir_all(dir).unwrap();
+        let gpath = dir.join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut fresh = make_task("fresh-claim", "Fresh", Status::InProgress);
+        fresh.started_at = Some(Utc::now().to_rfc3339());
+        graph.add_node(Node::Task(fresh));
+        let mut stale = make_task("stale-claim", "Stale", Status::InProgress);
+        stale.started_at = Some((Utc::now() - chrono::Duration::minutes(10)).to_rfc3339());
+        graph.add_node(Node::Task(stale));
+        save_graph(&graph, &gpath).unwrap();
+        AgentRegistry::new().save(dir).unwrap();
+
+        let recovered = reconcile_orphaned_tasks(dir, &gpath).unwrap();
+        assert_eq!(
+            recovered, 1,
+            "only the stale claim should be reconciled, not the fresh one"
+        );
+
+        let g2 = load_graph(&gpath).unwrap();
+        let fresh_task = g2.get_task("fresh-claim").unwrap();
+        assert_eq!(fresh_task.status, Status::InProgress);
+        assert!(
+            !fresh_task
+                .lifecycle
+                .audit
+                .iter()
+                .any(|e| e.reason_code == "orphan_before_spawn"
+                    || e.reason_code == "process_identity_dead"),
+            "a fresh claim must not be flagged inside the grace window: {:?}",
+            fresh_task
+                .lifecycle
+                .audit
+                .iter()
+                .map(|e| e.reason_code.clone())
+                .collect::<Vec<_>>()
+        );
+
+        let stale_task = g2.get_task("stale-claim").unwrap();
+        assert_eq!(
+            stale_task.status,
+            Status::InProgress,
+            "a stale pre-attempt claim is held visibly for repair, not failed"
+        );
+        assert!(
+            stale_task
+                .lifecycle
+                .audit
+                .iter()
+                .any(|e| e.reason_code == "orphan_before_spawn"),
+            "the stale claim must be reconciled after the grace window"
+        );
+
+        // The fresh task is untouched on the very next tick too.
+        let again = reconcile_orphaned_tasks(dir, &gpath).unwrap();
+        assert_eq!(again, 0, "reconciler must be idempotent after the window");
     }
 }
