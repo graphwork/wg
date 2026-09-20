@@ -896,6 +896,12 @@ pub fn run_fork(dir: &Path, reference: &str, name: Option<&str>, json: bool) -> 
             .to_string();
         let fork_transcript = fork_session_dir.join(format!("{fork_stem}_chat-{new_cid}.jsonl"));
         atomic_copy(&source_transcript, &fork_transcript)?;
+        // Pi keys the session identity on the `id` INSIDE line 1 of the
+        // transcript, not the filename. Rewrite only that header so
+        // `--session-id chat-{new_cid}` adopts the copied history instead of
+        // silently starting a fresh session (the fork bug).
+        worksgood::chat_sessions::rekey_pi_session_header(&fork_transcript, &fork_ref)
+            .with_context(|| format!("rekey fork transcript for {fork_ref}"))?;
         // Carry the wake cursor so wake events the parent already consumed do
         // not replay into the fork on its first turn.
         let source_cursor =
@@ -2026,14 +2032,22 @@ mod tests {
         td
     }
 
-    /// Seed a fake pi transcript for `chat-N` (two JSONL turns) and return
-    /// (transcript path, bytes written).
+    /// Seed a fake pi transcript for `chat-N`: a real session header line
+    /// (which pi keys its identity on) followed by two entries whose message
+    /// text deliberately mentions the parent's chat id. This pins the "touch
+    /// only the header" contract — rekeying must not rewrite message bodies
+    /// that happen to contain the old id.
     fn seed_pi_transcript(dir: &Path, cid: u32) -> (PathBuf, Vec<u8>) {
         worksgood::chat_sessions::prepare_pi_chat_session(dir, cid).unwrap();
         let chat_ref = format!("chat-{cid}");
         let session_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref).join("pi-sessions");
         let transcript = session_dir.join(format!("2026-01-01T00-00-00-000Z_chat-{cid}.jsonl"));
-        let bytes = b"{\"turn\":1}\n{\"turn\":2}\n".to_vec();
+        let bytes = format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"chat-{cid}\",\"cwd\":\"/tmp\"}}\n\
+             {{\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"message\":{{\"role\":\"user\",\"content\":\"tell me about chat-{cid}\"}}}}\n\
+             {{\"type\":\"message\",\"id\":\"m2\",\"parentId\":\"m1\",\"message\":{{\"role\":\"assistant\",\"content\":\"chat-{cid} is great\"}}}}\n"
+        )
+        .into_bytes();
         std::fs::write(&transcript, &bytes).unwrap();
         (transcript, bytes)
     }
@@ -2059,8 +2073,7 @@ mod tests {
 
         run_fork(dir, "chat-0", Some("my fork"), false).unwrap();
 
-        // The fork transcript exists under the fork's own session-id and
-        // carries the parent's history byte-for-byte.
+        // The fork transcript exists under the fork's own session-id.
         worksgood::chat_sessions::prepare_pi_chat_session(dir, 1).unwrap();
         let fork_session_dir = worksgood::chat::chat_dir_for_ref(dir, "chat-1").join("pi-sessions");
         let fork_transcript = worksgood::chat_sessions::newest_pi_transcript(&fork_session_dir, 1)
@@ -2072,10 +2085,44 @@ mod tests {
                 .is_some_and(|n| n.ends_with("_chat-1.jsonl")),
             "fork transcript must be named for the fork's --session-id: {fork_transcript:?}"
         );
-        assert_eq!(std::fs::read(&fork_transcript).unwrap(), bytes);
 
-        // Parent untouched.
-        assert_eq!(std::fs::read(&source_transcript).unwrap(), bytes);
+        // The fork's transcript header must carry the FORK's session id, not
+        // the parent's — this is what makes pi's `--session-id chat-1` adopt
+        // the copied history instead of opening a fresh conversation.
+        let fork_bytes = std::fs::read(&fork_transcript).unwrap();
+        let fork_nl = fork_bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .expect("fork transcript must be newline-delimited JSONL");
+        let (fork_header, fork_rest) = (&fork_bytes[..fork_nl], &fork_bytes[fork_nl + 1..]);
+        let fork_header: serde_json::Value = serde_json::from_slice(fork_header).unwrap();
+        assert_eq!(fork_header["type"], "session");
+        assert_eq!(fork_header["id"], "chat-1");
+
+        // Only the header line changed: the entry tree / message bodies —
+        // including text that literally names the parent id `chat-0` — are
+        // byte-for-byte the parent's.
+        let parent_bytes = std::fs::read(&source_transcript).unwrap();
+        let parent_nl = parent_bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .expect("parent transcript must be newline-delimited JSONL");
+        let (parent_header, parent_rest) =
+            (&parent_bytes[..parent_nl], &parent_bytes[parent_nl + 1..]);
+        let parent_header: serde_json::Value = serde_json::from_slice(parent_header).unwrap();
+        assert_eq!(parent_header["type"], "session");
+        assert_eq!(parent_header["id"], "chat-0");
+        assert_eq!(
+            fork_rest, parent_rest,
+            "rekey must not touch entry tree or message bodies"
+        );
+        assert!(
+            std::str::from_utf8(parent_rest).unwrap().contains("chat-0"),
+            "parent message text naming chat-0 must remain untouched"
+        );
+
+        // Parent untouched in full.
+        assert_eq!(parent_bytes, bytes);
 
         // Fork task exists and inherited the parent's model.
         let graph = worksgood::parser::load_graph(&graph_path(dir)).unwrap();

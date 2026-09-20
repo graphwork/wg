@@ -695,6 +695,68 @@ pub fn prepare_pi_chat_session(workgraph_dir: &Path, n: u32) -> Result<PiChatSes
     })
 }
 
+/// Rekey the session-identity line of a pi transcript so `pi --session-id
+/// <session_id>` adopts it.
+///
+/// Pi stores a session's identity INSIDE the transcript: line 1 is
+/// `{"type":"session","version":3,"id":"chat-N",...}`. A forked transcript is
+/// copied under the fork's filename, but pi only resumes it when that internal
+/// `id` matches the requested `--session-id` — otherwise it silently starts a
+/// fresh conversation (the `wg chat fork` bug). This rewrites ONLY that header
+/// line: entry `id`/`parentId` fields (which chain the conversation tree) and
+/// every message body are left byte-for-byte intact.
+///
+/// No-op when line 1 is not a `session` header or already carries
+/// `session_id` (idempotent re-install), so it is safe to call on any
+/// transcript. The rewrite is atomic (unique temp file in the same directory +
+/// rename), so a concurrent reader sees either the old or the new complete
+/// transcript, never a partial one.
+pub fn rekey_pi_session_header(transcript: &Path, session_id: &str) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+
+    let bytes =
+        fs::read(transcript).with_context(|| format!("read transcript {:?}", transcript))?;
+
+    // Split only at the first newline: line 1 is the session header; every
+    // byte after that newline must survive unchanged (it carries the entry
+    // tree and message bodies, which may themselves mention the parent id).
+    let (header, rest) = match bytes.iter().position(|&b| b == b'\n') {
+        Some(pos) => (&bytes[..pos], Some(&bytes[pos + 1..])),
+        None => (&bytes[..], None),
+    };
+
+    let Ok(mut header_json) = serde_json::from_slice::<serde_json::Value>(header) else {
+        // Not JSON — not a pi transcript header; leave it alone.
+        return Ok(());
+    };
+    if header_json.get("type").and_then(|v| v.as_str()) != Some("session") {
+        return Ok(());
+    }
+    if header_json.get("id").and_then(|v| v.as_str()) == Some(session_id) {
+        // Already rekeyed (idempotent re-install) — nothing to do.
+        return Ok(());
+    }
+
+    header_json["id"] = serde_json::Value::String(session_id.to_string());
+    let mut new_bytes = serde_json::to_vec(&header_json)
+        .with_context(|| format!("reserialize session header for {:?}", transcript))?;
+    if let Some(rest) = rest {
+        new_bytes.push(b'\n');
+        new_bytes.extend_from_slice(rest);
+    }
+
+    let nonce = NONCE.fetch_add(1, Ordering::Relaxed);
+    let tmp = transcript.with_file_name(format!(
+        ".rekey-tmp-{}.{}.{}",
+        std::process::id(),
+        thread_id(),
+        nonce
+    ));
+    fs::write(&tmp, &new_bytes).with_context(|| format!("write {:?}", tmp))?;
+    fs::rename(&tmp, transcript).with_context(|| format!("rename {:?} -> {:?}", tmp, transcript))
+}
+
 /// Add an alias to an existing session (UUID or existing alias).
 pub fn add_alias(workgraph_dir: &Path, reference: &str, alias: &str) -> Result<()> {
     let uuid = resolve_ref(workgraph_dir, reference)?;
@@ -1107,6 +1169,62 @@ mod tests {
             crate::chat::chat_dir_for_ref(wg, "chat-8"),
             "the restored pane must resolve storage through the UUID registry"
         );
+    }
+
+    #[test]
+    fn rekey_pi_session_header_rewrites_only_the_identity_line() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("2026-01-01T00-00-00-000Z_chat-3.jsonl");
+        let original = "{\"type\":\"session\",\"version\":3,\"id\":\"chat-3\"}\n\
+             {\"type\":\"message\",\"id\":\"m1\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"chat-3 is the topic\"}}\n";
+        fs::write(&path, original).unwrap();
+
+        rekey_pi_session_header(&path, "chat-5").unwrap();
+
+        let got = fs::read_to_string(&path).unwrap();
+        let (header, rest) = got.split_once('\n').unwrap();
+        let header: serde_json::Value = serde_json::from_str(header).unwrap();
+        assert_eq!(header["type"], "session");
+        assert_eq!(header["version"], 3);
+        assert_eq!(header["id"], "chat-5");
+        // Message text mentioning the old id must never be rewritten.
+        assert!(rest.contains("chat-3 is the topic"), "body changed: {got}");
+        assert!(!rest.contains("chat-5"), "body gained the new id: {got}");
+
+        // Idempotent: a second call leaves the file byte-identical.
+        let after_first = fs::read(&path).unwrap();
+        rekey_pi_session_header(&path, "chat-5").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), after_first);
+
+        // A non-session first line is a no-op.
+        let other = dir.path().join("other.jsonl");
+        fs::write(&other, "{\"turn\":1}\n{\"turn\":2}\n").unwrap();
+        rekey_pi_session_header(&other, "chat-9").unwrap();
+        assert_eq!(
+            fs::read_to_string(&other).unwrap(),
+            "{\"turn\":1}\n{\"turn\":2}\n"
+        );
+
+        // Header-only file (no trailing newline, no body) still rekeys.
+        let bare = dir.path().join("bare.jsonl");
+        fs::write(
+            &bare,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"chat-3\"}",
+        )
+        .unwrap();
+        rekey_pi_session_header(&bare, "chat-5").unwrap();
+        let bare_raw = fs::read_to_string(&bare).unwrap();
+        let bare_header: serde_json::Value = serde_json::from_str(&bare_raw).unwrap();
+        assert_eq!(bare_header["id"], "chat-5");
+        assert!(!bare_raw.contains('\n'), "no body newline may be invented");
+
+        // No temp-file residue is left behind next to the transcript.
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".rekey-tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "rekey leaked temp files");
     }
 
     #[cfg(unix)]
