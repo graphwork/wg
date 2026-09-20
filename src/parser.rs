@@ -791,6 +791,7 @@ mod tests {
                     model_route: Some("pi:test:review".to_string()),
                     executor: Some("pi".to_string()),
                     usage: None,
+                    retry: None,
                     duration_ms: Some(9),
                     created_at: "2026-08-09T00:00:00Z".to_string(),
                 });

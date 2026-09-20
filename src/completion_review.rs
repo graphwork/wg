@@ -10,6 +10,7 @@ use crate::completion_manifest::{
     IncompleteEvidence, ResolvedReviewBundle,
 };
 use crate::identity::canonical_json;
+use crate::service::agency_retry::AgencyRetryStats;
 use crate::simple_land::ReviewVerdict;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -578,6 +579,9 @@ pub struct ReviewExecution {
     pub executor: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ReviewUsage>,
+    /// Bounded agency retry accounting for the call(s) behind this execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<AgencyRetryStats>,
 }
 
 /// Exact source/candidate chronology covered by a semantic-review receipt.
@@ -624,6 +628,10 @@ pub struct CompletionReviewActivity {
     pub executor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ReviewUsage>,
+    /// Bounded retry accounting (attempts + final classification) so operators
+    /// can distinguish provider throttling from a semantic rejection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<AgencyRetryStats>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     pub created_at: String,
@@ -767,6 +775,7 @@ fn activity_from_receipt(receipt_id: String, receipt: &ReviewReceipt) -> Complet
         model_route: receipt.model_route.clone(),
         executor: receipt.executor.clone(),
         usage: receipt.usage.clone(),
+        retry: receipt.retry.clone(),
         duration_ms: receipt.duration_ms,
         created_at: receipt.created_at.clone(),
     }
@@ -862,6 +871,7 @@ pub fn verified_review_activities(
             && receipt.model_route == activity.model_route
             && receipt.executor == activity.executor
             && receipt.usage == activity.usage
+            && receipt.retry == activity.retry
             && receipt.duration_ms == activity.duration_ms
             && receipt.created_at == activity.created_at
             && binding_exact;
@@ -1217,6 +1227,9 @@ pub struct ReviewReceipt {
     pub executor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ReviewUsage>,
+    /// Bounded agency retry accounting for the call(s) behind this receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<AgencyRetryStats>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2104,6 +2117,7 @@ fn receipt_from_reviewer_result(
             model_route: Some(model_route.to_string()),
             executor: None,
             usage: None,
+            retry: execution.as_ref().and_then(|value| value.retry.clone()),
             duration_ms,
             flip_proof: flip_proof.clone(),
             created_at: created_at.to_string(),
@@ -2182,7 +2196,14 @@ fn persist_receipt(
             .execution
             .as_ref()
             .map(|value| value.executor.clone()),
-        usage: material.execution.and_then(|value| value.usage),
+        usage: material
+            .execution
+            .as_ref()
+            .and_then(|value| value.usage.clone()),
+        retry: material
+            .execution
+            .as_ref()
+            .and_then(|value| value.retry.clone()),
         duration_ms: material.duration_ms,
         flip_proof: material.flip_proof,
         created_at: material.created_at.to_string(),
@@ -2240,6 +2261,7 @@ mod projection_tests {
                 model_route: Some("pi:test:model".into()),
                 executor: Some("pi".into()),
                 usage: None,
+                retry: None,
                 duration_ms: None,
                 created_at: "2026-08-08T00:00:00Z".into(),
             });
@@ -2650,6 +2672,27 @@ mod projection_tests {
     }
 
     #[test]
+    fn flip_receipt_rejects_comparison_chained_to_a_different_hypothesis_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_graph, _binding, receipt_ids) = stripped_terminal_fixture(dir.path());
+        let store = CompletionArtifactStore::open(dir.path().join("completion/v3")).unwrap();
+        let receipt_digest = ContentDigest::parse(receipt_ids[0].clone()).unwrap();
+        let mut stored = load_stored_review_receipt_by_digest(&store, &receipt_digest).unwrap();
+        assert!(stored.receipt.has_structurally_valid_flip_proof());
+        // Simulate a retried/stale inference: the comparison points at a
+        // different hypothesis record than the one this phase-I actually
+        // produced. Reseal so the only inconsistency is the predecessor link.
+        let mut proof = stored.receipt.flip_proof.take().unwrap();
+        proof.comparison.predecessor_record_digest =
+            Some(ContentDigest::of_bytes(b"stale-hypothesis-record"));
+        stored.receipt.flip_proof = Some(proof.seal());
+        assert!(
+            !stored.receipt.has_structurally_valid_flip_proof(),
+            "a comparison not chained to the exact persisted inference record must be rejected"
+        );
+    }
+
+    #[test]
     fn repair_reports_unreviewed_current_candidate_as_skipped() {
         let dir = tempfile::tempdir().unwrap();
         let (mut graph, _, _) = stripped_terminal_fixture(dir.path());
@@ -2686,6 +2729,7 @@ mod projection_tests {
                 model_route: None,
                 executor: None,
                 usage: None,
+                retry: None,
                 duration_ms: None,
                 created_at: "2026-08-09T00:00:00Z".into(),
             });
@@ -2704,5 +2748,95 @@ mod projection_tests {
             task.completion_review_activity[0].created_at,
             "2026-08-09T00:00:00Z"
         );
+    }
+
+    #[test]
+    fn retry_accounting_round_trips_through_receipt_and_activity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CompletionArtifactStore::open(dir.path().join("completion/v3")).unwrap();
+        let manifest = ContentDigest::of_bytes(b"manifest");
+        let requirements = ContentDigest::of_bytes(b"requirements");
+        let stats = AgencyRetryStats {
+            attempts: 3,
+            retries: 2,
+            final_classification: "success".into(),
+            http_status: Some(429),
+            retry_after_seconds: Some(2),
+            exhausted: false,
+        };
+        let stored = persist_receipt(
+            &store,
+            ReceiptMaterial {
+                manifest_digest: &manifest,
+                requirements_digest: &requirements,
+                reviewer_kind: ReviewerKind::Eval,
+                verdict: ReviewVerdict::Pass,
+                findings: Vec::new(),
+                inspected_output_digests: Vec::new(),
+                binding: None,
+                model_route: Some("pi:test:model".into()),
+                execution: Some(ReviewExecution {
+                    executor: "pi".into(),
+                    usage: None,
+                    retry: Some(stats.clone()),
+                }),
+                duration_ms: Some(5),
+                flip_proof: None,
+                created_at: "2026-09-16T00:00:00Z",
+            },
+        )
+        .unwrap();
+        assert_eq!(stored.receipt.retry, Some(stats.clone()));
+        let reloaded = load_stored_review_receipt(&store, &stored.receipt_object).unwrap();
+        assert_eq!(reloaded.receipt.retry, Some(stats.clone()));
+        let activity = activity_from_receipt(
+            stored.receipt_object.content_digest.as_str().to_string(),
+            &stored.receipt,
+        );
+        assert_eq!(activity.retry, Some(stats));
+    }
+
+    #[test]
+    fn exhausted_retry_keeps_reviewer_unavailable_and_exposes_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CompletionArtifactStore::open(dir.path().join("completion/v3")).unwrap();
+        let stats = AgencyRetryStats {
+            attempts: 3,
+            retries: 2,
+            final_classification: "rate-limit".into(),
+            http_status: Some(429),
+            retry_after_seconds: Some(2),
+            exhausted: true,
+        };
+        let stored = receipt_from_reviewer_result(
+            &store,
+            &ContentDigest::of_bytes(b"manifest"),
+            &ContentDigest::of_bytes(b"requirements"),
+            ReviewerKind::Eval,
+            &[],
+            None,
+            "pi:test:model",
+            Err(ReviewerUnavailable {
+                code: "reviewer.route_unavailable".into(),
+                message: "exact route failed without fallback after 3 attempt(s) (classification=rate-limit)"
+                    .into(),
+            }),
+            Some(ReviewExecution {
+                executor: "pi".into(),
+                usage: None,
+                retry: Some(stats.clone()),
+            }),
+            Some(7),
+            "2026-09-16T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(stored.receipt.verdict, ReviewVerdict::Unavailable);
+        assert_ne!(stored.receipt.verdict, ReviewVerdict::Pass);
+        assert_eq!(
+            stored.receipt.failure_class,
+            Some(ReviewFailureClass::ReviewerUnavailable)
+        );
+        assert_eq!(stored.receipt.retry, Some(stats));
+        assert!(stored.receipt.findings_digest.as_str().starts_with("b3:"));
     }
 }

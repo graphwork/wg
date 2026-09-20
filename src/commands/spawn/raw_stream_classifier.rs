@@ -434,7 +434,31 @@ fn classify_failure_signal_without_terminal(
     // provider response proves only that one model call failed; replaying the
     // whole source attempt is safe only when the complete exact stream proves
     // that no tool/effect turn preceded it.
-    let replay_safe = complete_stream_has_no_effect_markers(raw_stream, &raw);
+    classify_signal_from_text(
+        &combined,
+        complete_stream_has_no_effect_markers(raw_stream, &raw),
+        executor,
+        route,
+    )
+}
+
+/// Classify a provider failure from captured text alone.
+///
+/// This is the shared taxonomy seam used by callers that do not have a
+/// `raw_stream.jsonl` on disk — the agency/review one-shot call path carries a
+/// provider error as text. It reuses the exact same structured-envelope and
+/// legacy-text classification as [`classify_failure_signal_without_terminal`]
+/// so the source dispatcher and the agency one-shots cannot drift apart.
+///
+/// `replay_safe` strengthens a structured provider envelope to a definitive
+/// failure only when the caller can prove no prior effect occurred. Agency
+/// one-shots are side-effect-free single inferences and pass `true`.
+pub fn classify_signal_from_text(
+    combined: &str,
+    replay_safe: bool,
+    executor: ExecutorKind,
+    route: Option<String>,
+) -> FailureSignal {
     for line in combined.lines().rev() {
         let line = line.trim();
         if line.is_empty() {
@@ -457,13 +481,13 @@ fn classify_failure_signal_without_terminal(
         }
     }
 
-    if let Some(status) = extract_api_error_status(&combined) {
+    if let Some(status) = extract_api_error_status(combined) {
         return failure_signal_from_evidence(
             Some(status as u16),
-            extract_error_type(&combined),
+            extract_error_type(combined),
             None,
-            parse_retry_after_text(&combined),
-            &combined,
+            parse_retry_after_text(combined),
+            combined,
             executor,
             route,
         )
@@ -471,11 +495,11 @@ fn classify_failure_signal_without_terminal(
     }
 
     failure_signal_from_evidence(
-        extract_status_from_message(&combined),
-        extract_error_type(&combined),
+        extract_status_from_message(combined),
+        extract_error_type(combined),
         None,
-        parse_retry_after_text(&combined),
-        &combined,
+        parse_retry_after_text(combined),
+        combined,
         executor,
         route,
     )

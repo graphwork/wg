@@ -19,6 +19,7 @@ use crate::config::{
 };
 use crate::dispatch::{ExecutorKind, handler_for_model};
 use crate::graph::TokenUsage;
+use crate::service::agency_retry::{AgencyRetryFailure, AgencyRetryPolicy, AgencyRetryStats};
 
 /// Result of a lightweight LLM call, including both the text response and token usage.
 #[derive(Debug, Clone)]
@@ -29,6 +30,9 @@ pub struct LlmCallResult {
     /// any whitespace normalization. Content-bound review persists these bytes.
     pub raw_text: String,
     pub token_usage: Option<TokenUsage>,
+    /// Bounded agency retry accounting for this call. Empty (all-zero) for
+    /// callers that do not go through the agency retry path.
+    pub retry: AgencyRetryStats,
 }
 
 /// Maximum output tokens for lightweight LLM calls.
@@ -474,6 +478,32 @@ fn call_dispatch_route(
     }
 }
 
+/// Run one agency route under the bounded transient-failure retry policy.
+///
+/// `call` is re-invoked on a classified transient provider failure (429/5xx/
+/// timeout) with bounded exponential backoff that honors `Retry-After`. The
+/// account is always attached to the result (or carried by the typed
+/// [`AgencyRetryFailure`] on exhaustion) so the review receipt can surface
+/// throttling instead of a silent degradation. Exhaustion still returns the
+/// original error: a retry never manufactures an acceptance.
+fn run_route_with_retry<F>(config: &Config, call: F) -> Result<LlmCallResult>
+where
+    F: FnMut() -> Result<LlmCallResult>,
+{
+    let policy = AgencyRetryPolicy::from_config(&config.coordinator.agency_retry);
+    let (result, stats) = super::agency_retry::run_agency_retry(&policy, call);
+    match result {
+        Ok(mut value) => {
+            value.retry = stats;
+            Ok(value)
+        }
+        Err(error) => Err(anyhow::Error::new(AgencyRetryFailure {
+            stats,
+            source: error,
+        })),
+    }
+}
+
 /// Invoke one already-resolved agency route exactly once. This primitive is
 /// used by manifest-bound completion review, where a route failure must become
 /// `Unavailable`; configured fallback routes are deliberately ignored.
@@ -483,7 +513,9 @@ pub fn run_exact_agency_dispatch_call(
     prompt: &str,
     timeout_secs: u64,
 ) -> Result<LlmCallResult> {
-    call_dispatch_route(config, dispatch, None, prompt, timeout_secs)
+    run_route_with_retry(config, || {
+        call_dispatch_route(config, dispatch, None, prompt, timeout_secs)
+    })
 }
 
 fn run_dispatch_with_same_system_fallback<F>(
@@ -584,7 +616,9 @@ pub fn run_review_llm_call(
     };
 
     run_dispatch_with_same_system_fallback(config, DispatchRole::Reviewer, dispatch, |route| {
-        call_dispatch_route(config, route, None, prompt, timeout_secs)
+        run_route_with_retry(config, || {
+            call_dispatch_route(config, route, None, prompt, timeout_secs)
+        })
     })
 }
 
@@ -704,8 +738,15 @@ pub fn run_lightweight_llm_call(
         execution_dispatch_for_role(config, role)?
     };
 
+    let agency_retry = is_agency_oneshot_role(role);
     run_dispatch_with_same_system_fallback(config, role, dispatch, |route| {
-        call_dispatch_route(config, route, None, prompt, timeout_secs)
+        if agency_retry {
+            run_route_with_retry(config, || {
+                call_dispatch_route(config, route, None, prompt, timeout_secs)
+            })
+        } else {
+            call_dispatch_route(config, route, None, prompt, timeout_secs)
+        }
     })
 }
 
@@ -731,7 +772,9 @@ pub fn run_lightweight_llm_call_for_route(
         &resolved.config_revision,
     );
     run_dispatch_with_same_system_fallback(config, role, dispatch, |candidate| {
-        call_dispatch_route(config, candidate, None, prompt, timeout_secs)
+        run_route_with_retry(config, || {
+            call_dispatch_route(config, candidate, None, prompt, timeout_secs)
+        })
     })
 }
 
@@ -758,13 +801,15 @@ pub fn run_lightweight_llm_call_for_plan(
             Some(role),
             call.config_revision.as_deref().unwrap_or("unversioned"),
         );
-        return call_dispatch_route(
-            config,
-            &dispatch,
-            call.endpoint.as_deref(),
-            prompt,
-            timeout_secs,
-        );
+        return run_route_with_retry(config, || {
+            call_dispatch_route(
+                config,
+                &dispatch,
+                call.endpoint.as_deref(),
+                prompt,
+                timeout_secs,
+            )
+        });
     }
     let actual_system = execution_system_key(&call.route)?;
     if actual_system != call.system {
@@ -796,13 +841,15 @@ pub fn run_lightweight_llm_call_for_plan(
             Some(role),
             call.config_revision.as_deref().unwrap_or("unversioned"),
         );
-        match call_dispatch_route(
-            config,
-            &dispatch,
-            call.endpoint.as_deref(),
-            prompt,
-            timeout_secs,
-        ) {
+        match run_route_with_retry(config, || {
+            call_dispatch_route(
+                config,
+                &dispatch,
+                call.endpoint.as_deref(),
+                prompt,
+                timeout_secs,
+            )
+        }) {
             Ok(result) => return Ok(result),
             Err(error) => failures.push(RouteAttemptFailure {
                 route,
@@ -933,6 +980,7 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
         text,
         raw_text,
         token_usage,
+        retry: AgencyRetryStats::default(),
     })
 }
 
@@ -1076,6 +1124,7 @@ fn call_codex_cli(
         text,
         raw_text,
         token_usage,
+        retry: AgencyRetryStats::default(),
     })
 }
 
@@ -1395,6 +1444,7 @@ fn call_pi_cli_inner(
         text,
         raw_text,
         token_usage: Some(token_usage),
+        retry: AgencyRetryStats::default(),
     })
 }
 
@@ -1624,6 +1674,7 @@ fn call_anthropic_native(
         text,
         raw_text,
         token_usage,
+        retry: AgencyRetryStats::default(),
     })
 }
 
@@ -1739,6 +1790,7 @@ fn call_openai_native(
         text,
         raw_text,
         token_usage,
+        retry: AgencyRetryStats::default(),
     })
 }
 
@@ -2783,6 +2835,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
             text: text.to_string(),
             raw_text: text.to_string(),
             token_usage: None,
+            retry: AgencyRetryStats::default(),
         }
     }
 
@@ -2813,6 +2866,58 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","provider":"open
         assert_eq!(structured.system.handler, "pi");
         assert_eq!(structured.system.provider, "openai-codex");
         assert_eq!(structured.attempts.len(), 1);
+    }
+
+    fn agency_retry_config(max_retries: u32) -> crate::config::SourceProviderRetryConfig {
+        crate::config::SourceProviderRetryConfig {
+            enabled: true,
+            max_automatic_retries: max_retries,
+            recovery_window_seconds: 30,
+            base_seconds: 1,
+            delay_cap_seconds: 1,
+        }
+    }
+
+    #[test]
+    fn agency_retry_wrapper_retries_transient_then_attaches_stats() {
+        let mut config = Config::default();
+        config.coordinator.agency_retry = agency_retry_config(1);
+        let calls = std::cell::Cell::new(0);
+        let result = run_route_with_retry(&config, || {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                anyhow::bail!("API error 429: rate limit");
+            }
+            Ok(LlmCallResult {
+                text: "ok".into(),
+                raw_text: "ok".into(),
+                token_usage: None,
+                retry: AgencyRetryStats::default(),
+            })
+        })
+        .unwrap();
+        assert_eq!(calls.get(), 2);
+        assert_eq!(result.retry.attempts, 2);
+        assert_eq!(result.retry.retries, 1);
+        assert_eq!(result.retry.final_classification, "success");
+        assert!(result.retry.throttled());
+    }
+
+    #[test]
+    fn agency_retry_wrapper_exhaustion_keeps_failure_typed() {
+        let mut config = Config::default();
+        config.coordinator.agency_retry = agency_retry_config(1);
+        let error = run_route_with_retry(&config, || {
+            anyhow::bail!("API error 429: too many requests")
+        })
+        .unwrap_err();
+        let failure = error
+            .downcast_ref::<crate::service::agency_retry::AgencyRetryFailure>()
+            .expect("exhausted transient failure must stay typed for the receipt");
+        assert_eq!(failure.stats.attempts, 2);
+        assert_eq!(failure.stats.retries, 1);
+        assert_eq!(failure.stats.final_classification, "rate-limit");
+        assert!(failure.stats.exhausted);
     }
 
     #[cfg(unix)]
