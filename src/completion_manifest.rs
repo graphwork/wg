@@ -1622,6 +1622,62 @@ mod deliverable_presence_tests {
     }
 
     #[test]
+    fn multiple_backticked_paths_are_extracted_and_deduplicated() {
+        let tokens =
+            extract_deliverable_tokens(b"Ship `src/lib.rs`, `src/lib.rs`, and `docs/guide.md`.");
+        assert_eq!(
+            tokens,
+            vec!["src/lib.rs".to_string(), "docs/guide.md".to_string()],
+            "each backticked path is extracted exactly once: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn uppercase_extensions_are_retained() {
+        let tokens =
+            extract_deliverable_tokens(b"Generate docs/README.md and CONFIG.TOML at the root.");
+        assert!(
+            tokens.contains(&"docs/README.md".to_string()),
+            "uppercase path segment must survive: {tokens:?}"
+        );
+        assert!(
+            tokens.contains(&"CONFIG.TOML".to_string()),
+            "uppercase extension must not be rejected case-sensitively: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn prose_words_and_sentence_final_tokens_are_not_deliverables() {
+        let tokens = extract_deliverable_tokens(
+            b"Please update the docs and finish the summary. Then touch src/main.rs.",
+        );
+        assert!(
+            !tokens
+                .iter()
+                .any(|token| token == "docs" || token == "summary" || token == "Then"),
+            "ordinary prose words are not deliverables: {tokens:?}"
+        );
+        assert!(
+            tokens.contains(&"src/main.rs".to_string()),
+            "a genuine path in the same sentence is still surfaced: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn token_appearing_backticked_and_bare_is_emitted_once() {
+        let tokens =
+            extract_deliverable_tokens(b"Update `src/main.rs`; the file src/main.rs must compile.");
+        let count = tokens
+            .iter()
+            .filter(|token| token.as_str() == "src/main.rs")
+            .count();
+        assert_eq!(
+            count, 1,
+            "backticked and bare forms must deduplicate: {tokens:?}"
+        );
+    }
+
+    #[test]
     fn presence_is_checked_against_the_exact_candidate_tree() {
         let temp = tempfile::tempdir().unwrap();
         let run = |args: &[&str]| {

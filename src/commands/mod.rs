@@ -199,7 +199,10 @@ pub fn load_workgraph_mut(dir: &Path) -> Result<(worksgood::graph::WorkGraph, Pa
     load_workgraph(dir)
 }
 
-pub use worksgood::service::{is_process_alive, kill_process_force, kill_process_graceful};
+pub use worksgood::service::{
+    is_process_alive, kill_process_force, kill_process_force_scoped, kill_process_graceful,
+    kill_process_graceful_scoped,
+};
 
 pub fn graph_path(dir: &Path) -> std::path::PathBuf {
     dir.join("graph.jsonl")

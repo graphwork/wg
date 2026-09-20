@@ -80,6 +80,16 @@ runs anyway).
 - **Fallback = cargo hint, not nested npm.** Unsupported platform / missing
   optional dep → friendly `cargo install --git …` pointer (research doc §2.5).
 
+## Known limitation: macOS binaries are unsigned and un-notarized
+
+The `@worksgood/darwin-arm64` payload ships the release binaries as-is. Apple
+Developer ID signing and notarization secrets are not configured yet, so
+Gatekeeper may block the first run. Users can allow it with
+`xattr -d com.apple.quarantine "$(which wg)"` (repeat for `worksgood` and
+`nex`) or right-click → Open. Do **not** describe the macOS packages as signed
+or notarized until those secrets are configured and the release pipeline
+signs them.
+
 ## CI wiring (`.github/workflows/release.yml` → `npm-package` job)
 
 The job downloads the two slice-target release artifacts, runs

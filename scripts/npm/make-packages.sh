@@ -6,8 +6,9 @@
 # Two modes:
 #   archive mode (CI):  unpack the existing release.yml archives
 #                       (wg-v<archive-version>-<target>.tar.gz) into platform
-#                       packages. Binaries are already built/signed/notarized —
-#                       this is pure packaging.
+#                       packages. Binaries are prebuilt release artifacts
+#                       (GitHub-attested; macOS binaries are not yet code-signed
+#                       or notarized) — this is pure packaging.
 #   bin-dir mode (local dry-run / verify-install.sh): assemble one platform
 #                       package straight from a directory containing the
 #                       wg/nex/worksgood binaries.

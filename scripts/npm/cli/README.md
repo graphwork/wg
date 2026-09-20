@@ -2,7 +2,7 @@
 
 [WorksGood](https://github.com/graphwork/wg) (`wg`, `worksgood`, `nex`) as an npm
 package, plus the [@earendil-works/pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
-CLI — one `npm install -g @worksgood/cli` brings the whole WG+pi stack.
+CLI — one `npm install -g @worksgood/cli` (Node 20+) brings the whole WG+pi stack.
 
 `cargo install --git https://github.com/graphwork/wg --locked` remains the
 primary documented install path; npm is the additional channel for users who
@@ -16,7 +16,8 @@ This package contains **no native code and no install scripts** —
 separate packages declared as `optionalDependencies`:
 
 - `@worksgood/linux-x64-gnu` (glibc Linux, x64)
-- `@worksgood/darwin-arm64` (Apple silicon; binaries are signed + notarized)
+- `@worksgood/darwin-arm64` (Apple silicon; binaries are currently **unsigned
+  and un-notarized** — see the macOS note below)
 
 npm itself picks and installs exactly the right one for your platform, and the
 tiny `bin` shims (`wg`, `nex`, `worksgood`) resolve the binary inside it and
@@ -27,6 +28,12 @@ read-only filesystems.
 
 ## Compatibility notes
 
+- **macOS binaries are currently unsigned and un-notarized.** Apple Developer
+  ID signing/notarization secrets are not configured yet, so Gatekeeper may
+  block the first run. Allow it with
+  `xattr -d com.apple.quarantine "$(which wg)"` (repeat for `worksgood` and
+  `nex`) or right-click → Open. This will be corrected once signing is
+  configured; do not claim the macOS packages are signed or notarized.
 - **`--ignore-scripts` works fully.** There are no scripts to skip, and the
   binaries arrive as ordinary package payload, not as a postinstall download.
 - **`--no-optional` breaks binary resolution.** Without the optional platform

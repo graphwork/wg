@@ -1,0 +1,14 @@
+{
+    "completed_at": "2026-09-20T22:36:16.824748385+00:00",
+    "contract": "land",
+    "eval_receipt_digest": "b3:5c6e5ffd7a993cb1e515698707fd1848425560cb296cca14d2018d707cad0123",
+    "flip_receipt_digest": "b3:41061e5f777127c46baf650c1939a4567c02000ac7b925922eb308fef74788ac",
+    "generation": 0,
+    "manifest_digest": "b3:f1f1ca6a9f1d0e5c824806d0be84eb11ee0f9133c6f3c79c6b8d0f407dcc7799",
+    "publication": "git:refs/heads/main:a8842fac39ffcd3e4f63bedf49f0e02e1c46fad7",
+    "receipt_version": 1,
+    "requirements_digest": "b3:e3dca6a7b708cf3189874978a99c7426b55fb5d8ecea7d9e03ae53ffacb63844",
+    "review_policy": "strict",
+    "semantic_outcome": "approved",
+    "task_id": "ncg-defective"
+}

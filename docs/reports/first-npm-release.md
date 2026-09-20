@@ -248,3 +248,26 @@ workflow fix away from working, and the local install path is proven. The exact
 failing command, run id, and required operator action are recorded above. This
 report intentionally does not smooth over the non-convergence: the real run is
 red on `npm packages` and the registry has no `@worksgood` packages.
+
+---
+
+## Resolution (operator, 2026-09-21) — **PUBLISHED**
+
+The stop condition above was resolved and the first release shipped:
+
+- **Root cause fixed:** the publish step's `node -p "require(<relative path>)"` was replaced with
+  `JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).name` (commit `6da00f55`,
+  cherry-picked to `main` as `e6c06501` after attempt-loss killed the task that would have
+  landed it through review — an explicit operator recovery, noted as such). A regression test
+  ships with it (`scripts/npm/test/publish-step.test.js`, 2 passed / 0 failed).
+- **Published:** run `35540905543` (dispatched from `wg/agent-163/complete-the-first`)
+  completed **success**; `@worksgood/cli`, `@worksgood/linux-x64-gnu`, and
+  `@worksgood/darwin-arm64` all resolve at **0.1.0**, and the metapackage declares
+  `@earendil-works/pi-coding-agent@^0.85.1` as a dependency.
+- **Clean-prefix install verified by the operator:** `npm install @worksgood/cli` into an
+  empty prefix yields `nex`, `pi`, `wg`, `worksgood` on `.bin`; `wg --version` and
+  `worksgood --version` both report `0.1.0`; `@earendil-works/pi-coding-agent` is present in
+  `node_modules`. Zero postinstall scripts, 0 vulnerabilities.
+- **Known gap, disclosed:** macOS binaries ship **unsigned and un-notarized** (Apple
+  Developer ID secrets are not configured), so macOS users will hit Gatekeeper. Install docs
+  should say so until the secrets are configured.

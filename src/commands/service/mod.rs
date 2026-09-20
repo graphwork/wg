@@ -137,7 +137,23 @@ use worksgood::config::Config;
 use worksgood::parser::load_graph;
 use worksgood::service::registry::AgentRegistry;
 
-use super::{graph_path, is_process_alive, kill_process_force, kill_process_graceful};
+use super::{
+    graph_path, is_process_alive, kill_process_force, kill_process_force_scoped,
+    kill_process_graceful_scoped,
+};
+
+/// PIDs recorded in the agent registry for this graph.
+///
+/// The service lifecycle must never signal one of these through a
+/// supervisor/daemon tree walk — a registered worker may be mid-attempt, and
+/// a restart is not a task cancellation. This is the explicit role-aware guard
+/// layered on top of the structural `setsid()`-session guard inside
+/// [`kill_process_graceful_scoped`] / [`kill_process_force_scoped`].
+fn registered_worker_pids(dir: &Path) -> Vec<u32> {
+    AgentRegistry::load(dir)
+        .map(|registry| registry.all().map(|agent| agent.pid).collect())
+        .unwrap_or_default()
+}
 
 /// Threshold for "recent" consumer activity when deciding whether a chat is
 /// active. A chat counts as active if any consumer touched its cursor file or
@@ -1755,6 +1771,9 @@ pub fn run_start(
     // the current revision on every tick and reports a typed, non-consuming
     // blocker until an operator selects a supported route.
     let config = Config::load_merged(dir)?;
+    // Workers spawned by a previous daemon may still be mid-attempt. The
+    // service lifecycle must not kill them (a restart is not a cancellation).
+    let worker_pids = registered_worker_pids(dir);
     if let Some(legacy_executor) = executor
         && !json
     {
@@ -1818,7 +1837,7 @@ pub fn run_start(
                             state.pid
                         );
                     }
-                    kill_process_graceful(state.pid, 5)?;
+                    kill_process_graceful_scoped(state.pid, 5, &worker_pids)?;
                 }
                 // Clean up
                 if socket.exists() {
@@ -1888,7 +1907,7 @@ pub fn run_start(
                 if !json {
                     println!("Killing orphan daemon process (PID {})...", pid);
                 }
-                let _ = kill_process_graceful(pid, 5);
+                let _ = kill_process_graceful_scoped(pid, 5, &worker_pids);
             }
         } else {
             let pids: Vec<String> = orphans.iter().map(|p| p.to_string()).collect();
@@ -4171,6 +4190,11 @@ pub fn run_stop(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Resul
 
 /// Inner stop logic (no agent guard) — used by `run_restart` to bypass the guard.
 fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Result<()> {
+    // A registered worker is never a service-lifecycle kill target: it may be
+    // mid-attempt, detached from the daemon by `setsid()`, and adopted by the
+    // next daemon. `--kill-agents` still terminates workers explicitly through
+    // the IPC shutdown path (`kill::run_all`), not through this tree walk.
+    let worker_pids = registered_worker_pids(dir);
     let state = match ServiceState::load(dir)? {
         Some(s) => s,
         None => {
@@ -4251,10 +4275,11 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
             );
         }
         if force {
-            // Kills the supervisor's whole descendant tree (daemon included).
-            let _ = kill_process_force(spid);
+            // Kills the supervisor and its service-internal descendants
+            // (daemon included); detached/registered workers are excluded.
+            let _ = kill_process_force_scoped(spid, &worker_pids);
         } else {
-            let _ = kill_process_graceful(spid, 5);
+            let _ = kill_process_graceful_scoped(spid, 5, &worker_pids);
         }
     }
     // Ensure the daemon itself is gone regardless (unsupervised, or the
@@ -4270,9 +4295,9 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
             );
         }
         if force {
-            kill_process_force(state.pid)?;
+            kill_process_force_scoped(state.pid, &worker_pids)?;
         } else {
-            kill_process_graceful(state.pid, 5)?;
+            kill_process_graceful_scoped(state.pid, 5, &worker_pids)?;
         }
     }
 
@@ -4296,9 +4321,9 @@ fn run_stop_inner(dir: &Path, force: bool, kill_agents: bool, json: bool) -> Res
     let mut orphan_count = 0;
     for &pid in &orphans {
         if force {
-            let _ = kill_process_force(pid);
+            let _ = kill_process_force_scoped(pid, &worker_pids);
         } else {
-            let _ = kill_process_graceful(pid, 5);
+            let _ = kill_process_graceful_scoped(pid, 5, &worker_pids);
         }
         orphan_count += 1;
     }

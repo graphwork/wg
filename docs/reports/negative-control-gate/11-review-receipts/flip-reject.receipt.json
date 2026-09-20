@@ -1,0 +1,188 @@
+{
+    "binding": {
+        "attempt_fence": 1,
+        "attempt_id": "attempt-0-1",
+        "candidate_sequence": 1,
+        "generation": 0,
+        "task_id": "ncg-defective"
+    },
+    "created_at": "2026-09-20T22:33:15.024814859+00:00",
+    "duration_ms": 12188,
+    "executor": "pi-two-phase",
+    "failure_class": "semantic_rejection",
+    "findings_digest": "b3:f21abbca20397fe1401e3c2647da21d6517820d2a54713f14f989a101d3dcb24",
+    "flip_proof": {
+        "chain_digest": "b3:dc682e351e2d4a514993e28ffba8218a0f21d1e865468f780466879bb9d61050",
+        "comparison": {
+            "binding": {
+                "attempt_fence": 1,
+                "attempt_id": "attempt-0-1",
+                "candidate_sequence": 1,
+                "generation": 0,
+                "task_id": "ncg-defective"
+            },
+            "candidate_digest": "b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f",
+            "candidate_evidence_digest": "b3:47fc6438b103d3e8b1063437d296da40ea0a7cd7a695b1589658823b7b447b52",
+            "execution_id": "flip-comparison:01a0c0f3-d084-7b32-ba66-d8d45e75aa2e",
+            "executor": "pi",
+            "finished_at": "2026-09-20T22:33:27.210681412+00:00",
+            "input": {
+                "content_digest": "b3:8622bbdf51b3fac6ba40b8f0e2616bc0764d5708b5bc5d16f6ad2416c058f850",
+                "immutable_locator": {
+                    "digest": "b3:8622bbdf51b3fac6ba40b8f0e2616bc0764d5708b5bc5d16f6ad2416c058f850",
+                    "kind": "completion_object"
+                },
+                "media_type": "application/vnd.worksgood.flip-phase-input+json",
+                "size": 20223
+            },
+            "input_digest": "b3:8622bbdf51b3fac6ba40b8f0e2616bc0764d5708b5bc5d16f6ad2416c058f850",
+            "input_schema": "worksgood-flip-comparison-v1",
+            "outcome": {
+                "success": true,
+                "usage": {
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cost_usd": 0.0,
+                    "input_tokens": 9156,
+                    "output_tokens": 1972
+                }
+            },
+            "output_digest": "b3:7794b035f1061896d4a9590a062cd336f6036e97dea562e2f19fb2148176ec5b",
+            "phase": "comparison",
+            "predecessor_record_digest": "b3:0198af09f50db9550c2ab910120eb97aab81fd020a10333f10f45521954f7487",
+            "prompt": {
+                "content_digest": "b3:5e432f67ca48bc00d79cc16c04823f403cf28ed0e3e0c1044394411411d0fb78",
+                "immutable_locator": {
+                    "digest": "b3:5e432f67ca48bc00d79cc16c04823f403cf28ed0e3e0c1044394411411d0fb78",
+                    "kind": "completion_object"
+                },
+                "media_type": "text/plain",
+                "size": 25002
+            },
+            "prompt_digest": "b3:5e432f67ca48bc00d79cc16c04823f403cf28ed0e3e0c1044394411411d0fb78",
+            "raw_output": {
+                "content_digest": "b3:02dec86285ffad1d4ca4fabd4c900b66e4b446547e22f367633a95cc48acccbd",
+                "immutable_locator": {
+                    "digest": "b3:02dec86285ffad1d4ca4fabd4c900b66e4b446547e22f367633a95cc48acccbd",
+                    "kind": "completion_object"
+                },
+                "media_type": "application/vnd.worksgood.flip-raw-output+text",
+                "size": 762
+            },
+            "raw_output_digest": "b3:02dec86285ffad1d4ca4fabd4c900b66e4b446547e22f367633a95cc48acccbd",
+            "record_digest": "b3:02b97ae40ffa7ef4a03b9eb1e063b574f671a90874688f8c8d4211828755ee13",
+            "record_version": 1,
+            "revealed_evidence_digest": "b3:31029de6803d7cd34d2992b3b648d1d06f41c124d9da592a488d876bb13e544e",
+            "revealed_intent_digest": "b3:e3dca6a7b708cf3189874978a99c7426b55fb5d8ecea7d9e03ae53ffacb63844",
+            "route": {
+                "exact_route": "pi:lunaroute/deepseek-4.1-flash-background",
+                "executor": "pi",
+                "model_id": "pi:lunaroute/deepseek-4.1-flash-background",
+                "reasoning": "low",
+                "snapshot_digest": "b3:af1a4af592020ebcc1b8f35ad7b34a0f65e593e439c908df20adf4c042074581"
+            },
+            "started_at": "2026-09-20T22:33:19.236977541+00:00"
+        },
+        "inference": {
+            "binding": {
+                "attempt_fence": 1,
+                "attempt_id": "attempt-0-1",
+                "candidate_sequence": 1,
+                "generation": 0,
+                "task_id": "ncg-defective"
+            },
+            "candidate_digest": "b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f",
+            "candidate_evidence_digest": "b3:47fc6438b103d3e8b1063437d296da40ea0a7cd7a695b1589658823b7b447b52",
+            "execution_id": "flip-inference:01a0c0f3-c019-7451-ae70-8f5176183c4c",
+            "executor": "pi",
+            "finished_at": "2026-09-20T22:33:19.220869192+00:00",
+            "input": {
+                "content_digest": "b3:96779eae8a3734f4624e1b70d086157e4ea618481e047c4bb2b583490594b6b9",
+                "immutable_locator": {
+                    "digest": "b3:96779eae8a3734f4624e1b70d086157e4ea618481e047c4bb2b583490594b6b9",
+                    "kind": "completion_object"
+                },
+                "media_type": "application/vnd.worksgood.flip-phase-input+json",
+                "size": 1620
+            },
+            "input_digest": "b3:96779eae8a3734f4624e1b70d086157e4ea618481e047c4bb2b583490594b6b9",
+            "input_schema": "worksgood-flip-blind-inference-v1",
+            "outcome": {
+                "success": true,
+                "usage": {
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cost_usd": 0.0,
+                    "input_tokens": 1238,
+                    "output_tokens": 496
+                }
+            },
+            "output_digest": "b3:a28ff619b03f0456ba64d3f4baed03962f6c4db3afcd339fc31909cedd3c8d3e",
+            "phase": "inference",
+            "prompt": {
+                "content_digest": "b3:ece1b2d380b02e3e3d6977be72e750361a86261e40fd977fe1fe7e0a7c69e5d0",
+                "immutable_locator": {
+                    "digest": "b3:ece1b2d380b02e3e3d6977be72e750361a86261e40fd977fe1fe7e0a7c69e5d0",
+                    "kind": "completion_object"
+                },
+                "media_type": "text/plain",
+                "size": 2439
+            },
+            "prompt_digest": "b3:ece1b2d380b02e3e3d6977be72e750361a86261e40fd977fe1fe7e0a7c69e5d0",
+            "raw_output": {
+                "content_digest": "b3:b840e40316fa739cb632052dda1ad0e94ac980c262b253b7d65211f09a72cac2",
+                "immutable_locator": {
+                    "digest": "b3:b840e40316fa739cb632052dda1ad0e94ac980c262b253b7d65211f09a72cac2",
+                    "kind": "completion_object"
+                },
+                "media_type": "application/vnd.worksgood.flip-raw-output+text",
+                "size": 1561
+            },
+            "raw_output_digest": "b3:b840e40316fa739cb632052dda1ad0e94ac980c262b253b7d65211f09a72cac2",
+            "record_digest": "b3:0198af09f50db9550c2ab910120eb97aab81fd020a10333f10f45521954f7487",
+            "record_version": 1,
+            "route": {
+                "exact_route": "pi:lunaroute/deepseek-4.1-flash-background",
+                "executor": "pi",
+                "model_id": "pi:lunaroute/deepseek-4.1-flash-background",
+                "reasoning": "low",
+                "snapshot_digest": "b3:af1a4af592020ebcc1b8f35ad7b34a0f65e593e439c908df20adf4c042074581"
+            },
+            "started_at": "2026-09-20T22:33:15.033535177+00:00"
+        },
+        "latent_hypothesis": {
+            "content_digest": "b3:a28ff619b03f0456ba64d3f4baed03962f6c4db3afcd339fc31909cedd3c8d3e",
+            "immutable_locator": {
+                "digest": "b3:a28ff619b03f0456ba64d3f4baed03962f6c4db3afcd339fc31909cedd3c8d3e",
+                "kind": "completion_object"
+            },
+            "media_type": "application/vnd.worksgood.flip-latent-hypothesis+json",
+            "size": 1561
+        },
+        "protocol": "prompt-reconstruction-two-phase-v3"
+    },
+    "inspected_output_digests": [
+        "ab5c733163f155cfabb3694eb1d0a33a18f72810",
+        "17776f0024419239bf037d9bfd6533bc5252b452",
+        "b3:018c93f5eabbb620c778cda19b6a54da59dfee3948f1546828b4d8c7b96d0c0c"
+    ],
+    "manifest_digest": "b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f",
+    "model_route": "prompt-reconstruction-two-phase-v3[inference=pi:lunaroute/deepseek-4.1-flash-background;comparison=pi:lunaroute/deepseek-4.1-flash-background]",
+    "receipt_version": 2,
+    "requirements_digest": "b3:e3dca6a7b708cf3189874978a99c7426b55fb5d8ecea7d9e03ae53ffacb63844",
+    "retry": {
+        "attempts": 2,
+        "exhausted": false,
+        "final_classification": "success",
+        "retries": 0
+    },
+    "reviewer_kind": "flip",
+    "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cost_usd": 0.0,
+        "input_tokens": 10394,
+        "output_tokens": 2468
+    },
+    "verdict": "reject"
+}

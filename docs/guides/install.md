@@ -12,6 +12,29 @@ the three binaries into a user-writable directory, and writes
 `~/.wg/install-receipt.toml`. It refuses to overwrite commands not owned by a
 matching receipt.
 
+## npm Install (prebuilt binaries + Pi)
+
+```bash
+npm install -g @worksgood/cli
+```
+
+One command installs WG (`wg`, `worksgood`, `nex`) plus the Pi coding agent
+CLI, Node 20+. It resolves prebuilt per-platform packages
+(`@worksgood/linux-x64-gnu`, `@worksgood/darwin-arm64`) — no Rust toolchain
+and zero postinstall scripts, so it works fully under `--ignore-scripts`. The
+metapackage declares `@earendil-works/pi-coding-agent ^0.85.1` as a
+dependency. `cargo install --git https://github.com/graphwork/wg --locked`
+remains the primary documented install path; npm is an additive channel.
+
+> **macOS limitation:** the macOS binaries currently ship **unsigned** and
+> **un-notarized** (Apple Developer ID secrets are not configured), so
+> Gatekeeper may block the first run. Allow it with
+> `xattr -d com.apple.quarantine "$(which wg)"` (repeat for `worksgood` and
+> `nex`) or right-click → Open.
+
+On an unsupported platform (or with `--no-optional`) the shim prints the
+`cargo install` fallback instead of failing. See `scripts/npm/README.md`.
+
 ## Fresh Install
 
 macOS and Linux:

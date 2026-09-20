@@ -1,0 +1,37 @@
+{
+    "binding": {
+        "attempt_fence": 2,
+        "attempt_id": "attempt-0-2",
+        "candidate_sequence": 2,
+        "generation": 0,
+        "task_id": "ncg-defective"
+    },
+    "created_at": "2026-09-20T22:35:56.717936178+00:00",
+    "duration_ms": 1276,
+    "executor": "pi",
+    "findings_digest": "b3:d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab",
+    "inspected_output_digests": [
+        "a8842fac39ffcd3e4f63bedf49f0e02e1c46fad7",
+        "6c8ff8f2c56dd51dae37d714fb50ccedce5287fc",
+        "b3:8db69b7aad7316c1dd4750ee1d379d39e49c57e3e9b002303e74ef36390b1684"
+    ],
+    "manifest_digest": "b3:f1f1ca6a9f1d0e5c824806d0be84eb11ee0f9133c6f3c79c6b8d0f407dcc7799",
+    "model_route": "pi:lunaroute/deepseek-4.1-flash-background",
+    "receipt_version": 2,
+    "requirements_digest": "b3:e3dca6a7b708cf3189874978a99c7426b55fb5d8ecea7d9e03ae53ffacb63844",
+    "retry": {
+        "attempts": 1,
+        "exhausted": false,
+        "final_classification": "success",
+        "retries": 0
+    },
+    "reviewer_kind": "eval",
+    "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cost_usd": 0.0,
+        "input_tokens": 9220,
+        "output_tokens": 128
+    },
+    "verdict": "pass"
+}

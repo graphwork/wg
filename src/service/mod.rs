@@ -435,6 +435,128 @@ pub fn kill_process_force(pid: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Descendants of `root_pid` that a *service-lifecycle* kill may signal.
+///
+/// Unlike [`collect_process_descendants`], this never returns a detached
+/// task worker. Two guards compose:
+///
+/// 1. **Structural session guard** — every spawned worker is
+///    `setsid()`-detached, so its session id differs from the daemon's. A
+///    descendant whose session differs from the root's is skipped. This is
+///    the property that keeps an `InProgress` attempt alive across a daemon
+///    restart/crash; the worker stays a PPID child of the daemon, so only
+///    the session boundary distinguishes it from a service-internal child.
+/// 2. **Explicit registry guard** — `excluded` carries the PIDs recorded in
+///    the agent registry: a stronger, role-aware exclusion that holds even
+///    if a worker somehow stayed in the daemon's session.
+///
+/// If the root's session cannot be read (root already gone, or non-Linux),
+/// this returns no descendants at all: without a session baseline we cannot
+/// tell a detached worker from a service-internal child, and refusing to
+/// signal is the fail-closed choice.
+fn service_kill_descendants(root_pid: u32, excluded: &[u32]) -> Vec<u32> {
+    let Some(root_session) = read_proc_session(root_pid) else {
+        return Vec::new();
+    };
+    collect_process_descendants(root_pid)
+        .into_iter()
+        .filter(|pid| !excluded.contains(pid) && read_proc_session(*pid) == Some(root_session))
+        .collect()
+}
+
+/// Service-lifecycle variant of [`kill_process_graceful`] that never signals a
+/// detached/registered worker.
+///
+/// The `supervisor → daemon → worker` chain is a PPID chain even though each
+/// worker is in its own session. A plain descendant walk therefore reaches a
+/// live worker and kills it, losing an in-flight attempt on a daemon restart.
+/// This variant keeps the tree semantics for the service's own non-worker
+/// descendants while structurally excluding worker sessions and any PID listed
+/// in `excluded` (see [`service_kill_descendants`]).
+///
+/// Keep using the broad [`kill_process_graceful`] for `wg kill` / hard-cancel,
+/// where killing detached descendants is the documented intent.
+#[cfg(unix)]
+pub fn kill_process_graceful_scoped(
+    pid: u32,
+    wait_secs: u64,
+    excluded: &[u32],
+) -> anyhow::Result<()> {
+    use std::thread;
+    use std::time::Duration;
+
+    if !is_process_alive(pid) {
+        return Ok(());
+    }
+
+    // Snapshot before signalling — children reparent to init once they exit.
+    let descendants = service_kill_descendants(pid, excluded);
+
+    signal_pid(pid, libc::SIGTERM)?;
+    for child in &descendants {
+        let _ = signal_pid(*child, libc::SIGTERM);
+    }
+
+    for _ in 0..wait_secs {
+        thread::sleep(Duration::from_secs(1));
+        if !is_process_alive(pid) {
+            break;
+        }
+    }
+
+    let mut remaining: Vec<u32> = Vec::new();
+    if is_process_alive(pid) {
+        remaining.push(pid);
+    }
+    let late_descendants = service_kill_descendants(pid, excluded);
+    for child in descendants.iter().chain(late_descendants.iter()).copied() {
+        if is_process_alive(child) && !remaining.contains(&child) {
+            remaining.push(child);
+        }
+    }
+    for p in &remaining {
+        let _ = signal_pid(*p, libc::SIGKILL);
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn kill_process_graceful_scoped(
+    pid: u32,
+    wait_secs: u64,
+    _excluded: &[u32],
+) -> anyhow::Result<()> {
+    // Windows has no `setsid()` session split; fall back to the tree kill.
+    kill_process_graceful(pid, wait_secs)
+}
+
+/// Service-lifecycle variant of [`kill_process_force`] that never SIGKILLs a
+/// detached/registered worker (see [`kill_process_graceful_scoped`]).
+#[cfg(unix)]
+pub fn kill_process_force_scoped(pid: u32, excluded: &[u32]) -> anyhow::Result<()> {
+    if !is_process_alive(pid) {
+        // Root is gone: `service_kill_descendants` returns nothing without a
+        // session baseline, so there is no service tree left to reap here.
+        for child in service_kill_descendants(pid, excluded) {
+            let _ = signal_pid(child, libc::SIGKILL);
+        }
+        return Ok(());
+    }
+
+    let descendants = service_kill_descendants(pid, excluded);
+    signal_pid(pid, libc::SIGKILL)?;
+    for child in &descendants {
+        let _ = signal_pid(*child, libc::SIGKILL);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn kill_process_force_scoped(pid: u32, _excluded: &[u32]) -> anyhow::Result<()> {
+    kill_process_force(pid)
+}
+
 /// SIGKILL every descendant of `root_pid` *without* touching `root_pid`
 /// itself. Use this when the caller IS the root (e.g. a native-executor
 /// session hard-cancelling its own spawned subprocess tree — we want
@@ -502,6 +624,26 @@ pub fn read_proc_start_ticks(pid: u32) -> Option<u64> {
 
 #[cfg(not(target_os = "linux"))]
 pub fn read_proc_start_ticks(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// Read the session id of `pid` from `/proc/<pid>/stat` (field 6).
+///
+/// Spawned task workers are `setsid()`-detached, so their session differs from
+/// the daemon that spawned them. Service-lifecycle kills use this to
+/// structurally exclude detached workers from a supervisor/daemon tree kill.
+#[cfg(target_os = "linux")]
+pub fn read_proc_session(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Field 2 (comm) can contain spaces and parentheses; find the last ')'.
+    let comm_end = stat.rfind(')')?;
+    let fields: Vec<&str> = stat[comm_end + 2..].split_whitespace().collect();
+    // fields[0]=state, [1]=ppid, [2]=pgrp, [3]=session
+    fields.get(3)?.parse().ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn read_proc_session(_pid: u32) -> Option<u32> {
     None
 }
 
@@ -881,5 +1023,104 @@ mod tests {
         let mut parent = parent;
         parent.kill().ok();
         parent.wait().ok();
+    }
+
+    /// Spawn a `supervisor (root bash) → detached worker (setsid)` tree. The
+    /// worker writes its own post-setsid PID, so the value is exact even if
+    /// `setsid` forks. Returns the root child handle.
+    #[cfg(target_os = "linux")]
+    fn spawn_detached_worker_tree(pid_file: &std::path::Path) -> std::process::Child {
+        let script = format!(
+            "setsid bash -c 'echo $$ > {f}; exec sleep 300' & sleep 300",
+            f = pid_file.display()
+        );
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(script)
+            .spawn()
+            .expect("spawn supervisor tree")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_pid_file(path: &std::path::Path) -> u32 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                return pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "detached worker pid file never appeared at {}",
+                path.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// fix-attempt-loss (Fix A): a service-lifecycle kill must not signal a
+    /// detached (`setsid`) worker, even though the worker is still a PPID
+    /// descendant of the daemon/supervisor. This is the exact shape that lost
+    /// four in-flight attempts on a daemon restart.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scoped_service_kill_preserves_detached_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pid_file = tmp.path().join("worker.pid");
+        let mut root = spawn_detached_worker_tree(&pid_file);
+        let worker_pid = wait_for_pid_file(&pid_file);
+        let root_pid = root.id();
+
+        // Sanity: the worker is a PPID descendant of the root yet lives in a
+        // different session — the structural property the scoped kill keys on.
+        assert!(
+            collect_process_descendants(root_pid).contains(&worker_pid),
+            "worker {worker_pid} must be a PPID descendant of root {root_pid}"
+        );
+        assert_ne!(
+            read_proc_session(root_pid),
+            read_proc_session(worker_pid),
+            "worker must be setsid-detached (different session)"
+        );
+
+        kill_process_graceful_scoped(root_pid, 1, &[]).expect("scoped kill");
+        root.wait().ok();
+
+        assert!(
+            is_process_alive(worker_pid),
+            "detached worker {worker_pid} must survive a service-lifecycle kill"
+        );
+
+        // Cleanup the surviving worker.
+        unsafe {
+            libc::kill(worker_pid as i32, libc::SIGKILL);
+        }
+    }
+
+    /// The broad tree kill (`wg kill` / hard-cancel) must keep reaping
+    /// `setsid` descendants; only the service lifecycle uses the scoped form.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn broad_kill_still_reaps_detached_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pid_file = tmp.path().join("worker.pid");
+        let mut root = spawn_detached_worker_tree(&pid_file);
+        let worker_pid = wait_for_pid_file(&pid_file);
+        let root_pid = root.id();
+
+        kill_process_graceful(root_pid, 1).expect("broad kill");
+        root.wait().ok();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while is_process_alive(worker_pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if is_process_alive(worker_pid) {
+            unsafe {
+                libc::kill(worker_pid as i32, libc::SIGKILL);
+            }
+            panic!("broad tree kill should have reaped detached worker {worker_pid}");
+        }
     }
 }

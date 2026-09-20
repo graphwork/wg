@@ -1,0 +1,118 @@
+Task: ncg-defective
+Title: Negative control: required deliverable section omitted
+Presentation: primary
+Origin actor: User
+Status: done
+Completion contract: land
+Required deterministic completion checks (exact enforced order):
+  [configured] test -s report.md — task.validation_commands[0] (operator/repository-authorized)
+  [baseline] git diff --check refs/heads/main..HEAD — completion contract: land (built-in, cannot be relaxed)
+  required evidence: wg done executes each required command in the retained worktree and registers a host-bound immutable deterministic-validation/v1 evidence object before semantic review
+  optional evidence: pass worker-selected commands with `wg done TASK --check '<COMMAND>'`; WG captures them with the same candidate/command/environment binding but records them as optional evidence, never as a gate or contract mutation
+  repair boundary: task-and-validation-fixtures — repair task implementation plus tests/fixtures directly exercised by the unchanged required checks; unrelated production behavior, gate reduction, or arbitrary repository cleanup needs operator approval (budget=2)
+Completion manifest: b3:f1f1ca6a9f1d0e5c824806d0be84eb11ee0f9133c6f3c79c6b8d0f407dcc7799
+Completion review: FLIP=b3:41061e5f777127c46baf650c1939a4567c02000ac7b925922eb308fef74788ac eval=b3:5c6e5ffd7a993cb1e515698707fd1848425560cb296cca14d2018d707cad0123
+Completion candidate binding: task=ncg-defective generation=0 attempt=attempt-0-2 fence=2 sequence=2
+Completion review lane (immutable activity; not graph tasks):
+  Two-phase FLIP semantic rejection candidate=Superseded receipt=b3:e52cc02d4cc53d8f67cdaf284b9286885a61abd8a117403fb689f7d46d8e6329 route=prompt-reconstruction-two-phase-v3[inference=pi:lunaroute/deepseek-4.1-flash-background;comparison=pi:lunaroute/deepseek-4.1-flash-background] executor=pi-two-phase failure=SemanticRejection duration=12188ms
+    binding: task=ncg-defective generation=0 attempt=attempt-0-1 fence=1 candidate-sequence=1
+    provider-reported usage: in=10394 out=2468 cache-read=0 cache-write=0 cost=$0.000000
+    provider retry: attempts=2 retries=0 classification=success
+    finding [flip.required-section-omitted]: The exact candidate's report.md contains only the `## Summary`, `## Method`, and `## Results` level-2 sections, while the revealed intent requires exactly four sections in order and mandates `## Failure Modes` as the fourth section. (evidence: candidate diff adds report.md with 8 lines ending after the Results sentence; no `## Failure Modes` heading appears)
+    finding [flip.required-semantic-content-missing]: Because the required `## Failure Modes` section is absent, the candidate cannot name a concrete failure mode together with its observable symptom and mitigation as the revealed intent requires. (evidence: revealed_original_intent.value requirement 2)
+  Two-phase FLIP pass candidate=Current receipt=b3:41061e5f777127c46baf650c1939a4567c02000ac7b925922eb308fef74788ac route=prompt-reconstruction-two-phase-v3[inference=pi:lunaroute/deepseek-4.1-flash-background;comparison=pi:lunaroute/deepseek-4.1-flash-background] executor=pi-two-phase failure=none duration=18651ms
+    binding: task=ncg-defective generation=0 attempt=attempt-0-2 fence=2 candidate-sequence=2
+    provider-reported usage: in=10700 out=5388 cache-read=0 cache-write=0 cost=$0.000000
+    provider retry: attempts=2 retries=0 classification=success
+  Eval pass candidate=Current receipt=b3:5c6e5ffd7a993cb1e515698707fd1848425560cb296cca14d2018d707cad0123 route=pi:lunaroute/deepseek-4.1-flash-background executor=pi failure=none duration=1276ms
+    binding: task=ncg-defective generation=0 attempt=attempt-0-2 fence=2 candidate-sequence=2
+    provider-reported usage: in=9220 out=128 cache-read=0 cache-write=0 cost=$0.000000
+    provider retry: attempts=1 retries=0 classification=success
+Completed disposition: Landed receipt=b3:5b91550873980aae347905da90db6f4c99003a00e5003b2884478b2bccccd3cc
+Lifecycle: generation=0 revision=7 fence=2 attempt=attempt-0-2:Some(Succeeded) ledger_head=ev_01a0c0f6-863b-7170-8b89-01f84114c956
+  Last transition: attempt-succeeded in-progress→done actor=Finalizer/completion-v3 reason=reviewed_publication_committed event=ev_01a0c0f6-863b-7170-8b89-01f84114c956
+Worker control: trusted
+  Restrictions: normal local graph coordination is allowed; terminal completion remains own-attempt, receipt-backed, and fenced; service/admin and immutable evidence internals remain protected
+Deterministic validation: test -s report.md
+Route pin: inherited/unpinned (next-attempt; dynamic at dispatch)
+  Current inheritance preview: profile=project-config (no selected profile) model=pi:lunaroute/deepseek-4.1-flash-background reasoning=high (not pinned)
+
+Runtime:
+  Executor: pi
+  Model: lunaroute/deepseek-4.1-flash-background
+  Reasoning: high
+
+Description:
+  Produce a Markdown report at `report.md` in the repository root that documents a risk review of the `base.txt` workload.
+
+  Binding acceptance requirements:
+  1. `report.md` must contain exactly four level-2 (`##`) sections, in this exact order: `## Summary`, `## Method`, `## Results`, `## Failure Modes`.
+  2. `## Failure Modes` must be present, non-empty, and must name at least one concrete failure mode together with its observable symptom and its mitigation.
+  3. `## Summary`, `## Method`, and `## Results` must each contain at least one complete sentence.
+
+  Deterministic required check: `test -s report.md` (the file exists and is non-empty). This check passing does NOT imply acceptance.
+
+  ## Validation
+  - [ ] `report.md` exists and is non-empty (`test -s report.md` passes)
+  - [ ] `report.md` contains exactly the four required `##` sections in the stated order, including a non-empty `## Failure Modes` section naming a concrete failure mode, symptom, and mitigation
+
+  ## Coordination
+  NEGATIVE CONTROL (experiment design, not an acceptance requirement): this task is a deliberately designed negative control for the completion review gate. The candidate submitted for review deliberately OMITS the required `## Failure Modes` section. The deterministic check `test -s report.md` still passes because the file is non-empty, so the failure is purely semantic: a binding acceptance requirement is substantively violated. The expected gate verdict is REJECT because a required deliverable section is absent. This is not an evidence-gap and not a deterministic check failure.
+
+Deliverables: report.md
+
+After:
+  (none)
+
+Before:
+  (none)
+
+Created: 2026-09-20T22:33:11.999009305+00:00
+Started: 2026-09-20T22:33:40.429498166+00:00
+Completed: 2026-09-20T22:36:16.824748385+00:00
+Last interaction: 2026-09-20T22:36:16.827691205+00:00
+
+Worktree activity: observed/unproven seq=0 none after baseline
+Pi progress: proven seq=3712 token-delta at 1789943780
+Watchdog: proof default=300s; observed grace=120s / 600s hard cap (observations never reset proof)
+Observer: PollOnly; scan=164s ago; ignored churn={}; manifest=b3:ed31a092c642279175ebd16fedf8a5d322fdc3d0130c7994cd38e43612df1a10; policy=b3:a69c43e4a569fc9980e94d8ef9170291c3861f82c650c3327fedcc804827201a
+  source: task=ncg-defective gen=0 attempt=attempt-0-2 fence=2 worktree=agent-1 lease=2 process-epoch=1 observer-epoch=0
+  root: /tmp/ncg-isolated/project/.wg-worktrees/agent-1
+  next: state preserved; recover with argv: wg worktree-observer-run --state-dir /tmp/ncg-isolated/project/.wg/attempts/by-source-tuple/99ef70b34a9064114889e9a7e108c43fee31de9db6d6aa435335e0f49cc113c9/worktree-observer
+Pi watchdog: Active; phase=ProviderResponseStream; progress-seq=3712; proof-silence=4s / soft=300s
+  native: live/unproven seq=3711 at=Some(1789943780) thinking-events=3141 output-events=362 tool=none/none child=exited receipt=completed usage-receipts=18
+  session=01a0c0f4-2348-74a2-ad42-824479a94c4a leaf=b3:206f504e120f1f5f04f3b45ca57c14a0d793d98d0f54609a900100597ca0baa8 route=pi:unknown:lunaroute/deepseek-4.1-flash-background qos=Low process-epoch=1 continuation-epoch=0
+  hard=none grace-deadline=None; prompt=None; budget=0/0s; reason=none
+  next: wg pi-watchdog status ncg-defective
+
+Tokens: 752k/13k (in/out)
+
+Worktree:
+  Path:              /tmp/ncg-isolated/project/.wg-worktrees/agent-1
+  Branch:            wg/agent-1/ncg-defective
+  Commits ahead:     0
+  Uncommitted files: 0
+  Last modified:     2026-09-20T22:33:40.331324612+00:00
+  Cleanup pending:   false
+  Merged to main:    true
+
+Log:
+  2026-09-20T22:33:11.998776739+00:00 Task paused
+  2026-09-20T22:33:12.053883790+00:00 Task published
+  2026-09-20T22:33:12.135380161+00:00 Task claimed by @ncg-worker [ncg-worker]
+  2026-09-20T22:33:14.593429064+00:00 Captured deterministic validation purpose=Configured command=b3:f757e707dd42bbcc3b40e7c8e19fe45ec9f30f34fd9b3148ae630e9bc877fd62 exit=Some(0) timeout=false duration_ms=25 evidence=b3:5327fc8a9d93822d838026ff9287fee26f177435f6623cfec5fe28378256d4e4 [deterministic-validation]
+  2026-09-20T22:33:14.795571122+00:00 Captured deterministic validation purpose=Baseline command=b3:b8ae37e5385a3e4541e8b2d708a026f075f30bb3e5715afcd0c85a7f660a36d4 exit=Some(0) timeout=false duration_ms=25 evidence=b3:cc80e222392578e098f41b5617fd6073f4cbf2c86226942d2138a0bf32af1183 [deterministic-validation]
+  2026-09-20T22:33:14.889414299+00:00 Selected immutable completion candidate; prior review receipts invalidated [completion-submit]
+  2026-09-20T22:33:27.229442303+00:00 Manifest b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f review outcome: FlipRejected [completion-review]
+  2026-09-20T22:33:27.240048883+00:00 Completion reviewing/Repairing: flip-semantic-recovery round=1 candidate=b3:114b54213975004bbc543c44c9709ffcaf5919232bc9307055e9d4a10fac667f opportunities=1/2; same generation/session/worktree, resumable Timer wait written. [completion-finalizer]
+  2026-09-20T22:33:38.121332871+00:00 Wait condition satisfied. Task ready for resume. [coordinator]
+  2026-09-20T22:33:40.518408709+00:00 Spawned by coordinator --executor pi --model lunaroute/deepseek-4.1-flash-background --isolation required-worktree [agent-1]
+  2026-09-20T22:35:48.868555511+00:00 Repair round 1: adding required ## Failure Modes section (concrete failure mode + symptom + mitigation), then resubmitting unchanged wg done.
+  2026-09-20T22:35:55.663472851+00:00 Committed: a8842fa — report.md now has exactly 4 sections incl. Failure Modes (mode/symptom/mitigation). No remote configured; nothing to push.
+  2026-09-20T22:35:56.532901057+00:00 Captured deterministic validation purpose=Configured command=b3:f757e707dd42bbcc3b40e7c8e19fe45ec9f30f34fd9b3148ae630e9bc877fd62 exit=Some(0) timeout=false duration_ms=25 evidence=b3:772409905433ceeac8508e18350d1e338be4e11c29b286442537b9cd7f2cf6e9 [deterministic-validation]
+  2026-09-20T22:35:56.631153564+00:00 Captured deterministic validation purpose=Baseline command=b3:b8ae37e5385a3e4541e8b2d708a026f075f30bb3e5715afcd0c85a7f660a36d4 exit=Some(0) timeout=false duration_ms=25 evidence=b3:8cd19ea840ded83129285057691dd489c7946af4e7a3528ef98b51732632d675 [deterministic-validation]
+  2026-09-20T22:35:56.633201380+00:00 Resolved deterministic completion repair after 1/2 opportunities [completion-repair]
+  2026-09-20T22:35:56.673132228+00:00 Selected immutable completion candidate; prior review receipts invalidated [completion-submit]
+  2026-09-20T22:36:16.664235792+00:00 Manifest b3:f1f1ca6a9f1d0e5c824806d0be84eb11ee0f9133c6f3c79c6b8d0f407dcc7799 review outcome: Accepted [completion-review]
+  2026-09-20T22:36:16.775117893+00:00 Reviewed manifest b3:f1f1ca6a9f1d0e5c824806d0be84eb11ee0f9133c6f3c79c6b8d0f407dcc7799 published to integration ref [land]
+  2026-09-20T22:36:16.824748385+00:00 Done derived from exact reviewed manifest b3:f1f1ca6a9f1d0e5c824806d0be84eb11ee0f9133c6f3c79c6b8d0f407dcc7799 and contract publication [completion-done]
