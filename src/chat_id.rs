@@ -241,6 +241,25 @@ pub fn chat_tmux_session_is_live(workgraph_dir: &Path, chat_id: u32) -> bool {
     tmux_has_session(&session)
 }
 
+/// PID of the process running in the persistent TUI tmux session backing
+/// `chat_id`. `None` when the session does not exist, tmux is unavailable, or
+/// the pane PID cannot be parsed. This is the identity half of the TUI-driven
+/// handler: a replaced pane necessarily has a different PID.
+pub fn chat_tmux_pane_pid(workgraph_dir: &Path, chat_id: u32) -> Option<u32> {
+    let session = prepare_chat_tmux_session_for_id(workgraph_dir, chat_id);
+    let out = Command::new("tmux")
+        .args(["list-panes", "-t", &session, "-F", "#{pane_pid}"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|line| line.trim().parse().ok())
+}
+
 /// Best-effort: kill the tmux session backing a given chat id. No-op
 /// when tmux is not on PATH or the session doesn't exist. Used by every
 /// chat-archive / chat-delete path so we don't accumulate orphan

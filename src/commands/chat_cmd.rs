@@ -1293,6 +1293,32 @@ pub(crate) struct BinaryIdentity {
     pub digest: Option<String>,
 }
 
+/// A handler's process identity, captured before/after a reload. Provenance is
+/// explicit (`source`) because a daemon handler holds WG's `.handler.pid` lock
+/// while a TUI-driven handler owns a persistent tmux pane and holds no lock.
+/// The `pid`/`started_at` pair defeats PID reuse: the same PID with a
+/// different start time is a different generation. `live == false` means no
+/// handler currently owns the chat.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct HandlerIdentity {
+    pub source: String,
+    pub pid: Option<u32>,
+    /// Lock-file ISO timestamp (daemon handler) or `/proc` start time (pane).
+    pub started_at: Option<String>,
+    pub live: bool,
+}
+
+impl HandlerIdentity {
+    fn none() -> Self {
+        Self {
+            source: "none".to_string(),
+            pid: None,
+            started_at: None,
+            live: false,
+        }
+    }
+}
+
 /// The full observable identity of a chat + its runtime before or after a
 /// reload. Captured for before/after comparison.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -1310,6 +1336,7 @@ pub(crate) struct ChatReloadIdentity {
     pub cache_state: String,
     pub session_file: Option<String>,
     pub session_message_count: Option<usize>,
+    pub handler: HandlerIdentity,
 }
 
 /// The before→after delta `wg chat reload` prints.
@@ -1321,6 +1348,10 @@ pub(crate) struct ChatReloadDelta {
     pub session_file_preserved: bool,
     pub message_count_before: Option<usize>,
     pub message_count_after: Option<usize>,
+    /// True only when the handler's process identity actually changed (new pid
+    /// or start time / new ownership source). A reload that leaves the old
+    /// handler running is refused before this is ever printed.
+    pub handler_replaced: bool,
 }
 
 /// A compact, serializable view of the plugin resolution the reload performed.
@@ -1351,9 +1382,14 @@ pub(crate) trait ChatReloadRuntime {
     fn plugin_status(&self) -> Result<PluginStatus>;
     /// Signal the live handler and ask the supervisor to respawn it against the
     /// same session (the exact `SetChatExecutor` path `wg chat resume` uses).
+    /// For a TUI-driven chat this first takes ownership of the pane (see
+    /// [`take_tui_chat_ownership`]) — the supervisor otherwise deliberately
+    /// defers a respawn while a TUI tmux pane is live, so the signal alone
+    /// would leave the old handler running.
     fn respawn_handler(&self, dir: &Path, cid: u32) -> Result<()>;
-    /// Concrete liveness: handler lock or TUI tmux owner is live.
-    fn handler_is_live(&self, dir: &Path, cid: u32) -> bool;
+    /// The current handler's process identity. `HandlerIdentity::live == false`
+    /// means no handler owns the chat right now.
+    fn handler_identity(&self, dir: &Path, cid: u32) -> HandlerIdentity;
 }
 
 /// The production runtime: real `ensure-pi-plugin`, real daemon IPC, real lock
@@ -1371,12 +1407,73 @@ impl ChatReloadRuntime for RealChatReloadRuntime {
     }
 
     fn respawn_handler(&self, dir: &Path, cid: u32) -> Result<()> {
+        // TUI-driven chats are not addressable by the daemon's `.handler.pid`
+        // signal and the supervisor refuses to spawn beside a live pane, so the
+        // `SetChatExecutor` IPC below would be a no-op for them. Take ownership
+        // first: stop the pane + clear the `.tui-driven` sentinel, then let the
+        // supervisor respawn so the TUI re-attaches to a fresh pane on its next
+        // view/refresh. See this function's doc for the live-TUI interaction.
+        take_tui_chat_ownership(dir, cid);
         request_chat_resume(dir, cid)
     }
 
-    fn handler_is_live(&self, dir: &Path, cid: u32) -> bool {
-        chat_handler_is_live(dir, cid)
+    fn handler_identity(&self, dir: &Path, cid: u32) -> HandlerIdentity {
+        capture_handler_identity(dir, cid)
     }
+}
+
+/// Capture the chat's concrete handler identity. Prefers the daemon lock
+/// (`.handler.pid`) because a supervised handler owns it; falls back to the
+/// persistent TUI tmux pane PID for vendor panes that never take WG's lock.
+/// Returns `HandlerIdentity::none()` when neither owner is live.
+pub(crate) fn capture_handler_identity(dir: &Path, cid: u32) -> HandlerIdentity {
+    let chat_ref = format!("chat-{cid}");
+    let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+    if let Ok(Some(holder)) = worksgood::session_lock::read_holder(&chat_dir)
+        && holder.alive
+    {
+        return HandlerIdentity {
+            source: "daemon-lock".to_string(),
+            pid: Some(holder.pid),
+            started_at: (!holder.started_at.is_empty()).then(|| holder.started_at.clone()),
+            live: true,
+        };
+    }
+    if let Some(pid) = worksgood::chat_id::chat_tmux_pane_pid(dir, cid) {
+        return HandlerIdentity {
+            source: "tui-tmux-pane".to_string(),
+            pid: Some(pid),
+            started_at: worksgood::session_lock::process_start_time(pid),
+            live: true,
+        };
+    }
+    HandlerIdentity::none()
+}
+
+/// Take ownership of a TUI-driven chat's handler so the daemon supervisor will
+/// actually respawn it. Returns `true` when a TUI owner was present and torn
+/// down.
+///
+/// Interaction with a live user-facing TUI: the pane process is killed and the
+/// `.tui-driven` sentinel is cleared. A TUI currently attached to that pane
+/// sees its PTY close; on the next view/refresh of the chat its
+/// `maybe_auto_enable_chat_pty` path finds no live pane and spawns a fresh one
+/// (which loads the freshly materialized plugin). This is a takeover, not a
+/// cooperative handshake — `wg chat reload` is an explicit operator action and
+/// the caller has already proven a live owner exists.
+pub(crate) fn take_tui_chat_ownership(dir: &Path, cid: u32) -> bool {
+    let chat_ref = format!("chat-{cid}");
+    let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+    let sentinel_live = worksgood::session_lock::active_tui_driver_pid(&chat_dir).is_some();
+    let tmux_live = worksgood::chat_id::chat_tmux_session_is_live(dir, cid);
+    if !sentinel_live && !tmux_live {
+        return false;
+    }
+    if tmux_live {
+        worksgood::chat_id::kill_chat_tmux_session_for_id(dir, cid);
+    }
+    worksgood::session_lock::clear_tui_driver_sentinel(&chat_dir);
+    true
 }
 
 /// Content digest of an executable, BLAKE3 over the full bytes. Content (not
@@ -1418,8 +1515,9 @@ fn count_jsonl_messages(path: &Path) -> Option<usize> {
 }
 
 /// Capture the observable identity of a chat's runtime. Pure with respect to
-/// `plugin` and the injected binary paths, so tests can pin the delta without a
-/// live daemon or a real `pi` install.
+/// `plugin`, the injected binary paths, and the pre-captured `handler`, so
+/// tests can pin the delta without a live daemon or a real `pi` install.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn capture_chat_reload_identity(
     dir: &Path,
     cid: u32,
@@ -1428,6 +1526,7 @@ pub(crate) fn capture_chat_reload_identity(
     wg_binary: Option<&Path>,
     pi_binary: Option<&Path>,
     plugin: &PluginStatus,
+    handler: HandlerIdentity,
 ) -> ChatReloadIdentity {
     let session_file = find_chat_session_file(dir, cid);
     let session_message_count = session_file.as_deref().and_then(count_jsonl_messages);
@@ -1445,6 +1544,7 @@ pub(crate) fn capture_chat_reload_identity(
         cache_state: format!("{:?}", plugin.cache_state),
         session_file: session_file.map(|p| p.display().to_string()),
         session_message_count,
+        handler,
     }
 }
 
@@ -1462,6 +1562,7 @@ pub(crate) fn compute_reload_delta(
             && before.session_file == after.session_file,
         message_count_before: before.session_message_count,
         message_count_after: after.session_message_count,
+        handler_replaced: before.handler != after.handler,
     }
 }
 
@@ -1511,10 +1612,59 @@ fn plugin_resolution(plugin: &ResolvedPlugin) -> PluginResolution {
     }
 }
 
+/// Outcome of waiting for a respawned handler whose identity differs from the
+/// one captured before the respawn.
+enum HandlerReplaceOutcome {
+    /// A live handler with a NEW identity holds the chat.
+    Replaced(HandlerIdentity),
+    /// A live handler is present but is the SAME generation as before — the
+    /// respawn did not actually replace it.
+    StillOld(HandlerIdentity),
+    /// No live handler appeared at all.
+    NotLive,
+}
+
+/// Wait until a live handler whose identity DIFFERS from `before` holds the
+/// chat, requiring that state to hold for [`RESUME_LIVE_SETTLE`] (clamped to
+/// `timeout`). Returns the new identity on success. When the deadline passes,
+/// distinguishes "a live handler is still the old one" (refuse as NOT REPLACED)
+/// from "nothing is live" (refuse as NOT LIVE) so the caller can print the
+/// right error. `before.live == false` (no prior handler) is satisfied by any
+/// live identity.
+fn wait_for_replaced_handler(
+    timeout: Duration,
+    poll: Duration,
+    before: &HandlerIdentity,
+    mut current: impl FnMut() -> HandlerIdentity,
+) -> HandlerReplaceOutcome {
+    let settle = RESUME_LIVE_SETTLE.min(timeout);
+    let deadline = Instant::now() + timeout;
+    let mut replaced_since: Option<Instant> = None;
+    loop {
+        let last = current();
+        if last.live && &last != before {
+            let since = *replaced_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= settle {
+                return HandlerReplaceOutcome::Replaced(last);
+            }
+        } else {
+            replaced_since = None;
+        }
+        if Instant::now() >= deadline {
+            return if last.live {
+                HandlerReplaceOutcome::StillOld(last)
+            } else {
+                HandlerReplaceOutcome::NotLive
+            };
+        }
+        std::thread::sleep(poll.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
 /// One reload: capture → ensure → gate → respawn (signals + restarts the live
-/// handler over the same session) → wait-live → capture → delta. Every refusal
-/// happens before the respawn when possible, so a refused reload leaves the
-/// live handler running.
+/// handler over the same session) → wait for a REPLACED handler → capture →
+/// delta. Every refusal happens before the respawn when possible, so a refused
+/// reload leaves the live handler running.
 pub(crate) fn reload_one(
     dir: &Path,
     cid: u32,
@@ -1527,8 +1677,10 @@ pub(crate) fn reload_one(
     let (executor, model) = reconstruct_resume_metadata(dir, cid);
 
     // BEFORE identity, captured against the cache as it exists right now (so a
-    // stale cache shows up in the delta when ensure refreshes it).
+    // stale cache shows up in the delta when ensure refreshes it), including
+    // the concrete handler process the respawn is meant to replace.
     let before_status = runtime.plugin_status()?;
+    let before_handler = runtime.handler_identity(dir, cid);
     let before = capture_chat_reload_identity(
         dir,
         cid,
@@ -1537,6 +1689,7 @@ pub(crate) fn reload_one(
         wg_binary,
         pi_binary,
         &before_status,
+        before_handler.clone(),
     );
 
     // Refuse BEFORE respawning the live handler: the chat must stay live when
@@ -1546,19 +1699,34 @@ pub(crate) fn reload_one(
     plugin_cache_freshness_gate(&after_ensure_status)?;
     session_file_gate(before.session_file.as_deref(), cid)?;
 
-    // `request_chat_resume` signals the live handler to exit and the supervisor
-    // respawns it against the same session dir/id with the freshly materialized
-    // plugin. This is the exact proven path `wg chat resume` uses.
+    // `respawn_handler` signals the live handler to exit (and, for a TUI-driven
+    // chat, stops the pane + clears the sentinel) so the supervisor respawns
+    // against the same session with the freshly materialized plugin. Success is
+    // NOT proven by liveness alone: the pre-existing handler is itself live, so
+    // we REQUIRE a live identity different from `before_handler`. Otherwise the
+    // old process — and its old plugin — would keep serving the session.
     runtime.respawn_handler(dir, cid)?;
-    if !wait_for_stable_chat_runtime_with(live_timeout, poll, || runtime.handler_is_live(dir, cid))
-    {
-        anyhow::bail!(
+    let after_handler = match wait_for_replaced_handler(live_timeout, poll, &before_handler, || {
+        runtime.handler_identity(dir, cid)
+    }) {
+        HandlerReplaceOutcome::Replaced(handler) => handler,
+        HandlerReplaceOutcome::StillOld(handler) => anyhow::bail!(
+            "WG-CHAT-RELOAD-NOT-REPLACED: handler not replaced for chat {cid} within {}s — the handler identity is unchanged (source={} pid={:?} started_at={:?}). \
+             Supervisor accepted the respawn but the same generation is still serving the session; the chat is resumable with `wg chat resume {cid}`. \
+             Inspect {}/service/daemon.log.",
+            live_timeout.as_secs(),
+            handler.source,
+            handler.pid,
+            handler.started_at,
+            dir.display()
+        ),
+        HandlerReplaceOutcome::NotLive => anyhow::bail!(
             "WG-CHAT-RELOAD-NOT-LIVE: supervisor accepted the respawn for chat {cid}, but no live handler appeared within {}s. \
              The chat is stopped but resumable with `wg chat resume {cid}`; inspect {}/service/daemon.log for the spawn error.",
             live_timeout.as_secs(),
             dir.display()
-        );
-    }
+        ),
+    };
 
     let after_status = runtime.plugin_status()?;
     let after = capture_chat_reload_identity(
@@ -1569,8 +1737,18 @@ pub(crate) fn reload_one(
         wg_binary,
         pi_binary,
         &after_status,
+        after_handler,
     );
     let delta = compute_reload_delta(&before, &after);
+    // Belt-and-braces: the wait above already guarantees this, but make the
+    // final success path itself fail closed if the identities ever compare
+    // equal (e.g. a future refactor bypasses the wait).
+    if !delta.handler_replaced {
+        anyhow::bail!(
+            "WG-CHAT-RELOAD-NOT-REPLACED: handler not replaced for chat {cid}; the handler identity is unchanged after the reload, refusing to report success. \
+             The chat is resumable with `wg chat resume {cid}`."
+        );
+    }
 
     Ok(ChatReloadOutcome {
         chat_id: cid,
@@ -1603,6 +1781,11 @@ fn print_reload_outcome(outcome: &ChatReloadOutcome) {
         a.embed_digest
     );
     println!(
+        "  handler:  {} -> {}",
+        format_handler_identity(&b.handler),
+        format_handler_identity(&a.handler)
+    );
+    println!(
         "  session:  {} ({} messages)",
         a.session_file.as_deref().unwrap_or("<none>"),
         a.session_message_count
@@ -1610,10 +1793,11 @@ fn print_reload_outcome(outcome: &ChatReloadOutcome) {
             .unwrap_or_else(|| "?".to_string())
     );
     println!(
-        "  delta:    wg-binary={} pi-binary={} plugin-digest={} session={}",
+        "  delta:    wg-binary={} pi-binary={} plugin-digest={} handler={} session={}",
         changed_label(d.wg_binary_changed),
         changed_label(d.pi_binary_changed),
         changed_label(d.plugin_digest_changed),
+        changed_label(d.handler_replaced),
         if d.session_file_preserved {
             "preserved"
         } else {
@@ -1635,6 +1819,18 @@ fn print_reload_outcome(outcome: &ChatReloadOutcome) {
 
 fn changed_label(changed: bool) -> &'static str {
     if changed { "CHANGED" } else { "unchanged" }
+}
+
+fn format_handler_identity(handler: &HandlerIdentity) -> String {
+    match handler.pid {
+        Some(pid) => format!(
+            "{}:pid={} started_at={}",
+            handler.source,
+            pid,
+            handler.started_at.as_deref().unwrap_or("?")
+        ),
+        None => "none".to_string(),
+    }
 }
 
 /// `wg chat reload <ref>` / `wg chat reload --all` — the one session-preserving
@@ -2721,22 +2917,56 @@ mod tests {
         }
     }
 
-    /// Injected fake handler + daemon: statuses are returned in call order
-    /// (before-capture, after-ensure, after-respawn); liveness flips on
-    /// stop/respawn.
+    fn handler_ident(source: &str, pid: u32, started_at: &str) -> HandlerIdentity {
+        HandlerIdentity {
+            source: source.to_string(),
+            pid: Some(pid),
+            started_at: Some(started_at.to_string()),
+            live: true,
+        }
+    }
+
+    /// Injected fake handler + daemon: `statuses` are returned in call order
+    /// (before-capture, after-ensure, after-respawn). `handler_identity`
+    /// returns `before_handler` until `respawn_handler` runs, then
+    /// `after_handler`. `respawn_calls` lets refusal paths prove they never
+    /// stopped the live handler.
     struct FakeReloadRuntime {
         statuses: std::cell::RefCell<Vec<PluginStatus>>,
-        live: std::cell::Cell<bool>,
-        live_after_respawn: bool,
+        before_handler: HandlerIdentity,
+        after_handler: HandlerIdentity,
+        respawned: std::cell::Cell<bool>,
         respawn_calls: std::cell::Cell<u32>,
     }
 
     impl FakeReloadRuntime {
+        /// Convenience for the common case: a handler that IS replaced
+        /// (pid 100 -> pid 200) and is live afterwards when requested.
         fn new(before: PluginStatus, after: PluginStatus, live_after_respawn: bool) -> Self {
+            let after_handler = if live_after_respawn {
+                handler_ident("daemon-lock", 200, "2026-01-01T00:00:01Z")
+            } else {
+                HandlerIdentity::none()
+            };
+            Self::with_handlers(
+                before,
+                after,
+                handler_ident("daemon-lock", 100, "2026-01-01T00:00:00Z"),
+                after_handler,
+            )
+        }
+
+        fn with_handlers(
+            before: PluginStatus,
+            after: PluginStatus,
+            before_handler: HandlerIdentity,
+            after_handler: HandlerIdentity,
+        ) -> Self {
             Self {
                 statuses: std::cell::RefCell::new(vec![before, after.clone(), after]),
-                live: std::cell::Cell::new(true),
-                live_after_respawn,
+                before_handler,
+                after_handler,
+                respawned: std::cell::Cell::new(false),
                 respawn_calls: std::cell::Cell::new(0),
             }
         }
@@ -2756,11 +2986,15 @@ mod tests {
         }
         fn respawn_handler(&self, _dir: &Path, _cid: u32) -> Result<()> {
             self.respawn_calls.set(self.respawn_calls.get() + 1);
-            self.live.set(self.live_after_respawn);
+            self.respawned.set(true);
             Ok(())
         }
-        fn handler_is_live(&self, _dir: &Path, _cid: u32) -> bool {
-            self.live.get()
+        fn handler_identity(&self, _dir: &Path, _cid: u32) -> HandlerIdentity {
+            if self.respawned.get() {
+                self.after_handler.clone()
+            } else {
+                self.before_handler.clone()
+            }
         }
     }
 
@@ -2796,6 +3030,8 @@ mod tests {
 
         let stale = fake_plugin_status(Source::Cache, CacheState::Drift, Some("b3:old"));
         let fresh = fake_plugin_status(Source::Cache, CacheState::Current, Some("b3:embed"));
+        let handler_a = handler_ident("daemon-lock", 100, "2026-01-01T00:00:00Z");
+        let handler_b = handler_ident("daemon-lock", 200, "2026-01-01T00:00:01Z");
 
         let before = capture_chat_reload_identity(
             dir,
@@ -2805,6 +3041,7 @@ mod tests {
             Some(&bin_a),
             Some(&pi_a),
             &stale,
+            handler_a.clone(),
         );
         let after = capture_chat_reload_identity(
             dir,
@@ -2814,6 +3051,7 @@ mod tests {
             Some(&bin_b),
             Some(&pi_b),
             &fresh,
+            handler_b,
         );
 
         assert_eq!(
@@ -2842,10 +3080,11 @@ mod tests {
             delta.session_file_preserved,
             "same transcript path => preserved"
         );
+        assert!(delta.handler_replaced, "different handler pid => replaced");
         assert_eq!(delta.message_count_before, Some(3));
         assert_eq!(delta.message_count_after, Some(3));
 
-        // Same bytes + same cache digest => everything unchanged.
+        // Same bytes + same cache digest + same handler => everything unchanged.
         let same = capture_chat_reload_identity(
             dir,
             5,
@@ -2854,11 +3093,13 @@ mod tests {
             Some(&bin_a),
             Some(&pi_a),
             &stale,
+            handler_a,
         );
         let no_delta = compute_reload_delta(&before, &same);
         assert!(!no_delta.wg_binary_changed);
         assert!(!no_delta.pi_binary_changed);
         assert!(!no_delta.plugin_digest_changed);
+        assert!(!no_delta.handler_replaced);
         assert!(no_delta.session_file_preserved);
     }
 
@@ -2877,14 +3118,112 @@ mod tests {
             &runtime,
             None,
             None,
-            Duration::from_millis(50),
+            Duration::from_millis(200),
             Duration::from_millis(1),
         )
         .expect("reload should succeed with a live respawn");
 
         assert_eq!(outcome.delta.plugin_digest_changed, true);
         assert_eq!(outcome.delta.session_file_preserved, true);
+        assert_eq!(outcome.delta.handler_replaced, true);
+        assert_eq!(outcome.before.handler.pid, Some(100));
+        assert_eq!(outcome.after.handler.pid, Some(200));
         assert_eq!(runtime.respawn_calls.get(), 1);
+    }
+
+    /// The regression this task exists for: a reload that leaves the SAME
+    /// handler running must NOT report success. The old wait only required
+    /// liveness, which the pre-existing handler satisfies instantly.
+    #[test]
+    fn reload_refuses_when_handler_identity_unchanged() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        write_session_file(dir, 5, 1);
+        let fresh = fake_plugin_status(Source::Cache, CacheState::Current, Some("b3:embed"));
+        let same = handler_ident("daemon-lock", 100, "2026-01-01T00:00:00Z");
+        let runtime = FakeReloadRuntime::with_handlers(fresh.clone(), fresh, same.clone(), same);
+
+        let err = reload_one(
+            dir,
+            5,
+            &runtime,
+            None,
+            None,
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+        )
+        .expect_err("unchanged handler identity must be refused");
+        let msg = format!("{err}");
+        assert!(msg.contains("WG-CHAT-RELOAD-NOT-REPLACED"), "{msg}");
+        assert!(msg.contains("handler identity is unchanged"), "{msg}");
+        assert!(!msg.contains("Reloaded"), "no success line: {msg}");
+        assert_eq!(runtime.respawn_calls.get(), 1);
+        assert!(
+            runtime.handler_identity(dir, 5).live,
+            "the (unchanged) handler is still live and resumable"
+        );
+    }
+
+    /// TUI-driven chats hold no `.handler.pid`, so the daemon deferral path
+    /// cannot replace them. The owner must transition from a tmux pane to a
+    /// daemon lock; the reload reports the source change.
+    #[test]
+    fn reload_replaces_tui_driven_handler_with_daemon_lock() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        write_session_file(dir, 5, 1);
+        let stale = fake_plugin_status(Source::Cache, CacheState::Drift, Some("b3:old"));
+        let fresh = fake_plugin_status(Source::Cache, CacheState::Current, Some("b3:embed"));
+        let runtime = FakeReloadRuntime::with_handlers(
+            stale,
+            fresh,
+            handler_ident("tui-tmux-pane", 4242, "999"),
+            handler_ident("daemon-lock", 777, "2026-01-01T00:00:05Z"),
+        );
+
+        let outcome = reload_one(
+            dir,
+            5,
+            &runtime,
+            None,
+            None,
+            Duration::from_millis(200),
+            Duration::from_millis(1),
+        )
+        .expect("TUI pane -> daemon lock is a replacement");
+
+        assert!(outcome.delta.handler_replaced);
+        assert_eq!(outcome.before.handler.source, "tui-tmux-pane");
+        assert_eq!(outcome.before.handler.pid, Some(4242));
+        assert_eq!(outcome.after.handler.source, "daemon-lock");
+        assert_eq!(outcome.after.handler.pid, Some(777));
+    }
+
+    /// If the TUI takeover fails and the same pane keeps serving, the reload
+    /// must refuse rather than call the pane "replaced".
+    #[test]
+    fn reload_refuses_when_tui_pane_not_replaced() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        write_session_file(dir, 5, 1);
+        let fresh = fake_plugin_status(Source::Cache, CacheState::Current, Some("b3:embed"));
+        let pane = handler_ident("tui-tmux-pane", 4242, "999");
+        let runtime = FakeReloadRuntime::with_handlers(fresh.clone(), fresh, pane.clone(), pane);
+
+        let err = reload_one(
+            dir,
+            5,
+            &runtime,
+            None,
+            None,
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+        )
+        .expect_err("an unchanged TUI pane must be refused");
+        assert!(
+            format!("{err}").contains("WG-CHAT-RELOAD-NOT-REPLACED"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2914,7 +3253,7 @@ mod tests {
             "refusal must happen before respawn"
         );
         assert!(
-            runtime.handler_is_live(dir, 5),
+            runtime.handler_identity(dir, 5).live,
             "live handler must survive refusal"
         );
     }
@@ -2941,7 +3280,7 @@ mod tests {
         assert!(msg.contains("WG-CHAT-RELOAD-SESSION-MISSING"), "{msg}");
         assert_eq!(runtime.respawn_calls.get(), 0);
         assert!(
-            runtime.handler_is_live(dir, 7),
+            runtime.handler_identity(dir, 7).live,
             "live handler must survive refusal"
         );
     }
@@ -2968,7 +3307,58 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("WG-CHAT-RELOAD-NOT-LIVE"), "{msg}");
         assert_eq!(runtime.respawn_calls.get(), 1);
-        assert!(!runtime.handler_is_live(dir, 5));
+        assert!(!runtime.handler_identity(dir, 5).live);
+    }
+
+    /// The TUI takeover primitive: a live `.tui-driven` sentinel is claimed
+    /// (torn down) so the supervisor's respawn is no longer deferred.
+    #[test]
+    fn take_tui_chat_ownership_clears_sentinel() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        let chat_ref = "chat-5";
+        let chat_dir = worksgood::chat::chat_dir_for_ref(dir, chat_ref);
+        std::fs::create_dir_all(&chat_dir).unwrap();
+
+        // No TUI owner: no-op, reports false.
+        assert!(!take_tui_chat_ownership(dir, 5));
+
+        worksgood::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id()).unwrap();
+        assert!(
+            worksgood::session_lock::read_tui_driver_sentinel(&chat_dir)
+                .unwrap()
+                .is_some()
+        );
+
+        assert!(take_tui_chat_ownership(dir, 5));
+        assert!(
+            worksgood::session_lock::read_tui_driver_sentinel(&chat_dir)
+                .unwrap()
+                .is_none(),
+            "sentinel must be cleared after takeover"
+        );
+    }
+
+    /// `capture_handler_identity` reads the live daemon lock and pairs its PID
+    /// with the lock's start timestamp.
+    #[test]
+    fn capture_handler_identity_reads_daemon_lock() {
+        let td = mk_workgraph_dir();
+        let dir = td.path();
+        let chat_ref = "chat-9";
+        let chat_dir = worksgood::chat::chat_dir_for_ref(dir, chat_ref);
+        std::fs::create_dir_all(&chat_dir).unwrap();
+        let _lock = worksgood::session_lock::SessionLock::acquire(
+            &chat_dir,
+            worksgood::session_lock::HandlerKind::ChatNex,
+        )
+        .unwrap();
+
+        let identity = capture_handler_identity(dir, 9);
+        assert_eq!(identity.source, "daemon-lock");
+        assert_eq!(identity.pid, Some(std::process::id()));
+        assert!(identity.live);
+        assert!(identity.started_at.is_some());
     }
 
     #[test]

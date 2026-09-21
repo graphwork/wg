@@ -498,6 +498,32 @@ fn pid_is_alive(_pid: u32) -> bool {
     true
 }
 
+/// Best-effort process *start time* for `pid`, from Linux
+/// `/proc/<pid>/stat` field 22 (clock ticks since boot). Pairing this with the
+/// PID defeats PID reuse when proving a handler was actually replaced — a
+/// recycled PID yields a different start time. Returns `None` when the start
+/// time cannot be established (non-Linux, no `/proc`, process gone), so
+/// callers fall back to the PID alone rather than fabricating a value.
+pub fn process_start_time(pid: u32) -> Option<String> {
+    process_start_time_impl(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn process_start_time_impl(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The comm field is wrapped in parentheses and may itself contain spaces or
+    // parentheses, so split on the LAST ')' to reach the space-separated
+    // numeric fields. Field 22 (1-based overall) is starttime; after the
+    // closing paren the fields begin at field 3, so index 22 - 3 = 19.
+    let rest = stat.rsplit_once(')')?.1;
+    rest.split_whitespace().nth(19).map(|s| s.to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_start_time_impl(_pid: u32) -> Option<String> {
+    None
+}
+
 /// Best-effort process *identity* string for `pid` (comm + cmdline), used only
 /// to defeat PID reuse. Linux-only; returns `None` when identity can't be
 /// established (no `/proc`, unreadable) so callers fall back to bare liveness.
