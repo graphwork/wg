@@ -11,6 +11,17 @@ just installed pi from npm).
 
 ## How it works (zero install scripts)
 
+**Troubleshooting.** If `wg` reports `no prebuilt binary for <platform>`, your
+npm skipped the optional platform package (it is published and correct — some npm
+configs and package managers omit optional dependencies). Install it explicitly:
+
+```bash
+npm install -g @worksgood/linux-x64-gnu   # or @worksgood/darwin-arm64
+```
+
+or reinstall with `--include=optional`, and check `npm config get omit`. Full
+table of platforms and the `cargo install` fallback: `docs/guides/install.md`.
+
 This package contains **no native code and no install scripts** —
 `scripts` is deliberately empty. The prebuilt per-platform binaries live in
 separate packages declared as `optionalDependencies`:

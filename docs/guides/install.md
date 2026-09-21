@@ -35,6 +35,43 @@ remains the primary documented install path; npm is an additive channel.
 On an unsupported platform (or with `--no-optional`) the shim prints the
 `cargo install` fallback instead of failing. See `scripts/npm/README.md`.
 
+### If npm skipped the prebuilt platform package
+
+Symptom — every `wg`/`worksgood` invocation prints:
+
+```text
+@worksgood/cli: no prebuilt binary for x64-linux-gnu.
+("@worksgood/linux-x64-gnu" is not installed — the install may have skipped optional dependencies (--no-optional))
+```
+
+The platform binaries are **optional dependencies** of the metapackage (the
+esbuild/biome model — that is what keeps the install script-free). Some npm
+configurations and package managers omit optional dependencies, so the package
+is published and correct but absent from your `node_modules`.
+
+**Fix — install the prebuilt for your platform directly:**
+
+```bash
+# global install
+npm install -g @worksgood/linux-x64-gnu      # x64 glibc Linux
+# npm install -g @worksgood/darwin-arm64     # Apple silicon
+
+# or reinstall the metapackage with optionals included
+npm install -g --include=optional @worksgood/cli
+```
+
+Find the root cause with `npm config get omit` — if it lists `optional`, remove
+it (`npm config delete omit`) and reinstall, so future upgrades do not hit this
+again.
+
+| platform | package | status |
+| --- | --- | --- |
+| x64 glibc Linux | `@worksgood/linux-x64-gnu` | published |
+| arm64 macOS | `@worksgood/darwin-arm64` | published |
+| arm64 Linux | `@worksgood/linux-arm64-gnu` | phase 2 |
+| x64/arm64 musl Linux (Alpine) | *(none yet)* | use the `cargo install` route |
+| Windows | *(none yet)* | use the installer or `cargo install` route |
+
 ## Fresh Install
 
 macOS and Linux:
