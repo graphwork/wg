@@ -19,7 +19,7 @@ npm install -g @worksgood/cli
 ```
 
 One command installs WG (`wg`, `worksgood`, `nex`) plus the Pi coding agent
-CLI, Node 20+. It resolves prebuilt per-platform packages
+CLI, Node 22.19+ (the floor pi itself declares). It resolves prebuilt per-platform packages
 (`@worksgood/linux-x64-gnu`, `@worksgood/darwin-arm64`) — no Rust toolchain
 and zero postinstall scripts, so it works fully under `--ignore-scripts`. The
 metapackage declares `@earendil-works/pi-coding-agent ^0.85.1` as a

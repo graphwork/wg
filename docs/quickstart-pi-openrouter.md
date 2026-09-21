@@ -48,7 +48,7 @@ wg --version
 nex --version
 ```
 
-**npm route (prebuilt, additive, no Rust toolchain).** Node 20+; one command
+**npm route (prebuilt, additive, no Rust toolchain).** Node 22.19+; one command
 also installs the Pi coding agent CLI, so you can skip step 2:
 
 ```bash

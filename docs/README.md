@@ -155,7 +155,7 @@ remain under `wg`.
 # primary documented path (needs the Rust toolchain)
 cargo install --git https://github.com/graphwork/wg --locked
 
-# additive npm route (Node 20+): prebuilt per-platform packages, no Rust
+# additive npm route (Node 22.19+): prebuilt per-platform packages, no Rust
 # toolchain, zero postinstall scripts; also installs the Pi coding agent CLI
 npm install -g @worksgood/cli
 ```

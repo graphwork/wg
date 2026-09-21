@@ -2,7 +2,7 @@
 
 [WorksGood](https://github.com/graphwork/wg) (`wg`, `worksgood`, `nex`) as an npm
 package, plus the [@earendil-works/pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
-CLI — one `npm install -g @worksgood/cli` (Node 20+) brings the whole WG+pi stack.
+CLI — one `npm install -g @worksgood/cli` (Node 22.19+) brings the whole WG+pi stack.
 
 `cargo install --git https://github.com/graphwork/wg --locked` remains the
 primary documented install path; npm is the additional channel for users who

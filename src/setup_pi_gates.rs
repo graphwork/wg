@@ -43,7 +43,7 @@ pub const PI_GATE_PROBES_ENV: &str = "WORKSGOOD_PI_GATE_JSON";
 pub const PI_INSTALL_COMMAND: &str = "npm install -g @earendil-works/pi-coding-agent";
 
 /// The Node prerequisite printed alongside the install command.
-pub const PI_NODE_PREREQUISITE: &str = "Node 20+ is required.";
+pub const PI_NODE_PREREQUISITE: &str = "Node 22.19+ is required.";
 
 /// What a user types inside Pi to authenticate a provider (the guided hint).
 pub const PI_LOGIN_COMMAND: &str = "/login <provider>";
@@ -322,7 +322,7 @@ mod tests {
             "npm install -g @earendil-works/pi-coding-agent"
         );
         assert!(text.contains(PI_NODE_PREREQUISITE), "{text}");
-        assert!(text.contains("Node 20+"), "{text}");
+        assert!(text.contains("Node 22.19+"), "{text}");
         assert!(
             text.contains("Rerun `worksgood setup` after installing Pi"),
             "{text}"
