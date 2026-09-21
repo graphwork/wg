@@ -68,10 +68,39 @@ function humanTarget(opts) {
   return `${arch}-${platform}`;
 }
 
-function fallbackMessage(target, reason) {
+/*
+ * The fallback text when no usable prebuilt binary applies.
+ *
+ * `opts.platformPackage` is set exactly when the failure is a *missing*
+ * platform package whose name we know (the package manager skipped it as an
+ * optional dependency, e.g. `--omit=optional` / `--no-optional`, or a stale
+ * `omit` config). In that case the one-command npm remedy is the real fix, so
+ * it leads and the Rust-toolchain build is the documented last resort. For the
+ * musl / unsupported-platform branches there is no installable package to
+ * point at, so only the cargo hint applies.
+ *
+ * Pure string construction: the shim never shells out to npm.
+ */
+function fallbackMessage(target, reason, opts) {
+  const o = opts || {};
   const lines = [`@worksgood/cli: no prebuilt binary for ${target}.`];
   if (reason) lines.push(`(${reason})`);
-  lines.push('Install the Rust toolchain build instead:', `  ${CARGO_INSTALL_HINT}`);
+
+  if (o.platformPackage) {
+    lines.push(
+      'Fix: install the missing platform package directly, then retry:',
+      `  npm install -g ${o.platformPackage}   # global install`,
+      `  npm install ${o.platformPackage}      # or in your project`,
+      'or reinstall @worksgood/cli with optional dependencies included:',
+      '  npm install -g @worksgood/cli --include=optional',
+      'and check why they were skipped:',
+      '  npm config get omit',
+      'If that is not an option, build from source with the Rust toolchain (last resort):',
+      `  ${CARGO_INSTALL_HINT}`,
+    );
+  } else {
+    lines.push('Install the Rust toolchain build instead:', `  ${CARGO_INSTALL_HINT}`);
+  }
   return lines.join('\n');
 }
 
@@ -157,6 +186,7 @@ function run(binName, opts) {
       fallbackMessage(
         target,
         `"${pkg}" is not installed — the install may have skipped optional dependencies (--no-optional)`,
+        { platformPackage: pkg },
       ) + '\n',
     );
     process.exit(1);

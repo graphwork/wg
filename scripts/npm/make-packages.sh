@@ -78,6 +78,10 @@ SLICE_TARGETS=(x86_64-unknown-linux-gnu aarch64-apple-darwin)
 SLICE_PKGS=(linux-x64-gnu darwin-arm64)
 SLICE_OS=(linux darwin)
 SLICE_CPU=(x64 arm64)
+# npm>=10 `libc` field: glibc vs musl is otherwise invisible to npm's platform
+# matching, and a glibc package installed on musl fails at exec time. Only
+# meaningful on Linux; darwin targets omit the field (empty => line removed).
+SLICE_LIBC=(glibc "")
 
 version_from_cargo() {
   sed -n 's/^version = "\(.*\)"/\1/p' "${REPO_ROOT}/Cargo.toml" | head -n 1
@@ -120,11 +124,20 @@ emit_platform_metadata() {
   local dest="$1" pkg_suffix="$2" target="$3"
   local i; i="$(pkg_index_by_name "${pkg_suffix}")"
   local pkg_name="@worksgood/${pkg_suffix}"
-  sed -e "s|__PKG_NAME__|${pkg_name}|g" \
-      -e "s|__WG_VERSION__|${VERSION}|g" \
-      -e "s|__TARGET__|${target}|g" \
-      -e "s|__OS__|${SLICE_OS[$i]}|g" \
-      -e "s|__CPU__|${SLICE_CPU[$i]}|g" \
+  local sed_args=(
+    -e "s|__PKG_NAME__|${pkg_name}|g"
+    -e "s|__WG_VERSION__|${VERSION}|g"
+    -e "s|__TARGET__|${target}|g"
+    -e "s|__OS__|${SLICE_OS[$i]}|g"
+    -e "s|__CPU__|${SLICE_CPU[$i]}|g"
+  )
+  if [[ -n "${SLICE_LIBC[$i]}" ]]; then
+    sed_args+=(-e "s|__LIBC__|${SLICE_LIBC[$i]}|g")
+  else
+    # No libc constraint for this target (non-Linux): drop the whole line.
+    sed_args+=(-e '/"libc": \["__LIBC__"\],/d')
+  fi
+  sed "${sed_args[@]}" \
       "${SCRIPT_DIR}/platform/package.json.in" > "${dest}/package.json"
   sed -e "s|__PKG_SUFFIX__|${pkg_suffix}|g" \
       -e "s|__WG_VERSION__|${VERSION}|g" \

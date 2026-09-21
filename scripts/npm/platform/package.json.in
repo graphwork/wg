@@ -15,6 +15,7 @@
   "cpu": [
     "__CPU__"
   ],
+  "libc": ["__LIBC__"],
   "files": [
     "bin/",
     "LICENSE",

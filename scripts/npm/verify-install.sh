@@ -10,6 +10,8 @@
 #   3. prove the shim resolves + execs the binary and `worksgood <version>`
 #      works from the npm-installed layout,
 #   4. prove the WG_BINARY_PATH override and the cargo-install fallback hint,
+#   4b. prove `--omit=optional` prints an actionable npm remedy first and that
+#       following it restores `wg --version`,
 #   5. npm publish --dry-run structural validation of every package.
 #
 # Requires network for the pi dependency (registry.npmjs.org). Exit 77 = loud
@@ -161,6 +163,38 @@ echo "${FALLBACK_MSG}" | grep -q "no prebuilt binary" || fail "fallback message 
 echo "${FALLBACK_MSG}" | grep -q "cargo install --git https://github.com/graphwork/wg --locked" \
   || fail "fallback must print the cargo-install hint: ${FALLBACK_MSG}"
 pass "missing optional dep -> friendly cargo-install fallback (not a stack trace)"
+
+# ------------------------- 7b. --omit=optional -> actionable, working npm remedy
+# The real-machine report: an npm whose config omits optional deps installs
+# @worksgood/cli with no platform package. The shim must lead with the exact
+# npm remedy (before the cargo hint), and following that remedy must restore
+# a working `wg --version`.
+PREFIX_C="${WORK_DIR}/prefix-c"
+mkdir -p "${PREFIX_C}"
+npm install --prefix "${PREFIX_C}" --omit=optional --no-audit --no-fund --loglevel=error \
+  "file:${CLI_TGZ}" >/dev/null
+[[ ! -d "${PREFIX_C}/node_modules/@worksgood/${NPM_PLATFORM}" ]] \
+  || fail "--omit=optional unexpectedly installed the platform package"
+OMIT_MSG="$( "${PREFIX_C}/node_modules/.bin/wg" --version 2>&1 || true )"
+echo "${OMIT_MSG}" | grep -q "no prebuilt binary" \
+  || fail "--omit=optional fallback message missing: ${OMIT_MSG}"
+echo "${OMIT_MSG}" | grep -q "npm install -g @worksgood/${NPM_PLATFORM}" \
+  || fail "--omit=optional fallback must lead with the npm remedy: ${OMIT_MSG}"
+NPM_LINE="$(echo "${OMIT_MSG}" | grep -n "npm install -g @worksgood/${NPM_PLATFORM}" | head -n1 | cut -d: -f1)"
+CARGO_LINE="$(echo "${OMIT_MSG}" | grep -n "cargo install --git" | head -n1 | cut -d: -f1)"
+[[ -n "${NPM_LINE}" && -n "${CARGO_LINE}" && "${NPM_LINE}" -lt "${CARGO_LINE}" ]] \
+  || fail "npm remedy must appear before the cargo hint: ${OMIT_MSG}"
+pass "--omit=optional -> npm remedy printed first, cargo hint last"
+
+# Follow the printed remedy (local analogue of `npm install -g <pkg>`: the
+# registry has no prebuilt platform package in this dry run, so install the
+# tarball under the same name) and prove `wg --version` works again.
+npm install --prefix "${PREFIX_C}" --no-audit --no-fund --loglevel=error \
+  "@worksgood/${NPM_PLATFORM}@file:${PLAT_TGZ}" >/dev/null
+WG_REMEDY="$( "${PREFIX_C}/node_modules/.bin/wg" --version 2>&1 )"
+echo "${WG_REMEDY}" | grep -q "wg ${VERSION}" \
+  || fail "following the printed npm remedy did not restore wg: ${WG_REMEDY}"
+pass "following the printed npm remedy restores a working binary: ${WG_REMEDY}"
 
 # --------------------------------------------- 8. npm publish --dry-run proof
 for dir in "${PACK_DIR}"/@worksgood/*/; do

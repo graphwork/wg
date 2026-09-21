@@ -8,6 +8,8 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const resolver = require('../cli/lib/resolver.js');
 
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+
 test('platform map: linux-x64 glibc -> @worksgood/linux-x64-gnu', () => {
   assert.equal(
     resolver.platformPackageName({ platform: 'linux', arch: 'x64', linuxLibc: 'gnu' }),
@@ -60,6 +62,80 @@ test('fallback message names the target and the cargo install hint', () => {
   assert.match(msg, /no prebuilt binary for x64-linux-musl/);
   assert.match(msg, /musl builds are not published yet/);
   assert.match(msg, /cargo install --git https:\/\/github\.com\/graphwork\/wg --locked/);
+  // No installable package exists for musl yet, so there is no npm remedy to
+  // offer — the cargo hint is the only path (branches stay coherent).
+  assert.doesNotMatch(msg, /npm install -g @worksgood\//);
+});
+
+test('missing platform package fallback leads with the npm remedy before the cargo hint', () => {
+  const msg = resolver.fallbackMessage(
+    'x64-linux-gnu',
+    '"@worksgood/linux-x64-gnu" is not installed — the install may have skipped optional dependencies (--no-optional)',
+    { platformPackage: '@worksgood/linux-x64-gnu' },
+  );
+  // Both the global and the local npm forms are present...
+  const globalIdx = msg.indexOf('npm install -g @worksgood/linux-x64-gnu');
+  const localIdx = msg.indexOf('npm install @worksgood/linux-x64-gnu');
+  const includeIdx = msg.indexOf('--include=optional');
+  const omitIdx = msg.indexOf('npm config get omit');
+  const cargoIdx = msg.indexOf('cargo install --git https://github.com/graphwork/wg --locked');
+  assert.ok(globalIdx >= 0, `global npm remedy missing:\n${msg}`);
+  assert.ok(localIdx >= 0, `local npm remedy missing:\n${msg}`);
+  assert.ok(includeIdx >= 0, `--include=optional hint missing:\n${msg}`);
+  assert.ok(omitIdx >= 0, `npm config get omit hint missing:\n${msg}`);
+  assert.ok(cargoIdx >= 0, `cargo hint missing:\n${msg}`);
+  // ...and the actionable npm remedy comes first, cargo is the last resort.
+  assert.ok(globalIdx < cargoIdx, 'global npm remedy must precede the cargo hint');
+  assert.ok(localIdx < cargoIdx, 'local npm remedy must precede the cargo hint');
+  assert.ok(includeIdx < cargoIdx, '--include=optional must precede the cargo hint');
+  assert.ok(omitIdx < cargoIdx, 'omit-config hint must precede the cargo hint');
+});
+
+test('generated linux platform package declares libc glibc; darwin omits the field', () => {
+  const { execFileSync } = require('node:child_process');
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wg-npm-libc-'));
+  try {
+    const binDir = path.join(tmp, 'bin');
+    fs.mkdirSync(binDir);
+    for (const name of ['wg', 'nex', 'worksgood']) {
+      const p = path.join(binDir, name);
+      fs.writeFileSync(p, '#!/bin/sh\nexit 0\n');
+      fs.chmodSync(p, 0o755);
+    }
+    const makePackages = path.join(REPO_ROOT, 'scripts', 'npm', 'make-packages.sh');
+
+    const linuxOut = path.join(tmp, 'out-linux');
+    execFileSync(
+      'bash',
+      [makePackages, '--bin-dir', binDir, '--npm-platform', 'linux-x64-gnu', '--out-dir', linuxOut],
+      { stdio: 'pipe' },
+    );
+    const linuxPkg = JSON.parse(
+      fs.readFileSync(path.join(linuxOut, '@worksgood', 'linux-x64-gnu', 'package.json'), 'utf8'),
+    );
+    assert.deepEqual(linuxPkg.os, ['linux']);
+    assert.deepEqual(linuxPkg.cpu, ['x64']);
+    assert.deepEqual(linuxPkg.libc, ['glibc'], 'linux package must gate on libc=glibc');
+
+    const darwinOut = path.join(tmp, 'out-darwin');
+    execFileSync(
+      'bash',
+      [makePackages, '--bin-dir', binDir, '--npm-platform', 'darwin-arm64', '--out-dir', darwinOut],
+      { stdio: 'pipe' },
+    );
+    const darwinPkg = JSON.parse(
+      fs.readFileSync(path.join(darwinOut, '@worksgood', 'darwin-arm64', 'package.json'), 'utf8'),
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(darwinPkg, 'libc'),
+      false,
+      'non-linux package must not carry a libc constraint',
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('unsupported platform run prints the fallback hint and exits 1', () => {
