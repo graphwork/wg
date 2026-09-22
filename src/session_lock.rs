@@ -92,13 +92,43 @@ pub struct LockInfo {
 }
 
 /// Snapshot of the TUI process that has claimed this chat session.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TuiDriverInfo {
     pub pid: u32,
     pub written_at: String,
     /// Whether the TUI process is still alive. Stale sentinels are
     /// ignored by readers, matching stale lock recovery semantics.
     pub alive: bool,
+    /// The chat surface this claim is bound to (`chat-<N>`). `None` for
+    /// legacy two-line sentinels written before per-chat binding existed.
+    pub chat_ref: Option<String>,
+    /// PID of the handler process inside the claimed pane, when known.
+    pub handler_pid: Option<u32>,
+    /// Start time of the handler process, captured at claim time.
+    pub handler_started_at: Option<String>,
+}
+
+/// How a recorded `.tui-driven` claim relates to an expected chat surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TuiDriverBinding {
+    /// The sentinel is absent — no driver has claimed this chat.
+    Absent,
+    /// The sentinel is bound to exactly this chat surface.
+    Matches(TuiDriverInfo),
+    /// The sentinel names a different chat surface or a dead/foreign driver.
+    Mismatch { reason: String },
+}
+
+/// Result of reclaiming a stale `.tui-driven` claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TuiSentinelReclaim {
+    /// No sentinel was present; nothing to reclaim.
+    Empty,
+    /// No live driver owns this chat now (removed if stale, or never bound).
+    Available,
+    /// A different live driver holds a binding for this exact chat; refuse to
+    /// start a second driver rather than silently overwriting the claim.
+    AlreadyOwned { pid: u32 },
 }
 
 /// RAII lock handle. Drop removes the file (idempotent — safe even
@@ -374,12 +404,57 @@ pub fn tui_driver_sentinel_path(chat_dir: &Path) -> PathBuf {
 }
 
 /// Mark a chat session as currently driven by a live `wg tui` process.
+///
+/// Writes the legacy two-line form (driver pid + timestamp). Prefer
+/// [`write_tui_driver_claim`] for new claims so the sentinel records which
+/// chat surface it is bound to and which handler it owns; two-line sentinels
+/// are still parsed for backward compatibility but cannot participate in
+/// binding verification.
 pub fn write_tui_driver_sentinel(chat_dir: &Path, pid: u32) -> Result<()> {
     std::fs::create_dir_all(chat_dir).with_context(|| format!("create chat dir {:?}", chat_dir))?;
     let path = tui_driver_sentinel_path(chat_dir);
     let contents = format!("{}\n{}\n", pid, chrono::Utc::now().to_rfc3339());
     std::fs::write(&path, contents).with_context(|| format!("write TUI sentinel {:?}", path))?;
     Ok(())
+}
+
+/// Mark a chat session as driven by this `wg tui` process, recording the exact
+/// chat surface (and optional handler process) it is bound to.
+///
+/// The driver pid is always the current process. `chat_ref` is the canonical
+/// session alias (`chat-<N>`); `handler_pid` is the process inside the claimed
+/// pane when one is already known (reattach), or `None` for a fresh spawn.
+pub fn write_tui_driver_claim(
+    chat_dir: &Path,
+    chat_ref: &str,
+    handler_pid: Option<u32>,
+) -> Result<TuiDriverInfo> {
+    std::fs::create_dir_all(chat_dir).with_context(|| format!("create chat dir {:?}", chat_dir))?;
+    let pid = std::process::id();
+    let written_at = chrono::Utc::now().to_rfc3339();
+    let handler_started_at = handler_pid.and_then(process_start_time);
+    let mut contents = format!("{pid}\n{written_at}\n");
+    contents.push_str(&format!("chat_ref={chat_ref}\n"));
+    contents.push_str(&format!(
+        "handler_pid={}\n",
+        handler_pid
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    ));
+    contents.push_str(&format!(
+        "handler_started_at={}\n",
+        handler_started_at.as_deref().unwrap_or("-")
+    ));
+    let path = tui_driver_sentinel_path(chat_dir);
+    std::fs::write(&path, contents).with_context(|| format!("write TUI sentinel {:?}", path))?;
+    Ok(TuiDriverInfo {
+        pid,
+        written_at,
+        alive: true,
+        chat_ref: Some(chat_ref.to_string()),
+        handler_pid,
+        handler_started_at,
+    })
 }
 
 /// Read the TUI ownership sentinel, if present.
@@ -404,11 +479,27 @@ pub fn read_tui_driver_sentinel(chat_dir: &Path) -> Result<Option<TuiDriverInfo>
         Err(_) => return Ok(None),
     };
     let written_at = lines.next().unwrap_or("").to_string();
+    let mut chat_ref = None;
+    let mut handler_pid = None;
+    let mut handler_started_at = None;
+    for line in lines {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("chat_ref=") {
+            chat_ref = (!value.is_empty()).then(|| value.to_string());
+        } else if let Some(value) = line.strip_prefix("handler_pid=") {
+            handler_pid = value.parse::<u32>().ok();
+        } else if let Some(value) = line.strip_prefix("handler_started_at=") {
+            handler_started_at = (!value.is_empty() && value != "-").then(|| value.to_string());
+        }
+    }
     let alive = pid_is_alive(pid);
     Ok(Some(TuiDriverInfo {
         pid,
         written_at,
         alive,
+        chat_ref,
+        handler_pid,
+        handler_started_at,
     }))
 }
 
@@ -444,6 +535,82 @@ pub fn tui_driver_sentinel_alive(chat_dir: &Path) -> bool {
         .ok()
         .flatten()
         .is_some_and(|info| info.alive)
+}
+
+/// Verify a `.tui-driven` claim against the chat surface being attached.
+///
+/// This is the binding half of the fix for the `chat-identity-is` class: the
+/// sentinel must name the SAME chat it claims to drive. A live TUI driving
+/// `chat-5` can never satisfy a claim check for `chat-4`, so a stale or
+/// cross-wired sentinel is surfaced instead of being trusted. Legacy two-line
+/// sentinels (no `chat_ref=`) are treated as `Absent` for binding purposes —
+/// they predate per-chat binding and cannot be verified either way.
+pub fn verify_tui_driver_binding(chat_dir: &Path, expected_chat_ref: &str) -> TuiDriverBinding {
+    let Some(info) = read_tui_driver_sentinel(chat_dir).ok().flatten() else {
+        return TuiDriverBinding::Absent;
+    };
+    let Some(bound_chat_ref) = info.chat_ref.as_deref() else {
+        return TuiDriverBinding::Absent;
+    };
+    if bound_chat_ref != expected_chat_ref {
+        return TuiDriverBinding::Mismatch {
+            reason: format!(
+                "WG-CHAT-IDENTITY-SESSION-MISMATCH: .tui-driven claim is bound to {bound_chat_ref} but {expected_chat_ref} was requested"
+            ),
+        };
+    }
+    if !pid_is_live_ours(info.pid) {
+        return TuiDriverBinding::Mismatch {
+            reason: format!(
+                "WG-CHAT-IDENTITY-DRIVER-MISMATCH: .tui-driven driver pid {} for {expected_chat_ref} is dead or recycled",
+                info.pid
+            ),
+        };
+    }
+    if let Some(handler_pid) = info.handler_pid
+        && !pid_is_alive(handler_pid)
+    {
+        return TuiDriverBinding::Mismatch {
+            reason: format!(
+                "WG-CHAT-IDENTITY-HANDLER-STALE: .tui-driven handler pid {handler_pid} for {expected_chat_ref} is no longer alive"
+            ),
+        };
+    }
+    TuiDriverBinding::Matches(info)
+}
+
+/// Clear a `.tui-driven` sentinel whose recorded driver is dead, recycled,
+/// bound to a different chat surface, or whose recorded handler has exited —
+/// then report whether the chat is free for a new driver to claim.
+///
+/// A sentinel whose driver is alive and whose `chat_ref` matches `expected` is
+/// KEPT: at most one live driver may own a chat, and a second driver must not
+/// silently overwrite it. Callers that genuinely need to take over a live
+/// claim must first stop that owner (see `take_tui_chat_ownership`).
+pub fn reclaim_stale_tui_driver_sentinel(
+    chat_dir: &Path,
+    expected_chat_ref: &str,
+) -> TuiSentinelReclaim {
+    let Some(info) = read_tui_driver_sentinel(chat_dir).ok().flatten() else {
+        return TuiSentinelReclaim::Empty;
+    };
+    // A legacy two-line sentinel cannot be bound to a chat; if its driver is
+    // still alive we conservatively keep it, otherwise reclaim it.
+    let Some(bound_chat_ref) = info.chat_ref.as_deref() else {
+        if info.alive {
+            return TuiSentinelReclaim::AlreadyOwned { pid: info.pid };
+        }
+        clear_tui_driver_sentinel(chat_dir);
+        return TuiSentinelReclaim::Available;
+    };
+    let dead_driver = !pid_is_live_ours(info.pid);
+    let chat_mismatch = bound_chat_ref != expected_chat_ref;
+    let dead_handler = info.handler_pid.is_some_and(|pid| !pid_is_alive(pid));
+    if dead_driver || chat_mismatch || dead_handler {
+        clear_tui_driver_sentinel(chat_dir);
+        return TuiSentinelReclaim::Available;
+    }
+    TuiSentinelReclaim::AlreadyOwned { pid: info.pid }
 }
 
 /// Wait for the lock at `chat_dir` to become free. Polls every
@@ -920,6 +1087,133 @@ mod tests {
         assert_eq!(info.pid, 999999);
         assert!(!info.alive);
         assert!(!tui_driver_sentinel_alive(dir.path()));
+    }
+
+    #[test]
+    fn driver_claim_records_and_verifies_binding() {
+        let dir = tempdir().unwrap();
+        write_tui_driver_claim(dir.path(), "chat-4", Some(std::process::id())).unwrap();
+
+        let info = read_tui_driver_sentinel(dir.path()).unwrap().unwrap();
+        assert_eq!(info.chat_ref.as_deref(), Some("chat-4"));
+        assert_eq!(info.handler_pid, Some(std::process::id()));
+        assert!(info.handler_started_at.is_some());
+
+        // Same surface verifies.
+        assert_eq!(
+            verify_tui_driver_binding(dir.path(), "chat-4"),
+            TuiDriverBinding::Matches(info.clone())
+        );
+        // A different chat surface is a loud mismatch, never silently matched.
+        match verify_tui_driver_binding(dir.path(), "chat-5") {
+            TuiDriverBinding::Mismatch { reason } => {
+                assert!(reason.contains("SESSION-MISMATCH"), "{reason}")
+            }
+            other => panic!("expected session mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn driver_mismatch_when_recorded_driver_is_dead() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(
+            tui_driver_sentinel_path(dir.path()),
+            "999999\n2020-01-01T00:00:00Z\nchat_ref=chat-4\nhandler_pid=-\nhandler_started_at=-\n",
+        )
+        .unwrap();
+
+        match verify_tui_driver_binding(dir.path(), "chat-4") {
+            TuiDriverBinding::Mismatch { reason } => {
+                assert!(reason.contains("DRIVER-MISMATCH"), "{reason}")
+            }
+            other => panic!("expected driver mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn driver_mismatch_when_recorded_handler_is_dead() {
+        let dir = tempdir().unwrap();
+        let pid = std::process::id();
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(
+            tui_driver_sentinel_path(dir.path()),
+            format!(
+                "{pid}\n2020-01-01T00:00:00Z\nchat_ref=chat-9\nhandler_pid=999999\nhandler_started_at=-\n"
+            ),
+        )
+        .unwrap();
+
+        match verify_tui_driver_binding(dir.path(), "chat-9") {
+            TuiDriverBinding::Mismatch { reason } => {
+                assert!(reason.contains("HANDLER-STALE"), "{reason}")
+            }
+            other => panic!("expected handler stale mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reclaim_clears_sentinel_bound_to_a_different_chat() {
+        let dir = tempdir().unwrap();
+        write_tui_driver_claim(dir.path(), "chat-5", None).unwrap();
+
+        // A driver bound to chat-5 must never be trusted for chat-4.
+        assert_eq!(
+            reclaim_stale_tui_driver_sentinel(dir.path(), "chat-4"),
+            TuiSentinelReclaim::Available
+        );
+        assert!(read_tui_driver_sentinel(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn reclaim_keeps_a_live_driver_bound_to_the_same_chat() {
+        let dir = tempdir().unwrap();
+        write_tui_driver_claim(dir.path(), "chat-7", None).unwrap();
+
+        assert_eq!(
+            reclaim_stale_tui_driver_sentinel(dir.path(), "chat-7"),
+            TuiSentinelReclaim::AlreadyOwned {
+                pid: std::process::id()
+            }
+        );
+        assert!(read_tui_driver_sentinel(dir.path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn reclaim_clears_a_dead_driver_even_when_bound_to_the_same_chat() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(
+            tui_driver_sentinel_path(dir.path()),
+            "999999\n2020-01-01T00:00:00Z\nchat_ref=chat-7\nhandler_pid=-\nhandler_started_at=-\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            reclaim_stale_tui_driver_sentinel(dir.path(), "chat-7"),
+            TuiSentinelReclaim::Available
+        );
+        assert!(read_tui_driver_sentinel(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn legacy_two_line_sentinel_is_absent_for_binding() {
+        let dir = tempdir().unwrap();
+        write_tui_driver_sentinel(dir.path(), std::process::id()).unwrap();
+
+        // Legacy claim has no chat_ref, so binding verification cannot trust
+        // it: it is reported Absent rather than a false match.
+        assert_eq!(
+            verify_tui_driver_binding(dir.path(), "chat-4"),
+            TuiDriverBinding::Absent
+        );
+        // A live legacy owner is conservatively kept (at most one driver).
+        assert_eq!(
+            reclaim_stale_tui_driver_sentinel(dir.path(), "chat-4"),
+            TuiSentinelReclaim::AlreadyOwned {
+                pid: std::process::id()
+            }
+        );
     }
 
     #[test]

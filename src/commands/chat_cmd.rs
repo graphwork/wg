@@ -1188,6 +1188,20 @@ pub fn run_resume(dir: &Path, reference: &str, json: bool) -> Result<()> {
     }
     let chat_ref = format!("chat-{}", cid);
     let chat_dir = worksgood::chat::chat_dir_for_ref(dir, &chat_ref);
+    // Verify the spawn-recorded binding before any resume/reattach. A sentinel
+    // that names a different chat surface is a loud refusal, never a silent
+    // reattach into the wrong conversation (`chat-identity-is`).
+    if let Some(info) = worksgood::session_lock::read_tui_driver_sentinel(&chat_dir)
+        .ok()
+        .flatten()
+        && let Some(bound) = info.chat_ref.as_deref()
+        && bound != chat_ref.as_str()
+    {
+        anyhow::bail!(
+            "WG-CHAT-IDENTITY-SESSION-MISMATCH: cannot resume chat {cid}: its .tui-driven sentinel is bound to {bound}, not {chat_ref}. \
+             Refusing to reattach the wrong chat; run `wg chat reload {cid}` after resolving the conflicting driver."
+        );
+    }
     if worksgood::session_lock::read_tui_driver_sentinel(&chat_dir)
         .ok()
         .flatten()

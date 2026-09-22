@@ -5269,6 +5269,29 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let task_id = view.task_id;
         let cid = view.coordinator_id;
 
+        // Label-truth gate: never render a pane that is attached to a
+        // different chat's session than the selected tab/header names. If the
+        // selected chat and its bound pane disagree, surface the true ids and
+        // refuse rather than hosting chat-M under a chat-N label.
+        if let Some(mismatch) = app.active_chat_pane_binding_mismatch() {
+            let lines = vec![
+                Line::from(Span::styled(
+                    "CHAT IDENTITY MISMATCH",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(mismatch, Style::default().fg(Color::Yellow))),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "The selected chat and the bound pane disagree. Use [ Choose chat ] to select the pane's chat, or press r / reopen the chat to spawn a correctly bound pane.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+            frame.render_widget(Paragraph::new(lines), msg_area);
+            draw_chat_input(frame, app, input_area);
+            return;
+        }
+
         // Dead-handler detection: if the embedded process exited, capture
         // its exit status into `chat_agent_death` before removing the pane.
         let pane_exists = app.task_panes.contains_key(&task_id);

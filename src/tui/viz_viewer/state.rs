@@ -10078,6 +10078,77 @@ impl VizApp {
         self.selected_chat_identity_or_placeholder()
     }
 
+    /// The single authoritative `task_panes` key for the active chat surface.
+    ///
+    /// This is the identity's canonical task id (which may be a legacy
+    /// `.coordinator-N`), never a freshly re-derived `.chat-N`. Pane routing,
+    /// PTY keystroke forwarding, and the rendered header all consult this one
+    /// value, so a numeric chat id can never address a different pane than the
+    /// one the tab/header displays (`chat-identity-is` pane<->tab binding).
+    pub fn active_chat_task_id(&self) -> String {
+        Self::active_chat_task_id_for(
+            self.active_coordinator_id,
+            self.active_chat_view_identity().as_ref(),
+        )
+    }
+
+    /// Pure form of [`Self::active_chat_task_id`] for binding tests: the
+    /// displayed identity's canonical task id wins, and a derived `.chat-N` is
+    /// only the fallback when no coherent identity exists.
+    pub fn active_chat_task_id_for(
+        active_coordinator_id: u32,
+        identity: Option<&ActiveChatIdentity>,
+    ) -> String {
+        match identity {
+            Some(identity) if identity.coordinator_id == active_coordinator_id => {
+                identity.task_id.clone()
+            }
+            _ => worksgood::chat_id::format_chat_task_id(active_coordinator_id),
+        }
+    }
+
+    /// Label-truth guard: when the active chat is rendered through a PTY pane,
+    /// the pane's underlying tmux session must be the session that belongs to
+    /// the selected chat. If `task_panes[<selected task id>]` is actually an
+    /// attach client for a different chat's session, keystrokes and terminal
+    /// output would silently cross conversations. Returns a loud, copy-pasteable
+    /// description of the divergence (and the true ids) instead of a silent
+    /// wrong-chat render.
+    ///
+    /// Direct (non-tmux) panes report no session and cannot diverge this way.
+    pub fn active_chat_pane_binding_mismatch(&self) -> Option<String> {
+        if !self.chat_pty_mode {
+            return None;
+        }
+        let identity = self.active_chat_view_identity()?;
+        let pane = self.task_panes.get(&identity.task_id)?;
+        Self::active_chat_binding_divergence(
+            &self.workgraph_dir,
+            identity.coordinator_id,
+            &identity.task_id,
+            pane.tmux_session(),
+        )
+    }
+
+    /// Pure label-truth comparison: does the pane's actual tmux session match
+    /// the session that belongs to the selected chat surface? Extracted so the
+    /// refusal path can be tested without a live tmux server.
+    pub fn active_chat_binding_divergence(
+        workgraph_dir: &Path,
+        coordinator_id: u32,
+        task_id: &str,
+        pane_tmux_session: Option<&str>,
+    ) -> Option<String> {
+        let actual = pane_tmux_session?;
+        let expected = worksgood::chat_id::chat_tmux_session_for_id(workgraph_dir, coordinator_id);
+        (actual != expected).then(|| {
+            format!(
+                "WG-CHAT-IDENTITY-BINDING-MISMATCH: tab {} ({}) is showing pane session {} but its selected session is {}; refusing to render or forward input to the wrong chat",
+                coordinator_id, task_id, actual, expected
+            )
+        })
+    }
+
     /// Snapshot the exact currently-selected live chat for the Close… modal.
     /// Terminal/archived tasks deliberately return `None`: they are task
     /// Detail surfaces and must never expose live-agent lifecycle controls.
@@ -10522,7 +10593,9 @@ impl VizApp {
                     chat_dir.display()
                 )
             })?;
-            worksgood::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id())
+            worksgood::session_lock::reclaim_stale_tui_driver_sentinel(&chat_dir, &chat_ref);
+            let pane_pid = worksgood::chat_id::chat_tmux_pane_pid(&workgraph_dir, active);
+            worksgood::session_lock::write_tui_driver_claim(&chat_dir, &chat_ref, pane_pid)
                 .with_context(|| {
                     format!(
                         "failed to claim existing chat pane {} before reattach",
@@ -11308,7 +11381,7 @@ impl VizApp {
         if !matches!(self.chat_startup_state, ChatStartupState::Ready) || !self.chat_pty_mode {
             return false;
         }
-        let task_id = worksgood::chat_id::format_chat_task_id(self.active_coordinator_id);
+        let task_id = self.active_chat_task_id();
         !self.task_panes.contains_key(&task_id)
             && (self.pending_chat_pty_spawn.is_some()
                 || self
@@ -11688,11 +11761,8 @@ impl VizApp {
         if let Some(cid) = newly_published_chat {
             self.pending_new_chat_focus = None;
             self.active_chat_identity = self.chat_identity_from_graph(cid);
-            if !self
-                .task_panes
-                .contains_key(&worksgood::chat_id::format_chat_task_id(cid))
-                && self.pending_chat_pty_spawn.is_none()
-            {
+            let task_id = self.active_chat_task_id();
+            if !self.task_panes.contains_key(&task_id) && self.pending_chat_pty_spawn.is_none() {
                 self.maybe_auto_enable_chat_pty();
             }
         }
@@ -21058,9 +21128,7 @@ impl VizApp {
             if allow_pty
                 && self.chat_is_live(target_id)
                 && !self.chat_agent_death.contains_key(&target_id)
-                && !self
-                    .task_panes
-                    .contains_key(&worksgood::chat_id::format_chat_task_id(target_id))
+                && !self.task_panes.contains_key(&self.active_chat_task_id())
                 && self.pending_chat_pty_spawn.is_none()
             {
                 self.maybe_auto_enable_chat_pty();
@@ -21355,7 +21423,7 @@ impl VizApp {
         // binary (typically `claude`) for every chat tab, ignoring the
         // `--executor codex` / `--model codex:gpt-5` the user actually
         // picked when creating that chat — chat-launched-with bug.
-        let task_id = worksgood::chat_id::format_chat_task_id(self.active_coordinator_id);
+        let task_id = self.active_chat_task_id();
         let chat_task = self.coherent_graph().and_then(|graph| {
             worksgood::chat_id::find_chat_task(&graph, self.active_coordinator_id).cloned()
         });
@@ -21449,7 +21517,7 @@ impl VizApp {
         // the registry only has `chat-N`) causes fallback to a literal
         // path that doesn't exist, observer_mode reads false, and the
         // TUI incorrectly spawns in owner mode — "session lock busy".
-        let task_id = worksgood::chat_id::format_chat_task_id(self.active_coordinator_id);
+        let task_id = self.active_chat_task_id();
         let chat_ref = format!("chat-{}", self.active_coordinator_id);
 
         // Pi's transcript path must be chosen only AFTER coordinator
@@ -21605,9 +21673,11 @@ impl VizApp {
         // Claim the chat surface for this TUI before asking any current
         // handler to release. The supervisor checks this sentinel before
         // every respawn, so it defers instead of racing the TUI's PTY
-        // handler back to the session lock.
-        if let Err(e) =
-            worksgood::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id())
+        // handler back to the session lock. Reclaim any stale cross-chat or
+        // dead-driver sentinel first so a chat can never inherit another
+        // chat's ownership metadata (`chat-identity-is`).
+        let _ = worksgood::session_lock::reclaim_stale_tui_driver_sentinel(&chat_dir, &chat_ref);
+        if let Err(e) = worksgood::session_lock::write_tui_driver_claim(&chat_dir, &chat_ref, None)
         {
             self.push_toast(
                 format!("Could not claim the chat terminal: {e}"),
@@ -38446,6 +38516,83 @@ mod chat_pty_redraw_trigger_tests {
         if let Some(p) = app.task_panes.remove(".chat-test") {
             drop(p);
         }
+    }
+}
+
+#[cfg(test)]
+mod chat_identity_binding_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn identity(coordinator_id: u32, task_id: &str) -> ActiveChatIdentity {
+        ActiveChatIdentity {
+            coordinator_id,
+            task_id: task_id.to_string(),
+            label: format!("Chat {coordinator_id}"),
+            executor: None,
+            model: None,
+        }
+    }
+
+    /// Label truth: pane routing keys use the same canonical task id the
+    /// header/tab renders. A legacy `.coordinator-N` identity must win over a
+    /// re-derived `.chat-N`, so the numeric id cannot address a different pane
+    /// than the one displayed.
+    #[test]
+    fn active_task_id_follows_displayed_identity_not_derived_id() {
+        let legacy = identity(4, ".coordinator-4");
+        assert_eq!(
+            VizApp::active_chat_task_id_for(4, Some(&legacy)),
+            ".coordinator-4",
+            "the displayed identity's task id is the single source of truth"
+        );
+
+        // A stale identity for a DIFFERENT chat must never win.
+        let other = identity(5, ".chat-5");
+        assert_eq!(
+            VizApp::active_chat_task_id_for(4, Some(&other)),
+            ".chat-4",
+            "an identity for another chat falls back to the active chat's id"
+        );
+
+        assert_eq!(VizApp::active_chat_task_id_for(4, None), ".chat-4");
+    }
+
+    /// Label-truth refusal path: a pane attached to a different chat's tmux
+    /// session is surfaced with both true session ids, never silently rendered.
+    #[test]
+    fn pane_bound_to_a_different_session_is_surfaced() {
+        let root = PathBuf::from("/tmp/wg-identity-binding-test");
+        let workgraph_dir = root.join(".wg");
+        let expected = worksgood::chat_id::chat_tmux_session_for_id(&workgraph_dir, 4);
+        let foreign = worksgood::chat_id::chat_tmux_session_for_id(&workgraph_dir, 5);
+        assert_ne!(expected, foreign);
+
+        let mismatch =
+            VizApp::active_chat_binding_divergence(&workgraph_dir, 4, ".chat-4", Some(&foreign))
+                .expect("foreign session must be surfaced");
+        assert!(
+            mismatch.contains("WG-CHAT-IDENTITY-BINDING-MISMATCH"),
+            "{mismatch}"
+        );
+        assert!(
+            mismatch.contains(&foreign),
+            "true bound id must be shown: {mismatch}"
+        );
+        assert!(
+            mismatch.contains(&expected),
+            "true selected id must be shown: {mismatch}"
+        );
+
+        // A correctly bound pane produces no refusal.
+        assert!(
+            VizApp::active_chat_binding_divergence(&workgraph_dir, 4, ".chat-4", Some(&expected))
+                .is_none()
+        );
+        // A direct (non-tmux) pane cannot diverge.
+        assert!(
+            VizApp::active_chat_binding_divergence(&workgraph_dir, 4, ".chat-4", None).is_none()
+        );
     }
 }
 

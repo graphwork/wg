@@ -887,7 +887,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // metadata while their pane is still alive; in that state the focused
     // child owns bare printables (not the launcher or death-panel globals).
     // So the death panel only gets first claim when no live pane exists.
-    let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let task_id = app.active_chat_task_id();
     let focused_chat_pty = app.chat_pty_mode
         && app.chat_pty_forwards_stdin
         && app.right_panel_tab == RightPanelTab::Chat
@@ -897,13 +897,19 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     let active_chat_has_death = app
         .chat_agent_death
         .contains_key(&app.active_coordinator_id);
+    // Label-truth gate: if the pane bound to the selected chat actually
+    // belongs to a different chat session, never forward keystrokes into it.
+    // The user must switch to the pane's true chat (or respawn) first.
+    let binding_mismatch = app.active_chat_pane_binding_mismatch().is_some();
     let vendor_pty_pane_alive = focused_chat_pty
+        && !binding_mismatch
         && app
             .task_panes
             .get_mut(&task_id)
             .map(|pane| pane.is_alive())
             .unwrap_or(false);
-    let vendor_pty_active = focused_chat_pty && (vendor_pty_pane_alive || !active_chat_has_death);
+    let vendor_pty_active =
+        focused_chat_pty && !binding_mismatch && (vendor_pty_pane_alive || !active_chat_has_death);
     if vendor_pty_active {
         // KEYMAP POLICY (docs/bugs/tui-keymap-routing.md §5) — while the
         // embedded REPL owns focus the host forwards EVERYTHING to the child
@@ -1122,7 +1128,7 @@ fn handle_paste(app: &mut VizApp, text: &str) {
     // pasted a URL into the dialog, the URL appeared in the background
     // chat tab). When ANY non-Normal input mode is active, paste belongs
     // to the focused dialog widget — never the underlying PTY.
-    let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let task_id = app.active_chat_task_id();
     let focused_chat_pty = app.chat_pty_mode
         && app.chat_pty_forwards_stdin
         && app.right_panel_tab == RightPanelTab::Chat
@@ -1132,13 +1138,18 @@ fn handle_paste(app: &mut VizApp, text: &str) {
     let active_chat_has_death = app
         .chat_agent_death
         .contains_key(&app.active_coordinator_id);
+    // Same label-truth gate as `handle_key`: a pane bound to a different chat
+    // session must never receive pasted text.
+    let binding_mismatch = app.active_chat_pane_binding_mismatch().is_some();
     let vendor_pty_pane_alive = focused_chat_pty
+        && !binding_mismatch
         && app
             .task_panes
             .get_mut(&task_id)
             .map(|pane| pane.is_alive())
             .unwrap_or(false);
-    let vendor_pty_active = focused_chat_pty && (vendor_pty_pane_alive || !active_chat_has_death);
+    let vendor_pty_active =
+        focused_chat_pty && !binding_mismatch && (vendor_pty_pane_alive || !active_chat_has_death);
     if vendor_pty_active {
         if let Some(pane) = app.task_panes.get_mut(&task_id) {
             let _ = pane.send_text(text);
@@ -4303,7 +4314,7 @@ fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
         Some(t) => t,
         None => return false,
     };
-    let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let task_id = app.active_chat_task_id();
     // Resolve through the registry using the dot-less `chat-N` ref the
     // handler runs under: the handler holds its lock under the UUID
     // session dir, not the literal `chat/.chat-N` join. Reading the
@@ -4352,7 +4363,7 @@ fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
 /// `maybe_auto_enable_chat_pty` which handles per-executor spawn
 /// (native → `wg nex`, claude → `claude`, codex → `codex`).
 fn toggle_chat_pty_mode(app: &mut VizApp) {
-    let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let task_id = app.active_chat_task_id();
     let pane_live = app
         .task_panes
         .get_mut(&task_id)
@@ -4395,7 +4406,7 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
         RightPanelTab::Detail => app.hud_scroll_up(amount),
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+                let task_id = app.active_chat_task_id();
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_up(amount);
                     return;
@@ -4463,7 +4474,7 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
         }
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+                let task_id = app.active_chat_task_id();
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_down(amount);
                     return;
@@ -4535,7 +4546,7 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
         }
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+                let task_id = app.active_chat_task_id();
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_to_top();
                     return;
@@ -4593,7 +4604,7 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
         }
         RightPanelTab::Chat => {
             if app.chat_pty_mode {
-                let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+                let task_id = app.active_chat_task_id();
                 if let Some(pane) = app.task_panes.get_mut(&task_id) {
                     pane.scroll_to_bottom();
                     return;
@@ -4654,7 +4665,7 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
 /// nothing. Keyboard scrolling lives behind Ctrl+] scroll mode (see
 /// `implement-tui-scroll`). — fix-mouse-wheel-2.
 fn forward_chat_wheel(app: &mut VizApp, kind: MouseEventKind) {
-    let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+    let task_id = app.active_chat_task_id();
     let Some(pane) = app.task_panes.get_mut(&task_id) else {
         return;
     };
@@ -10723,7 +10734,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_mode = true;
         app.chat_pty_forwards_stdin = true;
         app.chat_pty_observer = false;
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         // Insert a stub pane so `pane.is_alive()` returns true.
         if let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
@@ -10812,7 +10823,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_forwards_stdin = true;
         app.chat_pty_observer = false;
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         // `cat` echoes nothing useful but keeps the child alive and lets us
         // observe that bytes were written to its stdin.
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
@@ -10891,7 +10902,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_observer = false;
         app.mouse_enabled = true;
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &[
@@ -10973,7 +10984,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_observer = true;
         app.mouse_enabled = true;
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &[
@@ -11319,7 +11330,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_forwards_stdin = true;
         app.chat_pty_observer = false;
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -11379,7 +11390,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_forwards_stdin = true;
         app.chat_pty_observer = false;
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -11471,7 +11482,7 @@ mod chat_tab_navigation_tests {
 
         // Spawn a real PTY child (cat blocks on stdin so it stays alive)
         // so we can read `child_input_bytes_written()` on it.
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -11593,7 +11604,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_forwards_stdin = true;
         app.chat_pty_observer = false;
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -11819,7 +11830,7 @@ mod chat_tab_navigation_tests {
         app.chat_pty_observer = false;
         app.input_mode = super::InputMode::Normal;
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -11870,7 +11881,7 @@ mod chat_tab_navigation_tests {
             .last_interaction_at
             .clone();
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -12022,7 +12033,7 @@ mod chat_tab_navigation_tests {
         app.input_mode = super::InputMode::Normal;
         app.has_keyboard_enhancement = false;
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         // Pi and the other interactive vendor CLIs all use this exact embedded
         // PtyPane route. `cat` is a credential-free stand-in for the child.
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
@@ -12286,7 +12297,7 @@ mod chat_tab_navigation_tests {
         app.input_mode = super::InputMode::Normal;
         // No death info — normal PTY operation.
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -12649,7 +12660,7 @@ mod chat_tab_navigation_tests {
         app.set_layout_preference(original);
         app.focused_panel = FocusedPanel::RightPanel;
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
@@ -12935,7 +12946,7 @@ mod chat_tab_navigation_tests {
         app.single_panel_view = SinglePanelView::Detail;
         app.compact_navigation_override = Some(SinglePanelView::Detail);
 
-        let task_id = worksgood::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let task_id = app.active_chat_task_id();
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "exec cat"],
