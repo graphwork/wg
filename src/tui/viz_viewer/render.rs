@@ -22216,6 +22216,7 @@ mod tests {
             true,
             None,
             false,
+            None,
         )
         .unwrap();
         apply(&mut app);

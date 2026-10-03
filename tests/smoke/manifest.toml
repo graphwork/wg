@@ -3404,3 +3404,12 @@ owners = [
 ]
 description = "let-pi-own: a chat pane whose child owns its own scrollback (pi) must receive WG's scroll input FORWARDED to the child, not a WG-synthesized scroll of its own copy. Live wg tui/tmux human flow: a fake pi emulates real pi's terminal negotiation (alternate screen + SGR mouse reporting — verified on pi 1.0.1: alternate_on=1 mouse_any_flag=1 mouse_sgr_flag=1) and echoes every received byte; the scenario wheels and PgUp's the focused pane through the real outer terminal and asserts the child's pane shows the SGR mouse-wheel report (ESC[<64;...M) and PageUp key bytes (ESC[5~), that WG's WG_PTY_DUMP forwarded-input tee contains the same bytes (WG is the writer; the wrapping session runs `mouse off`), and that the wrapping wg-chat session is NOT left in copy-mode. The non-scrollable-child fallback (WG's own scrollback) is pinned by tui_mouse_wheel_does_not_send_arrows and the Ctrl+] explicit WG-view path by tui_scroll_mode; this scenario flips between main (wheel/keys drive tmux copy-mode, child sees nothing) and the fix. Credential-free."
 timeout_seconds = 180
+
+[[scenario]]
+name = "tui_startup_lane"
+script = "scenarios/tui_startup_lane.sh"
+owners = [
+    "let-the-tui",
+]
+description = "let-the-tui: `wg tui` gains a startup lane/tab selection so it can open graph-focused with no chat surface. Pins `[tui] default_lane = \"chat\"|\"task\"|\"workspace\"` (default chat, so existing behaviour is unchanged), the `wg tui --lane <chat|task|workspace>` CLI override (wins over config), and the `--no-chat` alias for `--lane task`. Live wg tui/tmux human flow: the scenario launches the real TUI and reads the live inspector tab/focus through `wg --json tui-dump`, asserting the default opens on Chat, `default_lane = \"task\"` opens on Detail with the graph focused, `--lane workspace` overrides a task config, and `--no-chat` opens Detail. Credential-free (shell executor)."
+timeout_seconds = 120

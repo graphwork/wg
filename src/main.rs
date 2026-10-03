@@ -1748,6 +1748,7 @@ fn main() -> Result<()> {
                     false,
                     None,
                     false,
+                    None,
                 )
             } else {
                 let fmt = if dot {
@@ -3971,6 +3972,8 @@ fn main() -> Result<()> {
             show_keys,
             history_depth,
             no_history,
+            lane,
+            no_chat,
         } => {
             let options = commands::viz::VizOptions {
                 all: true,
@@ -3993,6 +3996,14 @@ fn main() -> Result<()> {
                 activity: None,
             };
             let mouse_override = if no_mouse { Some(false) } else { None };
+            // CLI lane selection wins over `[tui] default_lane`. `--no-chat`
+            // is the ergonomic alias for `--lane task`.
+            let startup_lane = if no_chat {
+                Some(tui::viz_viewer::state::ContextLane::Task)
+            } else {
+                lane.as_deref()
+                    .and_then(tui::viz_viewer::state::ContextLane::parse)
+            };
             tui::viz_viewer::run(
                 workgraph_dir,
                 options,
@@ -4002,6 +4013,7 @@ fn main() -> Result<()> {
                 show_keys,
                 history_depth,
                 no_history,
+                startup_lane,
             )
         }
         Commands::TuiDump {} => {

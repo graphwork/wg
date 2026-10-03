@@ -911,6 +911,7 @@ mod large_graph_snapshot_tests {
             Config::default(),
             None,
             false,
+            None,
         )
     }
 
@@ -1460,6 +1461,47 @@ pub enum ContextLane {
     Chat,
     Task,
     Workspace,
+}
+
+impl ContextLane {
+    /// Parse a startup lane name. Only the three canonical lane names are
+    /// accepted; anything else (including the historical chat default) is
+    /// `None` at the config layer so an unrecognized value cannot change the
+    /// unchanged chat startup behaviour.
+    pub fn parse(value: &str) -> Option<ContextLane> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "chat" => Some(ContextLane::Chat),
+            "task" => Some(ContextLane::Task),
+            "workspace" => Some(ContextLane::Workspace),
+            _ => None,
+        }
+    }
+
+    /// Parse a `[tui] default_lane` config value. Unlike [`Self::parse`], the
+    /// default `"chat"` (and any unknown value) yields `None` so the
+    /// historical startup surface is preserved unless the operator explicitly
+    /// asks for the task or workspace lane.
+    pub fn from_config_str(value: &str) -> Option<ContextLane> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "task" => Some(ContextLane::Task),
+            "workspace" => Some(ContextLane::Workspace),
+            _ => None,
+        }
+    }
+
+    /// The inspector tab this lane opens on, using the app's remembered
+    /// per-lane surfaces.
+    pub fn remembered_tab(
+        self,
+        task_tab: RightPanelTab,
+        workspace_tab: RightPanelTab,
+    ) -> RightPanelTab {
+        match self {
+            ContextLane::Chat => RightPanelTab::Chat,
+            ContextLane::Task => task_tab,
+            ContextLane::Workspace => workspace_tab,
+        }
+    }
 }
 
 /// Which tab is active in the right panel.
@@ -9353,6 +9395,18 @@ pub struct VizApp {
     /// existing stable-ID selections; these fields remember only the owner tab.
     pub remembered_task_tab: RightPanelTab,
     pub remembered_workspace_tab: RightPanelTab,
+    /// The context lane the TUI should open in. Resolved from the `wg tui
+    /// --lane` flag (which wins) or `[tui] default_lane`, defaulting to Chat.
+    pub startup_lane: ContextLane,
+    /// Set once the startup lane can no longer change: either it has already
+    /// been applied, or the operator navigated before the async bootstrap
+    /// finished (their explicit choice always wins). Used to keep the chat
+    /// startup lane from reopening the chat surface under a task/workspace
+    /// start.
+    pub startup_lane_applied: bool,
+    /// CLI `--lane`/`--no-chat` selection carried into the async bootstrap so
+    /// the worker resolves the same startup lane (CLI over config).
+    pub startup_lane_override: Option<ContextLane>,
     /// Right panel width as percentage of terminal width (default 35).
     pub right_panel_percent: u16,
     /// HUD panel size preset (Normal = ~1/3, Expanded = ~2/3).
@@ -9971,6 +10025,7 @@ impl VizApp {
             Config::default(),
             None,
             false,
+            None,
         )
     }
 
@@ -9984,6 +10039,7 @@ impl VizApp {
         no_history: bool,
         trace_path: Option<PathBuf>,
         force_show_keys: bool,
+        startup_lane: Option<ContextLane>,
     ) -> Result<BootstrapApply> {
         super::bootstrap::inject_test_storage_latency();
         let graph_mtime = std::fs::metadata(workgraph_dir.join("graph.jsonl"))
@@ -10001,6 +10057,7 @@ impl VizApp {
             config,
             graph_mtime,
             true,
+            startup_lane,
         );
         if let Some(path) = trace_path {
             app.tracer = Some(
@@ -10234,10 +10291,58 @@ impl VizApp {
         }
     }
 
+    /// The inspector tab the given lane opens on, using this app's remembered
+    /// per-lane surfaces.
+    fn lane_tab(&self, lane: ContextLane) -> RightPanelTab {
+        lane.remembered_tab(self.remembered_task_tab, self.remembered_workspace_tab)
+    }
+
+    /// Install an explicit startup lane (from `wg tui --lane`/`--no-chat`).
+    /// Applies it immediately so the very first frame is already on the
+    /// requested lane, and settles the startup decision so a later async
+    /// chat-startup result cannot reopen the chat surface.
+    pub fn set_startup_lane(&mut self, lane: ContextLane) {
+        self.startup_lane_override = Some(lane);
+        self.startup_lane = lane;
+        if lane == ContextLane::Chat {
+            return;
+        }
+        self.apply_startup_lane_now();
+    }
+
+    fn apply_startup_lane_now(&mut self) {
+        self.startup_lane_applied = true;
+        if self.startup_lane == ContextLane::Chat {
+            return;
+        }
+        self.right_panel_tab = self.lane_tab(self.startup_lane);
+        self.right_panel_visible = true;
+        // Keep the graph focused so click-to-inspect reads as the natural next
+        // step from the lane start.
+        self.focused_panel = FocusedPanel::Graph;
+    }
+
+    /// Apply the `[tui] default_lane` selection once the async bootstrap has
+    /// supplied it. A no-op when the lane is Chat or the operator already
+    /// navigated (their explicit choice wins).
+    fn apply_pending_startup_lane(&mut self) {
+        if self.startup_lane_applied || !self.bootstrap_complete {
+            return;
+        }
+        if self.startup_lane == ContextLane::Chat {
+            return;
+        }
+        self.apply_startup_lane_now();
+    }
+
     /// Show an exact inspector owner. In compact Split presentation this also
     /// selects the one inspector pane without rewriting the user's persisted
     /// dock/mode preference.
     pub fn show_inspector_tab(&mut self, tab: RightPanelTab) {
+        // Any explicit inspector navigation settles the startup lane: the
+        // operator's choice must not be overwritten by a slower bootstrap
+        // that is still resolving `[tui] default_lane`.
+        self.startup_lane_applied = true;
         self.right_panel_visible = true;
         self.right_panel_tab = tab;
         match self.current_context_lane() {
@@ -10564,6 +10669,7 @@ impl VizApp {
             Config::default(),
             None,
             false,
+            None,
         );
         loader.published_graph = Some(graph.clone());
         loader.active_coordinator_id = active;
@@ -10657,8 +10763,14 @@ impl VizApp {
             app.chat_pty_mode = pty_mode;
             app.chat_pty_observer = observer;
             app.chat_pty_forwards_stdin = forwards;
-            app.focused_panel = focused;
-            app.right_panel_tab = RightPanelTab::Chat;
+            // A live chat normally reopens the TUI on the chat surface. When a
+            // task/workspace startup lane is already applied (CLI `--lane`, or
+            // the operator navigated before bootstrap resolved), leave the
+            // inspector where it is instead of forcing chat back open.
+            if !app.startup_lane_applied {
+                app.focused_panel = focused;
+                app.right_panel_tab = RightPanelTab::Chat;
+            }
             app.chat_startup_state = ChatStartupState::Ready;
             app.active_chat_identity = identity;
             app.chat_agent_death = durable_deaths;
@@ -10675,10 +10787,23 @@ impl VizApp {
         config: Config,
         graph_mtime: Option<SystemTime>,
         load_storage: bool,
+        startup_lane: Option<ContextLane>,
     ) -> Self {
         let mouse_enabled = mouse_override.unwrap_or(true);
         let animation_mode = AnimationMode::from_config(&config.viz.animations);
         let (cmd_tx, cmd_rx) = mpsc::channel();
+        // Resolve the startup lane here so the first coherent state already
+        // reflects the operator's selection: the CLI override wins, then the
+        // `[tui] default_lane` config, then the historical Chat default. The
+        // remembered lane tabs are the fixed built-in destinations, so the
+        // resolved owner tab can be computed before the struct literal.
+        let remembered_task_tab = RightPanelTab::Detail;
+        let remembered_workspace_tab = RightPanelTab::Dashboard;
+        let requested_lane =
+            startup_lane.or_else(|| ContextLane::from_config_str(&config.tui.default_lane));
+        let startup_lane = requested_lane.unwrap_or(ContextLane::Chat);
+        let startup_tab =
+            startup_lane.remembered_tab(remembered_task_tab, remembered_workspace_tab);
         let mut app = Self {
             last_service_identity_hit: None,
             workgraph_dir,
@@ -10807,9 +10932,12 @@ impl VizApp {
             detail_section_header_lines: Vec::new(),
             right_panel_visible: true,
             focused_panel: FocusedPanel::Graph,
-            right_panel_tab: RightPanelTab::Chat,
-            remembered_task_tab: RightPanelTab::Detail,
-            remembered_workspace_tab: RightPanelTab::Dashboard,
+            right_panel_tab: startup_tab,
+            remembered_task_tab,
+            remembered_workspace_tab,
+            startup_lane,
+            startup_lane_applied: false,
+            startup_lane_override: None,
             last_context_chat_lane_area: Rect::default(),
             last_context_task_lane_area: Rect::default(),
             last_context_workspace_lane_area: Rect::default(),
@@ -11141,6 +11269,7 @@ impl VizApp {
         let message_indent = self.message_indent;
         let session_gap_minutes = self.session_gap_minutes;
         let is_light_theme = self.is_light_theme;
+        let startup_lane = self.startup_lane;
         let last_graph_mtime = self.last_graph_mtime;
         let viz_options = self.viz_options.clone();
         let graph = self.async_fs.cached_graph();
@@ -11247,6 +11376,7 @@ impl VizApp {
             app.message_indent = message_indent;
             app.session_gap_minutes = session_gap_minutes;
             app.is_light_theme = is_light_theme;
+            app.startup_lane = startup_lane;
             app.last_graph_mtime = last_graph_mtime;
             app.viz_options = viz_options;
             app.service_health.authoritative = authoritative_service;
@@ -11285,6 +11415,7 @@ impl VizApp {
             no_history: self.no_history,
             trace_path,
             force_show_keys,
+            startup_lane: self.startup_lane_override,
         };
         let mut engine = super::bootstrap::BootstrapEngine::new();
         engine.request(args);
@@ -11336,6 +11467,7 @@ impl VizApp {
         match result {
             Ok(apply) => {
                 apply(self);
+                self.apply_pending_startup_lane();
             }
             Err(message) => {
                 // One compact error episode, no repeating toast.  Keep the
@@ -11480,6 +11612,7 @@ impl VizApp {
             Config::default(),
             input.graph_mtime,
             false,
+            None,
         );
         app.show_system_tasks = input.key.show_system_tasks;
         app.show_running_system_tasks = input.key.show_running_system_tasks;
@@ -17032,6 +17165,9 @@ impl VizApp {
             right_panel_tab: RightPanelTab::Detail,
             remembered_task_tab: RightPanelTab::Detail,
             remembered_workspace_tab: RightPanelTab::Dashboard,
+            startup_lane: ContextLane::Chat,
+            startup_lane_applied: false,
+            startup_lane_override: None,
             last_context_chat_lane_area: Rect::default(),
             last_context_task_lane_area: Rect::default(),
             last_context_workspace_lane_area: Rect::default(),
@@ -24473,6 +24609,7 @@ impl VizApp {
             Config::default(),
             None,
             false,
+            None,
         );
         loader.published_graph = graph;
         loader.bootstrap_complete = true;
@@ -27408,6 +27545,151 @@ mod hud_tests {
         app
     }
 
+    /// Construct the startup state only (no storage) with a given `[tui]`
+    /// configuration and optional CLI lane override.
+    fn build_app_with_lane(config: Config, lane: Option<ContextLane>) -> VizApp {
+        let tmp = tempfile::tempdir().unwrap();
+        VizApp::build(
+            tmp.path().to_path_buf(),
+            crate::commands::viz::VizOptions::default(),
+            Some(false),
+            None,
+            false,
+            config,
+            None,
+            false,
+            lane,
+        )
+    }
+
+    // ── Startup lane / tab selection ──
+
+    #[test]
+    fn startup_lane_defaults_to_chat() {
+        let app = build_app_with_lane(Config::default(), None);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        assert_eq!(app.current_context_lane(), ContextLane::Chat);
+        assert_eq!(app.focused_panel, FocusedPanel::Graph);
+        assert!(!app.startup_lane_applied);
+    }
+
+    #[test]
+    fn startup_lane_config_task_opens_graph_on_detail() {
+        let mut config = Config::default();
+        config.tui.default_lane = "task".to_string();
+        let app = build_app_with_lane(config, None);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.current_context_lane(), ContextLane::Task);
+        assert_eq!(app.focused_panel, FocusedPanel::Graph);
+    }
+
+    #[test]
+    fn startup_lane_config_workspace_opens_workspace_tab() {
+        let mut config = Config::default();
+        config.tui.default_lane = "workspace".to_string();
+        let app = build_app_with_lane(config, None);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Dashboard);
+        assert_eq!(app.current_context_lane(), ContextLane::Workspace);
+        assert_eq!(app.focused_panel, FocusedPanel::Graph);
+    }
+
+    #[test]
+    fn startup_lane_unknown_config_string_is_ignored() {
+        let mut config = Config::default();
+        config.tui.default_lane = "nonsense".to_string();
+        let app = build_app_with_lane(config, None);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        assert_eq!(app.current_context_lane(), ContextLane::Chat);
+    }
+
+    #[test]
+    fn startup_lane_cli_override_wins_over_config() {
+        let mut config = Config::default();
+        config.tui.default_lane = "workspace".to_string();
+        let app = build_app_with_lane(config, Some(ContextLane::Task));
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.current_context_lane(), ContextLane::Task);
+    }
+
+    #[test]
+    fn set_startup_lane_applies_immediately_and_settles() {
+        let mut app = build_app_with_lane(Config::default(), None);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        app.set_startup_lane(ContextLane::Task);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.focused_panel, FocusedPanel::Graph);
+        assert!(app.startup_lane_applied);
+        assert_eq!(app.startup_lane_override, Some(ContextLane::Task));
+    }
+
+    #[test]
+    fn apply_pending_startup_lane_runs_once_bootstrap_completes() {
+        // The first (shell) frame is built with the compiled defaults, so it
+        // starts on Chat. The async bootstrap resolves `[tui] default_lane`
+        // into `startup_lane` on the live app; the pending lane is applied
+        // only after bootstrap completes.
+        let mut app = build_app_with_lane(Config::default(), None);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        app.startup_lane = ContextLane::Task;
+        app.apply_pending_startup_lane();
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        // The async bootstrap completes and the resolved lane is applied once.
+        app.bootstrap_complete = true;
+        app.apply_pending_startup_lane();
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        assert_eq!(app.current_context_lane(), ContextLane::Task);
+        assert!(app.startup_lane_applied);
+        // A second pass is a no-op (the decision is settled).
+        app.activate_context_lane(ContextLane::Chat);
+        app.apply_pending_startup_lane();
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+    }
+
+    #[test]
+    fn user_navigation_suppresses_pending_startup_lane() {
+        let mut config = Config::default();
+        config.tui.default_lane = "task".to_string();
+        let mut app = build_app_with_lane(config, None);
+        // The operator reopens chat before the slow bootstrap resolves.
+        app.show_inspector_tab(RightPanelTab::Chat);
+        app.bootstrap_complete = true;
+        app.apply_pending_startup_lane();
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+    }
+
+    #[test]
+    fn task_lane_click_to_inspect_then_chat_round_trip() {
+        let (viz, _, tmp) = build_chain_plus_isolated();
+        // Click-to-inspect a graph node: selection + Detail is the flow the
+        // task lane must support from its initial state.
+        let mut app = build_app(&viz, "a", tmp.path());
+        app.startup_lane = ContextLane::Task;
+        app.show_inspector_tab(RightPanelTab::Detail);
+        assert_eq!(app.current_context_lane(), ContextLane::Task);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+        // Runtime lane switching stays available.
+        app.activate_context_lane(ContextLane::Chat);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Chat);
+        app.activate_context_lane(ContextLane::Task);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Detail);
+    }
+
+    #[test]
+    fn parse_context_lane_accepts_only_known_names() {
+        assert_eq!(ContextLane::parse("chat"), Some(ContextLane::Chat));
+        assert_eq!(ContextLane::parse("TASK"), Some(ContextLane::Task));
+        assert_eq!(
+            ContextLane::parse(" workspace "),
+            Some(ContextLane::Workspace)
+        );
+        assert_eq!(ContextLane::parse("nonsense"), None);
+        assert_eq!(ContextLane::from_config_str("chat"), None);
+        assert_eq!(
+            ContextLane::from_config_str("task"),
+            Some(ContextLane::Task)
+        );
+    }
+
     // ── TEST 1: HUD APPEARS WITH TAB ──
 
     #[test]
@@ -30197,6 +30479,7 @@ mod periodic_auxiliary_scheduler_tests {
             Config::default(),
             None,
             false,
+            None,
         );
 
         // Hold the worker on a running job so its one queue slot cannot be

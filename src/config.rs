@@ -1023,6 +1023,16 @@ pub struct TuiConfig {
     /// Default layout mode: "auto", "horizontal", "vertical"
     #[serde(default = "default_tui_layout")]
     pub default_layout: String,
+    /// Context lane the TUI opens in: "chat" (default), "task", or "workspace".
+    ///
+    /// "chat" preserves the historical startup surface. "task" opens the
+    /// graph with the inspector on the remembered task tab (Detail) so there
+    /// is no chat surface until the operator switches lanes; "workspace"
+    /// opens the remembered workspace tab (Dashboard). The `wg tui --lane`
+    /// flag overrides this value; anything other than task/workspace falls
+    /// back to the unchanged chat default.
+    #[serde(default = "default_tui_lane")]
+    pub default_lane: String,
     /// Color theme: "dark" (default), "light"
     #[serde(default = "default_tui_theme")]
     pub color_theme: String,
@@ -1077,6 +1087,9 @@ pub struct TuiConfig {
 fn default_tui_layout() -> String {
     "auto".to_string()
 }
+fn default_tui_lane() -> String {
+    "chat".to_string()
+}
 fn default_tui_theme() -> String {
     "dark".to_string()
 }
@@ -1116,6 +1129,7 @@ impl Default for TuiConfig {
         Self {
             mouse_mode: None,
             default_layout: default_tui_layout(),
+            default_lane: default_tui_lane(),
             color_theme: default_tui_theme(),
             timestamp_format: default_timestamp_format(),
             show_token_counts: true,
@@ -7581,6 +7595,21 @@ model = "claude:opus"
         assert_eq!(reloaded.coordinator.archive_retention_days, 31);
         let serialized = fs::read_to_string(dir.path().join("config.toml")).unwrap();
         assert!(serialized.contains("archive_retention_days = 31"));
+    }
+
+    #[test]
+    fn tui_default_lane_defaults_to_chat_and_parses_explicit_value() {
+        let absent: Config = toml::from_str("").unwrap();
+        assert_eq!(absent.tui.default_lane, "chat");
+
+        let configured: Config = toml::from_str("[tui]\ndefault_lane = \"task\"\n").unwrap();
+        assert_eq!(configured.tui.default_lane, "task");
+
+        // Round-trip through full serialization/reload like `wg config` writes.
+        let dir = TempDir::new().unwrap();
+        configured.save(dir.path()).unwrap();
+        let reloaded = Config::load(dir.path()).unwrap();
+        assert_eq!(reloaded.tui.default_lane, "task");
     }
 
     #[test]

@@ -2499,6 +2499,17 @@ pub enum Commands {
         /// for this session.
         #[arg(long)]
         no_history: bool,
+
+        /// Start the TUI on a specific context lane instead of the configured
+        /// default: "chat", "task", or "workspace". "task" opens graph-focused
+        /// with the inspector on the selected task's detail and no chat surface.
+        /// Overrides `[tui] default_lane`.
+        #[arg(long, value_name = "LANE", value_parser = ["chat", "task", "workspace"])]
+        lane: Option<String>,
+
+        /// Alias for `--lane task`: open graph-focused with no chat surface.
+        #[arg(long, conflicts_with = "lane")]
+        no_chat: bool,
     },
 
     /// Dump the current TUI screen contents (requires a running `wg tui`)

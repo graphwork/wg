@@ -200,7 +200,7 @@ ignored, and removed by `wg migrate config`; valid graph depth is unlimited.
 
 All G-scope (cosmetic / per-user). Defaults at `:670-705`:
 
-`mouse_mode = None`, `default_layout = "auto"`, `color_theme = "dark"`, `timestamp_format = "relative"`, `show_token_counts = true`, `message_name_threshold = 8`, `message_indent = 2`, `panel_ratio = 67`, `default_inspector_size = "2/3"`, `chat_history = true`, `chat_history_max = 1000`, `chat_page_size = 100`, `counters = "uptime,cumulative,active,compact"`, `show_system_tasks = false`, `show_running_system_tasks = false`, `show_keys = false`, `session_gap_minutes = 30`.
+`mouse_mode = None`, `default_layout = "auto"`, `default_lane = "chat"`, `color_theme = "dark"`, `timestamp_format = "relative"`, `show_token_counts = true`, `message_name_threshold = 8`, `message_indent = 2`, `panel_ratio = 67`, `default_inspector_size = "2/3"`, `chat_history = true`, `chat_history_max = 1000`, `chat_page_size = 100`, `counters = "uptime,cumulative,active,compact"`, `show_system_tasks = false`, `show_running_system_tasks = false`, `show_keys = false`, `session_gap_minutes = 30`. `default_lane` picks the lane `wg tui` opens in (`chat` keeps the historical startup surface; `task` opens graph-focused on the Detail inspector with no chat surface; `workspace` opens the Activity tab). The `wg tui --lane <chat|task|workspace>` flag (and the `--no-chat` alias for `--lane task`) overrides it.
 
 ### `[chat]` — chat archive rotation (`src/config.rs:168-206`)
 

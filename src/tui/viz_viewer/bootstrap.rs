@@ -29,6 +29,9 @@ pub struct BootstrapArgs {
     pub no_history: bool,
     pub trace_path: Option<PathBuf>,
     pub force_show_keys: bool,
+    /// Startup lane resolved by the CLI (`--lane`/`--no-chat`); wins over the
+    /// `[tui] default_lane` config read by the bootstrap worker.
+    pub startup_lane: Option<super::state::ContextLane>,
 }
 
 struct Request {
@@ -86,6 +89,7 @@ impl StorageBackend for FilesystemStorage {
             args.no_history,
             args.trace_path,
             args.force_show_keys,
+            args.startup_lane,
         )
         .map_err(|error| error.to_string())
     }
@@ -318,6 +322,7 @@ mod tests {
             no_history: true,
             trace_path: None,
             force_show_keys: false,
+            startup_lane: None,
         }
     }
 

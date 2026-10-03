@@ -108,6 +108,7 @@ pub fn run(
     show_keys: bool,
     history_depth: Option<usize>,
     no_history: bool,
+    startup_lane: Option<state::ContextLane>,
 ) -> Result<()> {
     // Check if stdout is a terminal before any terminal operations to avoid "open terminal failed" errors
     if !crossterm::tty::IsTty::is_tty(&io::stdout()) {
@@ -178,6 +179,11 @@ pub fn run(
         history_depth,
         no_history,
     );
+    // Apply an explicit `--lane`/`--no-chat` before the first frame so the
+    // requested lane is the initial view, not a post-bootstrap correction.
+    if let Some(lane) = startup_lane {
+        app.set_startup_lane(lane);
+    }
     app.has_keyboard_enhancement = has_keyboard_enhancement;
     app.key_feedback_enabled = show_keys;
 
