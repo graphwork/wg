@@ -136,6 +136,22 @@ pub enum IpcRequest {
         #[serde(default)]
         log_tail: Option<usize>,
     },
+    /// Bounded, read-only **fleet snapshot** for UI clients (the pi plugin's
+    /// FleetView, and later the WG TUI). Unlike `VizSnapshot` (per-task graph
+    /// projection) this returns everything a fleet UI renders directly in one
+    /// round trip: the graph revision, task rows (status/age/deps/assigned/
+    /// model/token summary), agent rows (executor/model/status/elapsed and a
+    /// current-activity step), and aggregate counts. Strictly non-mutating and
+    /// bounded; safe to call from any client at any time.
+    GetFleet {
+        /// When supplied and equal to the current revision, the response
+        /// carries counts plus `unchanged: true` and no rows (bounded delta).
+        #[serde(default)]
+        since_revision: Option<String>,
+        /// Max rows per section (bounded; default 500, clamped to 1..=2000).
+        #[serde(default)]
+        max_rows: Option<usize>,
+    },
     /// Send a message to a task's message queue
     SendMessage {
         task_id: String,
@@ -1627,6 +1643,13 @@ fn handle_request(
             logger.info("IPC VizSnapshot (read-only)");
             handle_viz_snapshot(dir, log_tail)
         }
+        IpcRequest::GetFleet {
+            since_revision,
+            max_rows,
+        } => {
+            logger.info("IPC GetFleet (read-only)");
+            handle_get_fleet(dir, since_revision.as_deref(), max_rows)
+        }
         IpcRequest::SendMessage {
             task_id,
             body,
@@ -2746,6 +2769,33 @@ fn handle_viz_snapshot(dir: &Path, log_tail: Option<usize>) -> IpcResponse {
     IpcResponse::success(serde_json::json!({
         "tasks": tasks,
     }))
+}
+
+/// Handle `GetFleet` IPC request — the bounded read-only fleet snapshot for UI
+/// clients. Loads the graph (a shared read lock is taken and released inside
+/// `load_graph`, before we serialise) and the runtime agent registry, then
+/// projects both through `service::fleet_snapshot`. Never mutates graph or
+/// control-plane state. When `since_revision` equals the current revision the
+/// response is a bounded delta (counts + `unchanged: true`, no rows).
+fn handle_get_fleet(
+    dir: &Path,
+    since_revision: Option<&str>,
+    max_rows: Option<usize>,
+) -> IpcResponse {
+    let limits = worksgood::service::fleet_snapshot::FleetLimits::clamp(max_rows);
+    let graph_path = graph_path(dir);
+    let graph = match load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+    let registry = AgentRegistry::load(dir).unwrap_or_default();
+    IpcResponse::success(worksgood::service::fleet_snapshot::build_fleet_snapshot(
+        dir,
+        &graph,
+        &registry,
+        limits,
+        since_revision,
+    ))
 }
 
 /// Append a user chat message to a coordinator's inbox.
@@ -6345,5 +6395,54 @@ poll_interval = 60
         fs::write(dir.join("graph.jsonl"), "{not json\n").unwrap();
         let resp3 = handle_viz_snapshot(dir, None);
         assert!(!resp3.ok);
+    }
+
+    /// End-to-end handler test: GetFleet reads the graph through the real IPC
+    /// handler, returns the documented shape (revision + task rows + agent rows
+    /// + counts), provably never mutates the graph, and honours the
+    /// `since_revision` delta. The bounded-row behaviour is pinned by the
+    /// `service::fleet_snapshot` lib tests.
+    #[test]
+    fn get_fleet_handler_is_read_only_and_shaped() {
+        use worksgood::graph::{Node, Status, WorkGraph};
+        use worksgood::test_helpers::make_task_with_status;
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        let mut graph = WorkGraph::new();
+        let parent = make_task_with_status("parent-a", "Parent A", Status::Done);
+        let mut child = make_task_with_status("child-b", "Child B", Status::InProgress);
+        child.after = vec!["parent-a".to_string()];
+        child.assigned = Some("agent-7".to_string());
+        graph.add_node(Node::Task(parent));
+        graph.add_node(Node::Task(child));
+        worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let before = fs::read(dir.join("graph.jsonl")).unwrap();
+        let resp = handle_get_fleet(dir, None, None);
+        assert!(resp.ok, "get_fleet should succeed: {:?}", resp.error);
+        // Read-only: the graph file is byte-identical after the snapshot.
+        assert_eq!(
+            fs::read(dir.join("graph.jsonl")).unwrap(),
+            before,
+            "GetFleet must never mutate the graph"
+        );
+
+        let data = resp.data.unwrap();
+        assert!(!data["revision"].as_str().unwrap().is_empty());
+        assert_eq!(data["unchanged"], false);
+        assert_eq!(data["counts"]["in_progress"], 1);
+        assert_eq!(data["counts"]["done"], 1);
+        assert_eq!(data["counts"]["total"], 2);
+        assert_eq!(data["tasks"].as_array().unwrap().len(), 2);
+        assert!(data["agents"].as_array().unwrap().is_empty());
+
+        // Delta: echoing the current revision yields counts but no rows.
+        let revision = data["revision"].as_str().unwrap().to_string();
+        let delta = handle_get_fleet(dir, Some(&revision), None).data.unwrap();
+        assert_eq!(delta["unchanged"], true);
+        assert_eq!(delta["revision"], revision);
+        assert!(delta["tasks"].as_array().unwrap().is_empty());
+        assert_eq!(delta["counts"]["total"], 2);
     }
 }

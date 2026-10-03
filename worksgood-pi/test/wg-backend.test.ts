@@ -12,6 +12,10 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import { createServer } from "node:net";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
 import { canonicalChatId, readWgEnv, WgBackend } from "../pi-worksgood/index.js";
 
@@ -163,5 +167,249 @@ describe("WG chat launch context", () => {
       }).chatId,
     ).toBeUndefined();
     expect(readWgEnv({ WG_CHAT_ID: "not-a-canonical-chat" }).chatId).toBeUndefined();
+  });
+});
+
+// ── GetFleet daemon read surface ─────────────────────────────────────────────
+
+/** A fake ExecHost that returns canned stdout keyed by the wg verb. */
+function fakeVerbHost(map: Record<string, { stdout?: string; code?: number }>) {
+  const calls: { command: string; args: string[] }[] = [];
+  const host = {
+    exec: vi.fn(async (command: string, args: string[]) => {
+      calls.push({ command, args });
+      const verb = args.find((a) => ["list", "agents", "ready"].includes(a)) ?? "";
+      const entry = map[verb] ?? { stdout: "[]", code: 0 };
+      return { stdout: entry.stdout ?? "", stderr: "", code: entry.code ?? 0, killed: false };
+    }),
+  };
+  return { host, calls };
+}
+
+/** A one-request-per-connection fake daemon over a UNIX socket. */
+async function fakeDaemon(
+  socketPath: string,
+  respond: (req: Record<string, unknown>) => { body: string | null; delayMs?: number },
+): Promise<{ close: () => Promise<void>; requests: Record<string, unknown>[] }> {
+  const requests: Record<string, unknown>[] = [];
+  const server = createServer((sock) => {
+    let buffer = "";
+    sock.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const idx = buffer.indexOf("\n");
+      if (idx < 0) return;
+      const line = buffer.slice(0, idx).trim();
+      if (!line) return;
+      requests.push(JSON.parse(line) as Record<string, unknown>);
+      const { body, delayMs } = respond(JSON.parse(line));
+      setTimeout(() => {
+        if (body !== null) sock.write(`${body}\n`);
+        sock.end();
+      }, delayMs ?? 0);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  return {
+    requests,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+  };
+}
+
+const CLI_LIST = JSON.stringify([
+  { id: "t1", title: "T1", status: "in-progress", assigned: "agent-7", after: [] },
+  { id: "t2", title: "T2", status: "done", after: ["t1"] },
+  { id: "t3", title: "T3", status: "open", after: [] },
+]);
+const CLI_AGENTS = JSON.stringify([
+  {
+    id: "agent-7",
+    task_id: "t1",
+    executor: "pi",
+    model: "pi:openrouter:anthropic/claude-opus-4-7",
+    status: "working",
+    started_at: "2026-02-02T09:00:00Z",
+    uptime: "12m",
+    process_alive: true,
+  },
+]);
+const CLI_READY = JSON.stringify([{ id: "t3", title: "T3", ready: true }]);
+
+describe("WgBackend.getFleet", () => {
+  it("reads the bounded snapshot from the daemon over the IPC socket", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-fleet-"));
+    const socket = join(dir, "daemon.sock");
+    const daemon = await fakeDaemon(socket, () => ({
+      body: JSON.stringify({
+        ok: true,
+        revision: "wggraph:v1:abc#deadbeef",
+        unchanged: false,
+        counts: { in_progress: 1, ready: 2, blocked: 0, done: 3, failed: 0, total: 6 },
+        tasks: [
+          {
+            id: "t1",
+            title: "T1",
+            status: "in-progress",
+            assigned: "agent-7",
+            depends_on: ["t0"],
+            dependency_count: 1,
+            token_usage: { input_tokens: 5, output_tokens: 5, total_tokens: 10, cost_usd: 0.01 },
+          },
+        ],
+        agents: [
+          {
+            id: "agent-7",
+            task_id: "t1",
+            executor: "pi",
+            status: "working",
+            elapsed_ms: 720000,
+            activity: "running cargo test",
+          },
+        ],
+      }),
+    }));
+    try {
+      const { host, calls } = fakeVerbHost({});
+      const backend = new WgBackend(host, { daemonSocket: socket });
+
+      const snapshot = await backend.getFleet();
+      expect(snapshot?.source).toBe("daemon");
+      expect(snapshot?.revision).toBe("wggraph:v1:abc#deadbeef");
+      expect(snapshot?.counts.in_progress).toBe(1);
+      expect(snapshot?.counts.total).toBe(6);
+      expect(snapshot?.tasks[0].depends_on).toEqual(["t0"]);
+      expect(snapshot?.tasks[0].token_usage?.total_tokens).toBe(10);
+      expect(snapshot?.agents[0].activity).toBe("running cargo test");
+      // The daemon answered, so the CLI must not be shelled at all.
+      expect(calls).toHaveLength(0);
+      // The request carries the read-only cmd.
+      expect(daemon.requests[0].cmd).toBe("get_fleet");
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it("forwards since_revision for the bounded delta form", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-fleet-"));
+    const socket = join(dir, "daemon.sock");
+    const daemon = await fakeDaemon(socket, () => ({
+      body: JSON.stringify({
+        ok: true,
+        revision: "wggraph:v1:abc#deadbeef",
+        unchanged: true,
+        counts: { in_progress: 1, ready: 0, blocked: 0, done: 0, total: 1 },
+        tasks: [],
+        agents: [],
+      }),
+    }));
+    try {
+      const { host } = fakeVerbHost({});
+      const backend = new WgBackend(host, { daemonSocket: socket });
+      const snapshot = await backend.getFleet({ sinceRevision: "wggraph:v1:abc#deadbeef" });
+      expect(snapshot?.source).toBe("daemon");
+      expect(snapshot?.unchanged).toBe(true);
+      expect(snapshot?.tasks).toEqual([]);
+      expect(daemon.requests[0].since_revision).toBe("wggraph:v1:abc#deadbeef");
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it("falls back to the CLI path when no daemon socket exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-fleet-"));
+    const { host, calls } = fakeVerbHost({
+      list: { stdout: CLI_LIST },
+      agents: { stdout: CLI_AGENTS },
+      ready: { stdout: CLI_READY },
+    });
+    const backend = new WgBackend(host, { dir });
+
+    const snapshot = await backend.getFleet();
+    expect(snapshot?.source).toBe("cli");
+    expect(snapshot?.counts.in_progress).toBe(1);
+    expect(snapshot?.counts.done).toBe(1);
+    expect(snapshot?.counts.ready).toBe(1);
+    expect(snapshot?.counts.active_agents).toBe(1);
+    expect(snapshot?.agents[0].id).toBe("agent-7");
+    expect(snapshot?.revision).toBe("");
+    // All three read-only CLI verbs ran.
+    expect(calls.map((c) => c.args.find((a) => ["list", "agents", "ready"].includes(a))).sort()).toEqual([
+      "agents",
+      "list",
+      "ready",
+    ]);
+  });
+
+  it("falls back to the CLI on a daemon error response", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-fleet-"));
+    const socket = join(dir, "daemon.sock");
+    const daemon = await fakeDaemon(socket, () => ({
+      body: JSON.stringify({ ok: false, error: "boom" }),
+    }));
+    try {
+      const { host } = fakeVerbHost({
+        list: { stdout: CLI_LIST },
+        agents: { stdout: CLI_AGENTS },
+        ready: { stdout: CLI_READY },
+      });
+      const backend = new WgBackend(host, { daemonSocket: socket });
+      const snapshot = await backend.getFleet();
+      expect(snapshot?.source).toBe("cli");
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it("falls back to the CLI on a protocol mismatch (older daemon shape)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-fleet-"));
+    const socket = join(dir, "daemon.sock");
+    const daemon = await fakeDaemon(socket, () => ({
+      // ok, but missing counts/tasks — an older protocol.
+      body: JSON.stringify({ ok: true, agents: [] }),
+    }));
+    try {
+      const { host } = fakeVerbHost({
+        list: { stdout: CLI_LIST },
+        agents: { stdout: CLI_AGENTS },
+        ready: { stdout: CLI_READY },
+      });
+      const backend = new WgBackend(host, { daemonSocket: socket });
+      const snapshot = await backend.getFleet();
+      expect(snapshot?.source).toBe("cli");
+      expect(snapshot?.counts.total).toBe(3);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it("falls back to the CLI when the daemon times out", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-fleet-"));
+    const socket = join(dir, "daemon.sock");
+    const daemon = await fakeDaemon(socket, () => ({ body: null, delayMs: 200 }));
+    try {
+      const { host } = fakeVerbHost({
+        list: { stdout: CLI_LIST },
+        agents: { stdout: CLI_AGENTS },
+        ready: { stdout: CLI_READY },
+      });
+      const backend = new WgBackend(host, { daemonSocket: socket });
+      const snapshot = await backend.getFleet({ timeoutMs: 50 });
+      expect(snapshot?.source).toBe("cli");
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it("returns null when neither source produces data", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-fleet-"));
+    const { host } = fakeVerbHost({
+      list: { stdout: "", code: 1 },
+      agents: { stdout: "", code: 1 },
+      ready: { stdout: "", code: 1 },
+    });
+    const backend = new WgBackend(host, { dir });
+    expect(await backend.getFleet()).toBeNull();
   });
 });

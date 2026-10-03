@@ -630,16 +630,31 @@ fn save_registry(dir: &Path, registry: &CapabilityRegistry) -> Result<()> {
     atomic_write(&registry_path(dir), &serde_json::to_vec_pretty(registry)?)
 }
 
-pub fn load_or_create_graph_identity(dir: &Path) -> Result<String> {
+/// Read the graph identity token **without creating** it.
+///
+/// `load_or_create_graph_identity` writes the sidecar on first use. Read-only
+/// callers — e.g. the daemon's `GetFleet` snapshot — must not mutate the
+/// workgraph directory, so they read here and accept `None` when the identity
+/// has not been minted yet.
+pub fn read_graph_identity(dir: &Path) -> Result<Option<String>> {
     let path = graph_identity_path(dir);
-    if path.exists() {
-        let value = fs::read_to_string(&path)?;
-        let value = value.trim();
-        if value.starts_with("wggraph:v1:") && value.len() > 24 {
-            return Ok(value.to_string());
-        }
+    if !path.exists() {
+        return Ok(None);
+    }
+    let value = fs::read_to_string(&path)?;
+    let value = value.trim();
+    if value.starts_with("wggraph:v1:") && value.len() > 24 {
+        Ok(Some(value.to_string()))
+    } else {
         bail!("worker_control.graph_identity_invalid: {}", path.display());
     }
+}
+
+pub fn load_or_create_graph_identity(dir: &Path) -> Result<String> {
+    if let Some(value) = read_graph_identity(dir)? {
+        return Ok(value);
+    }
+    let path = graph_identity_path(dir);
     let value = format!("wggraph:v1:{}", uuid::Uuid::now_v7());
     atomic_write(&path, format!("{value}\n").as_bytes())?;
     Ok(value)

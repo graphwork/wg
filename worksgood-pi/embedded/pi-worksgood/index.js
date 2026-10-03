@@ -88,7 +88,7 @@ export default function worksgoodPi(pi) {
     });
 }
 // Re-export the building blocks so the SDK host and tests can use them directly.
-export { WgBackend, readWgEnv, canonicalChatId } from "./wg-backend.js";
+export { WgBackend, readWgEnv, canonicalChatId, normalizeGetFleet, buildCliFleet } from "./wg-backend.js";
 export { registerWgTools } from "./tools.js";
 export { registerWgCommands, parseModelSpec } from "./commands.js";
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";

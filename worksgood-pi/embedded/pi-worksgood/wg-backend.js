@@ -7,6 +7,8 @@
  * client (talking to `WG_DAEMON_SOCKET`) without touching the tool/command
  * surface that depends on it — see integration-plan-v2.md §2 / plugin-research.md §4.4.
  */
+import { connect } from "node:net";
+import { resolveSocketPath } from "./viz-snapshot.js";
 function firstNonEmpty(...vals) {
     for (const v of vals) {
         if (v != null && v.trim() !== "")
@@ -179,5 +181,291 @@ export class WgBackend {
         }
         return r;
     }
+    // ── daemon read surface (GetFleet) ──────────────────────────────────────
+    /**
+     * Read the bounded fleet snapshot: revision + task rows + agent rows (with a
+     * current-activity step) + aggregate counts.
+     *
+     * The daemon path is tried first (the read-only `get_fleet` IPC request over
+     * `WG_DAEMON_SOCKET` or the standard `<wg-dir>/service/daemon.sock`). On ANY
+     * error — daemon down, connect/timeout, error response, or a protocol
+     * mismatch — it falls back to the **existing CLI path** (`wg list --json` +
+     * `wg agents --json` + `wg ready --json`), so nothing regresses when no
+     * daemon is running. Returns `null` only when neither source produced data.
+     *
+     * Strictly read-only in both paths: it never mutates graph state.
+     */
+    async getFleet(opts = {}) {
+        const resolved = resolveSocketPath(this.env);
+        if (resolved.socket) {
+            try {
+                const raw = await ipcGetFleet(resolved.socket, {
+                    cmd: "get_fleet",
+                    since_revision: opts.sinceRevision,
+                    max_rows: opts.maxRows,
+                }, opts.timeoutMs ?? 2000, opts.signal);
+                // A well-formed get_fleet response MUST carry counts + a task array.
+                // Anything else is a protocol mismatch (an older daemon) → CLI.
+                if (!isRecord(raw) || !isRecord(raw.counts) || !Array.isArray(raw.tasks)) {
+                    throw new Error("get_fleet protocol mismatch");
+                }
+                return normalizeGetFleet(raw, "daemon");
+            }
+            catch {
+                // Any daemon failure degrades to the CLI path below.
+            }
+        }
+        return this.getFleetViaCli(opts);
+    }
+    /** The safe default: derive the same fleet shape from read-only CLI verbs. */
+    async getFleetViaCli(opts) {
+        try {
+            const [listRes, agentsRes, readyRes] = await Promise.all([
+                this.run(["list"], { json: true, signal: opts.signal }),
+                this.run(["agents"], { json: true, signal: opts.signal }),
+                this.run(["ready"], { json: true, signal: opts.signal }),
+            ]);
+            const tasksRaw = parseJsonArray(listRes.stdout);
+            const agentsRaw = parseJsonArray(agentsRes.stdout);
+            const readyRaw = parseJsonArray(readyRes.stdout);
+            if (!tasksRaw && !agentsRaw && !readyRaw)
+                return null;
+            return buildCliFleet(tasksRaw ?? [], agentsRaw ?? [], readyRaw ?? []);
+        }
+        catch {
+            return null;
+        }
+    }
+}
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseJsonArray(out) {
+    try {
+        const parsed = JSON.parse((out ?? "").trim());
+        return Array.isArray(parsed) ? parsed : null;
+    }
+    catch {
+        return null;
+    }
+}
+function num(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+function str(value) {
+    return typeof value === "string" ? value : null;
+}
+/**
+ * One-shot daemon IPC round trip for the read-only `get_fleet` request,
+ * mirroring the Rust client's one-request-per-connection contract. Any
+ * transport error (connect refused, timeout, error response, malformed JSON)
+ * rejects so the caller can fall back to the CLI.
+ */
+function ipcGetFleet(socketPath, request, timeoutMs, signal) {
+    const payload = JSON.stringify(request);
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let buffer = "";
+        let socket = null;
+        const finish = (err, value) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            if (signal)
+                signal.removeEventListener("abort", onAbort);
+            try {
+                socket?.destroy();
+            }
+            catch {
+                /* socket already gone */
+            }
+            if (err)
+                reject(err);
+            else
+                resolve(value);
+        };
+        const timer = setTimeout(() => finish(new Error(`get_fleet timed out after ${timeoutMs}ms`)), timeoutMs);
+        const onAbort = () => finish(new Error("get_fleet aborted"));
+        if (signal) {
+            if (signal.aborted)
+                return finish(new Error("get_fleet aborted"));
+            signal.addEventListener("abort", onAbort, { once: true });
+        }
+        socket = connect(socketPath, () => {
+            socket?.write(`${payload}\n`);
+        });
+        socket.once("error", (err) => finish(err));
+        socket.on("data", (chunk) => {
+            buffer += chunk.toString("utf8");
+            const idx = buffer.indexOf("\n");
+            if (idx < 0)
+                return;
+            const line = buffer.slice(0, idx).trim();
+            if (!line)
+                return;
+            try {
+                const response = JSON.parse(line);
+                if (response.ok === false) {
+                    return finish(new Error(response.error ?? "get_fleet failed"));
+                }
+                return finish(null, response);
+            }
+            catch (err) {
+                return finish(err instanceof Error ? err : new Error(String(err)));
+            }
+        });
+        socket.once("close", () => {
+            if (!settled && !buffer.trim()) {
+                finish(new Error("daemon closed the connection without a response"));
+            }
+        });
+    });
+}
+function normalizeTaskRow(raw) {
+    if (!isRecord(raw) || typeof raw.id !== "string" || typeof raw.status !== "string") {
+        return null;
+    }
+    return {
+        id: raw.id,
+        title: typeof raw.title === "string" ? raw.title : raw.id,
+        status: raw.status,
+        presentation: str(raw.presentation) ?? undefined,
+        assigned: str(raw.assigned),
+        model: str(raw.model),
+        parent: str(raw.parent),
+        depends_on: Array.isArray(raw.depends_on)
+            ? raw.depends_on.filter((d) => typeof d === "string")
+            : [],
+        dependency_count: num(raw.dependency_count),
+        paused: raw.paused === true,
+        age_secs: typeof raw.age_secs === "number" ? raw.age_secs : null,
+        started_at: str(raw.started_at),
+        completed_at: str(raw.completed_at),
+        last_interaction_at: str(raw.last_interaction_at),
+        token_usage: isRecord(raw.token_usage)
+            ? {
+                input_tokens: num(raw.token_usage.input_tokens),
+                output_tokens: num(raw.token_usage.output_tokens),
+                total_tokens: num(raw.token_usage.total_tokens),
+                cost_usd: num(raw.token_usage.cost_usd),
+            }
+            : null,
+        failure_reason: str(raw.failure_reason),
+    };
+}
+function normalizeAgentRow(raw) {
+    if (!isRecord(raw) || typeof raw.id !== "string")
+        return null;
+    const status = typeof raw.status === "string" ? raw.status.split(" ")[0] ?? raw.status : "unknown";
+    return {
+        id: raw.id,
+        task_id: typeof raw.task_id === "string" ? raw.task_id : "",
+        executor: str(raw.executor),
+        model: str(raw.model),
+        status,
+        started_at: str(raw.started_at),
+        elapsed_ms: typeof raw.elapsed_ms === "number" ? raw.elapsed_ms : null,
+        activity: str(raw.activity),
+    };
+}
+/** Normalize a decoded `get_fleet` body into the backend's snapshot shape. */
+export function normalizeGetFleet(raw, source = "daemon") {
+    const r = isRecord(raw) ? raw : {};
+    const counts = isRecord(r.counts) ? r.counts : {};
+    const graph = isRecord(r.graph) ? r.graph : undefined;
+    return {
+        revision: typeof r.revision === "string" ? r.revision : "",
+        unchanged: r.unchanged === true,
+        counts: {
+            in_progress: num(counts.in_progress),
+            ready: num(counts.ready),
+            blocked: num(counts.blocked),
+            done: num(counts.done),
+            failed: num(counts.failed),
+            total: num(counts.total),
+            active_agents: num(counts.active_agents),
+        },
+        tasks: Array.isArray(r.tasks)
+            ? r.tasks.map(normalizeTaskRow).filter((t) => t !== null)
+            : [],
+        agents: Array.isArray(r.agents)
+            ? r.agents.map(normalizeAgentRow).filter((a) => a !== null)
+            : [],
+        graph: graph
+            ? {
+                identity: str(graph.identity),
+                task_count: num(graph.task_count),
+                agent_count: num(graph.agent_count),
+            }
+            : undefined,
+        truncated: r.truncated === true,
+        source,
+    };
+}
+const TERMINAL_AGENT_STATUSES = new Set(["done", "failed", "dead"]);
+function agentAlive(status, processAlive) {
+    if (typeof processAlive === "boolean") {
+        return processAlive && !TERMINAL_AGENT_STATUSES.has(status);
+    }
+    return !TERMINAL_AGENT_STATUSES.has(status);
+}
+/**
+ * Build the fleet snapshot from the read-only CLI verbs (the safe fallback):
+ * `wg list --json` (task rows + status counts), `wg ready --json` (ready
+ * count), `wg agents --json` (runtime worker rows). No revision is available
+ * on this path, so `revision` is empty and `unchanged` is always false.
+ */
+export function buildCliFleet(rawTasks, rawAgents, rawReady) {
+    const tasks = rawTasks
+        .map(normalizeTaskRow)
+        .filter((t) => t !== null);
+    const agents = rawAgents
+        .map(normalizeAgentRow)
+        .filter((a) => a !== null);
+    const counts = {
+        in_progress: 0,
+        ready: rawReady.filter((r) => !isRecord(r) || r.ready !== false).length,
+        blocked: 0,
+        done: 0,
+        failed: 0,
+        total: tasks.length,
+        active_agents: 0,
+    };
+    for (const task of tasks) {
+        switch (task.status) {
+            case "in-progress":
+                counts.in_progress += 1;
+                break;
+            case "blocked":
+                counts.blocked += 1;
+                break;
+            case "done":
+                counts.done += 1;
+                break;
+            case "failed":
+            case "abandoned":
+            case "failed-pending-eval":
+                counts.failed = (counts.failed ?? 0) + 1;
+                break;
+            default:
+                break;
+        }
+    }
+    for (const raw of rawAgents) {
+        if (!isRecord(raw) || typeof raw.status !== "string")
+            continue;
+        const status = raw.status.split(" ")[0] ?? raw.status;
+        if (agentAlive(status, raw.process_alive))
+            counts.active_agents = (counts.active_agents ?? 0) + 1;
+    }
+    return {
+        revision: "",
+        unchanged: false,
+        counts,
+        tasks,
+        agents,
+        source: "cli",
+    };
 }
 //# sourceMappingURL=wg-backend.js.map

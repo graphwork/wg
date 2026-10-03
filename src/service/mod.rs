@@ -12,6 +12,7 @@ pub mod convergence;
 pub mod coordinator_prompt;
 pub mod dispatch_boot;
 pub mod executor;
+pub mod fleet_snapshot;
 pub mod graph_watcher;
 pub mod llm;
 pub mod planner;
