@@ -151,7 +151,7 @@ when no more changes are needed. If you are inside a cycle, check `wg show` for 
 - List each worker's file scope in the task description
 - Run `wg quickstart` for full command reference
 
-**After code changes:** Run `cargo install --path .` to update the global binary.\n";
+**After code changes:** Do NOT run `cargo install` — it overwrites the shared global binary with a worktree build and bakes a prunable worktree manifest dir. Verify with `cargo build` / `cargo test` / `cargo run`; only the operator installs, from the main checkout.\n";
 
 /// Reusable Workflow Functions section: wg func list/apply/show.
 pub const REUSABLE_FUNCTIONS_SECTION: &str = "\
@@ -3361,7 +3361,13 @@ args = ["--custom-flag"]
 
         assert!(GRAPH_PATTERNS_SECTION.contains("Golden rule"));
         assert!(GRAPH_PATTERNS_SECTION.contains("pipeline"));
-        assert!(GRAPH_PATTERNS_SECTION.contains("cargo install --path"));
+        assert!(GRAPH_PATTERNS_SECTION.contains("Do NOT run `cargo install`"));
+        assert!(GRAPH_PATTERNS_SECTION.contains("cargo build"));
+        assert!(GRAPH_PATTERNS_SECTION.contains("only the operator installs"));
+        assert!(
+            !GRAPH_PATTERNS_SECTION.contains("**After code changes:** Run `cargo install"),
+            "the worker prompt must not tell workers to cargo install"
+        );
 
         assert!(REUSABLE_FUNCTIONS_SECTION.contains("wg func list"));
         assert!(REUSABLE_FUNCTIONS_SECTION.contains("wg func apply"));

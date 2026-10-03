@@ -119,6 +119,12 @@ fn run_status() -> Result<()> {
             }
         );
     }
+    // A `wg` installed from a worktree is exactly the hazard that made this
+    // command point ~/.pi/agent/settings.json at a prunable path, so flag it
+    // here even when everything else resolves cleanly.
+    if let Some(warning) = worksgood::build_provenance::worktree_build_warning() {
+        println!("  WARNING: {warning}");
+    }
     Ok(())
 }
 

@@ -192,19 +192,11 @@ fn is_wg_plugin_repo(dir: &Path) -> bool {
 /// hazard: the baked `CARGO_MANIFEST_DIR` pointed at
 /// `/home/bot/wg/.wg-worktrees/agent-NNN`, so `wg pi-plugin install` rewrote
 /// `~/.pi/agent/settings.json` at a directory that would later be pruned).
-fn is_worktree_path(path: &Path) -> bool {
-    let parts: Vec<String> = path
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
-            _ => None,
-        })
-        .collect();
-    parts.iter().any(|p| p == ".wg-worktrees")
-        || parts
-            .windows(2)
-            .any(|w| w[0] == ".claude" && w[1] == "worktrees")
-}
+///
+/// Re-exported from [`crate::build_provenance`] so the same predicate also
+/// drives the `build/wg-binary-from-worktree` warning in `wg status` /
+/// `wg capabilities`.
+pub(crate) use crate::build_provenance::is_worktree_path;
 
 /// Reject a compile-time plugin tree that is not a legitimate Dev source.
 /// Returns a human-readable reason when `plugin_dir` is a valid wg plugin tree

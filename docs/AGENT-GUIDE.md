@@ -512,18 +512,36 @@ wg wait <task-id> --until "human-input" --checkpoint "Waiting for approval on de
 
 The dispatcher evaluates waiting conditions each tick and automatically resumes the task when a human message arrives. This is more efficient than polling `wg msg read` in a loop and frees the agent slot for other work while waiting.
 
-### 4.2 After Code Changes: Rebuild
+### 4.2 After Code Changes: Verify, Do Not Install
 
-When you modify source code in a Rust project that uses `cargo install`:
+**Workers must NOT run `cargo install`.** A worker runs inside a WG worktree;
+`cargo install --path . --locked` from there overwrites the **shared** global
+`~/.cargo/bin/wg` with a worktree build and bakes the prunable
+`.wg-worktrees/agent-NNN` path in as the binary's manifest dir. That silently
+replaces the operator's binary, and it once made `wg pi-plugin install` point
+`~/.pi/agent/settings.json` at a worktree directory that was later pruned,
+breaking plugin resolution. A `wg` installed from a worktree is reported by
+`wg status`, `wg capabilities`, and `wg pi-plugin status` as
+`build/wg-binary-from-worktree`.
+
+Verify your change without touching the installed binary:
+
+```bash
+cargo build            # compile
+cargo test             # run the test suite
+cargo run -- <args>    # run this worktree's build directly
+```
+
+Only the **operator** installs the global binaries, from the main checkout (not
+from a `.wg-worktrees/` tree):
 
 ```bash
 cargo install --path . --locked
 ```
 
-This updates the global `wg` and `nex` binaries through the local
-`cargo install --path .` target while using the checked-in lockfile.
-Forgetting this step is a common source of "why isn't this working" bugs. Do it
-after every code change.
+This updates the global `worksgood`, `wg`, and `nex` binaries through the local
+`cargo install --path .` target while using the checked-in lockfile. Run it from
+the main checkout only.
 
 ### 4.3 Worktree Isolation
 

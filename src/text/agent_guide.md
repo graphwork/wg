@@ -404,6 +404,23 @@ off** rather than redoing it. If it's broken or wrong, commit a clean
 reset and start over from there. Either way, do not blindly overwrite
 the prior agent's commits — they may contain valuable progress.
 
+### Never run `cargo install` from a worktree
+
+Workers must **not** run `cargo install` (in particular
+`cargo install --path . --locked`). From inside a worktree it overwrites
+the **shared** global `~/.cargo/bin/wg` with a build of your worktree and
+bakes the prunable `.wg-worktrees/agent-NNN` path in as the binary's
+manifest dir. That silently replaces the operator's binary and previously
+made `wg pi-plugin install` point `~/.pi/agent/settings.json` at a
+worktree directory that was later pruned, breaking plugin resolution.
+
+Verify your change with **`cargo build`**, **`cargo test`**, or
+**`cargo run`** instead — they build and run without touching the
+installed binary. Only the operator installs, from the main checkout.
+If the running `wg` was installed from a worktree, `wg status`,
+`wg capabilities`, and `wg pi-plugin status` warn with
+`build/wg-binary-from-worktree`.
+
 ## Exec Modes
 
 Workers run with an `exec-mode` that limits available tools:

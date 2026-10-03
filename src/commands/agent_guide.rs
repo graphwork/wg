@@ -19,6 +19,7 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use worksgood::build_provenance::WORKTREE_BUILD_WARNING_CODE;
 
     #[test]
     fn guide_text_is_non_empty() {
@@ -129,6 +130,51 @@ mod tests {
         assert!(AGENT_GUIDE_TEXT.contains("wg add"));
         assert!(AGENT_GUIDE_TEXT.contains("wg publish"));
         assert!(AGENT_GUIDE_TEXT.contains("no role-based operation denylist"));
+    }
+
+    /// Worker-facing lock: the guide must tell workers NOT to run `cargo install`
+    /// (it clobbers the shared global binary and bakes a prunable worktree
+    /// manifest dir), name the safe alternative, and disclose the
+    /// `build/wg-binary-from-worktree` warning. Mirrors the assertion style of
+    /// `src/setup_pi_gates.rs` tests.
+    #[test]
+    fn guide_text_warns_workers_off_cargo_install() {
+        assert!(AGENT_GUIDE_TEXT.contains("Never run `cargo install` from a worktree"));
+        assert!(AGENT_GUIDE_TEXT.contains("Workers must **not** run `cargo install`"));
+        assert!(AGENT_GUIDE_TEXT.contains("~/.cargo/bin/wg"));
+        assert!(AGENT_GUIDE_TEXT.contains("cargo build"));
+        assert!(AGENT_GUIDE_TEXT.contains("cargo test"));
+        assert!(AGENT_GUIDE_TEXT.contains("cargo run"));
+        assert!(AGENT_GUIDE_TEXT.contains("Only the operator installs"));
+        assert!(AGENT_GUIDE_TEXT.contains(WORKTREE_BUILD_WARNING_CODE));
+    }
+
+    /// The layer-2 project guide (AGENTS.md / CLAUDE.md, kept in lock-step)
+    /// must scope the operator install and warn workers, so a spawned worker
+    /// reading either file gets the same corrected instruction.
+    #[test]
+    fn project_guide_scopes_cargo_install_to_the_operator() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for name in ["AGENTS.md", "CLAUDE.md"] {
+            let body = std::fs::read_to_string(manifest_dir.join(name))
+                .unwrap_or_else(|e| panic!("{name} must exist: {e}"));
+            assert!(
+                body.contains("WORKERS MUST NOT RUN `cargo install`"),
+                "{name} must warn workers off cargo install"
+            );
+            assert!(
+                body.contains("Operator install (from the repository root, as the operator)"),
+                "{name} must scope the operator install"
+            );
+            assert!(
+                body.contains("cargo build") && body.contains("cargo test"),
+                "{name} must name the safe verification alternative"
+            );
+            assert!(
+                body.contains(WORKTREE_BUILD_WARNING_CODE),
+                "{name} must disclose the worktree-build warning code"
+            );
+        }
     }
 
     #[test]

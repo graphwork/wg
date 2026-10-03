@@ -248,6 +248,12 @@ struct StatusOutput {
     /// input/render path.
     #[serde(skip_serializing_if = "Option::is_none")]
     disk: Option<worksgood::disk_sentinel::DiskSnapshot>,
+    /// Set when the running `wg` binary was built from a WG worktree
+    /// (`build/wg-binary-from-worktree`). A worktree build silently replaced
+    /// the shared global binary and previously broke `wg pi-plugin install`;
+    /// surface it loudly in both the human and JSON views.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build_warning: Option<String>,
 }
 
 pub fn run(dir: &Path, json: bool, show_all: bool) -> Result<()> {
@@ -448,6 +454,7 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
         agency_authority: super::adaptive_agency::authority_map(),
         adaptive,
         disk,
+        build_warning: worksgood::build_provenance::worktree_build_warning(),
     })
 }
 
@@ -1120,6 +1127,13 @@ fn gather_reopen_holds(dir: &Path, show_all: bool) -> Vec<ReopenHeldTask> {
 }
 
 fn print_status(status: &StatusOutput) {
+    // Line 0: loud build-provenance warning. A `wg` compiled from a
+    // `.wg-worktrees/` tree silently replaced the shared global binary and once
+    // rewrote ~/.pi/agent/settings.json at a prunable path — always visible.
+    if let Some(warning) = status.build_warning.as_deref() {
+        println!("WARNING: {warning}");
+    }
+
     // Line 1: Service status
     if status.service.running {
         let pid = status.service.pid.unwrap_or(0);

@@ -24,6 +24,7 @@ pub mod assignment_eligibility;
 pub mod atomic_file;
 pub mod attempt_runtime;
 pub mod attempt_select;
+pub mod build_provenance;
 pub mod chat;
 pub mod chat_command;
 pub mod chat_id;

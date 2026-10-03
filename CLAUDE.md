@@ -41,16 +41,30 @@ tool calls.
 
 ## Development
 
-The global `worksgood`, `wg`, and `nex` commands are installed via `cargo install`. After making changes to the code, run:
+**WORKERS MUST NOT RUN `cargo install`.** A worker runs inside a WG worktree.
+Running `cargo install --path . --locked` from that worktree overwrites the
+**shared** global `~/.cargo/bin/wg` with a build of *your worktree* and bakes the
+prunable `.wg-worktrees/agent-NNN` path in as the binary's `CARGO_MANIFEST_DIR`.
+That silently replaces the operator's binary and previously made
+`wg pi-plugin install` point `~/.pi/agent/settings.json` at a worktree directory
+that was later pruned, breaking plugin resolution. For verification inside a
+worktree use **`cargo build` / `cargo test` / `cargo run`** — they build and run
+without touching the installed binary. If the running `wg` was installed from a
+worktree, `wg status`, `wg capabilities`, and `wg pi-plugin status` warn with
+`build/wg-binary-from-worktree`.
+
+**Operator install (from the repository root, as the operator).** Only the
+operator installs the global binaries, from the main checkout — never from a
+`.wg-worktrees/` tree:
 
 ```
 cargo install --path . --locked
 ```
 
-to update all three global binaries. This is the local `cargo install --path .`
-install target, with `--locked` so Cargo uses the checked-in lockfile during
-install. Forgetting this step is a common source of "why isn't this working"
-issues when testing changes.
+This updates all three global binaries (`worksgood`, `wg`, `nex`). It is the
+local `cargo install --path .` install target, with `--locked` so Cargo uses the
+checked-in lockfile during install. Forgetting this step is a common source of
+"why isn't this working" issues when testing changes.
 
 ### Formatting & lint MUST match CI (run `cargo fmt` before pushing)
 

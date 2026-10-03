@@ -1906,24 +1906,37 @@ fn main() -> Result<()> {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or_else(|| Config::load_or_default(&workgraph_dir).worker_control.mode);
+            // A worker runs `wg capabilities` before coordinating; surface a
+            // worktree-built global binary here too (the `cargo install`-from-a-
+            // worktree hazard was first observed from a worker's own stream).
+            let build_warning = worksgood::build_provenance::worktree_build_warning();
             if cli.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "mode": mode,
-                        "restrictions": worksgood::worker_control::control_restrictions(mode),
-                        "task_id": std::env::var("WG_TASK_ID").ok(),
-                        "agent_id": std::env::var("WG_AGENT_ID").ok(),
-                        "attempt_id": std::env::var("WG_WORKER_ATTEMPT_ID").ok(),
-                        "attempt_fence": std::env::var("WG_WORKER_ATTEMPT_FENCE").ok(),
-                    }))?
-                );
+                let mut value = serde_json::json!({
+                    "mode": mode,
+                    "restrictions": worksgood::worker_control::control_restrictions(mode),
+                    "task_id": std::env::var("WG_TASK_ID").ok(),
+                    "agent_id": std::env::var("WG_AGENT_ID").ok(),
+                    "attempt_id": std::env::var("WG_WORKER_ATTEMPT_ID").ok(),
+                    "attempt_fence": std::env::var("WG_WORKER_ATTEMPT_FENCE").ok(),
+                });
+                if let Some(warning) = &build_warning
+                    && let Some(obj) = value.as_object_mut()
+                {
+                    obj.insert(
+                        "build_warning".to_string(),
+                        serde_json::Value::String(warning.clone()),
+                    );
+                }
+                println!("{}", serde_json::to_string_pretty(&value)?);
             } else {
                 println!("Worker control mode: {mode}");
                 println!(
                     "Restrictions: {}",
                     worksgood::worker_control::control_restrictions(mode)
                 );
+                if let Some(warning) = &build_warning {
+                    println!("WARNING: {warning}");
+                }
             }
             Ok(())
         }

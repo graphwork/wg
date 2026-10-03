@@ -69,7 +69,7 @@ fn render_response(
                 .unwrap_or_else(|| "worker control request refused".to_string())
         );
     }
-    let data = response.data.unwrap_or(serde_json::Value::Null);
+    let mut data = response.data.unwrap_or(serde_json::Value::Null);
     match operation {
         WorkerOperation::MessageRead { json } | WorkerOperation::MessagePoll { json } => {
             if *json {
@@ -121,6 +121,18 @@ fn render_response(
             }
         }
         WorkerOperation::Capabilities => {
+            // Surface a worktree-built global binary here too: a worker runs
+            // `wg capabilities` before coordinating, and the hazard (a worker's
+            // `cargo install` replacing the shared binary) was first observed
+            // from a worker's own stream.
+            if let Some(warning) = worksgood::build_provenance::worktree_build_warning() {
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert(
+                        "build_warning".to_string(),
+                        serde_json::Value::String(warning),
+                    );
+                }
+            }
             if data.get("mode").is_some() {
                 if std::env::args().any(|arg| arg == "--json") {
                     println!("{}", serde_json::to_string_pretty(&data)?);
@@ -137,6 +149,9 @@ fn render_response(
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown")
                     );
+                    if let Some(warning) = data.get("build_warning").and_then(|v| v.as_str()) {
+                        println!("WARNING: {warning}");
+                    }
                 }
             }
         }

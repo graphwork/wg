@@ -720,6 +720,18 @@ wg service resume           # Resume dispatching
 | `wg config --matrix --username <user> --password <pass>` | Set Matrix credentials |
 | `wg config --matrix --access-token <token>` | Set Matrix access token directly |
 
+### Building & verifying changes (workers)
+
+**Never run `cargo install` from a worker worktree.** It overwrites the shared
+global `~/.cargo/bin/wg` with a build of your worktree and bakes a prunable
+`.wg-worktrees/agent-NNN` path as the binary's manifest dir — silently replacing
+the operator's binary, and it once made `wg pi-plugin install` point
+`~/.pi/agent/settings.json` at a directory that was later pruned. Verify with
+`cargo build` / `cargo test` / `cargo run` instead; only the operator installs,
+from the main checkout. A `wg` installed from a worktree is reported by
+`wg status`, `wg capabilities`, and `wg pi-plugin status` as
+`build/wg-binary-from-worktree`.
+
 ### Output options
 
 All commands support `--json` for structured output. Run `wg --help` for the quick list or `wg --help-all` for every command.
