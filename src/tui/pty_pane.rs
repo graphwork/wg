@@ -38,6 +38,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -139,6 +140,75 @@ pub struct PtyPane {
     /// Executor-scoped: only set for OpenCode chat panes; claude / codex /
     /// nex keep the tmux copy-mode path.
     child_scroll_keys: bool,
+    /// Cache of the child's negotiated terminal modes (alt-screen / mouse
+    /// reporting). For tmux-wrapped panes the mode probe shells out to
+    /// `tmux display-message`, so it is cached for a short TTL to keep a
+    /// wheel burst from spawning one `tmux` process per event. Direct PTY
+    /// panes read the vt100 parser and are cheap, but share the cache for
+    /// uniformity. Refreshed lazily by [`PtyPane::child_terminal_modes`].
+    child_modes_cache: Option<(Instant, ChildTerminalModes)>,
+}
+
+/// How long a cached [`ChildTerminalModes`] probe stays valid. Long enough to
+/// absorb a wheel burst, short enough that an app that flips mouse/alt-screen
+/// mode mid-session is noticed within a few frames.
+const CHILD_MODES_CACHE_TTL: Duration = Duration::from_millis(150);
+
+/// A scroll gesture the user performed over the chat pane. The pane decides
+/// how to encode it for the child (mouse report vs. key bytes) or whether to
+/// fall back to WG's own scrollback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollIntent {
+    /// Mouse wheel up (history).
+    WheelUp,
+    /// Mouse wheel down (toward live output).
+    WheelDown,
+    /// Bare PageUp key.
+    PageUp,
+    /// Bare PageDown key.
+    PageDown,
+    /// Bare Home key.
+    Home,
+    /// Bare End key.
+    End,
+    /// Shift+PageUp.
+    ShiftPageUp,
+    /// Shift+PageDown.
+    ShiftPageDown,
+}
+
+impl ScrollIntent {
+    /// Whether this gesture arrived as a mouse-wheel event (vs. a key). Mouse
+    /// gestures are encoded as mouse reports when the child enabled mouse
+    /// reporting; key gestures always travel as key bytes.
+    pub fn is_wheel(self) -> bool {
+        matches!(self, ScrollIntent::WheelUp | ScrollIntent::WheelDown)
+    }
+}
+
+/// The child terminal's negotiated modes, as observed by WG.
+///
+/// For a direct `portable-pty` child these come straight from the vt100
+/// parser (which sees the child's raw DECSET/DECRST stream). For a
+/// tmux-wrapped chat pane the inner program's modes are relayed by tmux, so
+/// they are read from tmux's `alternate_on` / `mouse_any_flag` / `mouse_sgr_flag`
+/// format variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChildTerminalModes {
+    /// The child is on the alternate screen (a self-scrolling full-screen TUI).
+    pub alternate_screen: bool,
+    /// The child enabled some mouse reporting mode.
+    pub mouse_reporting: bool,
+    /// The child requested SGR mouse encoding (`ESC[?1006h`).
+    pub mouse_sgr: bool,
+}
+
+impl ChildTerminalModes {
+    /// Whether the child owns a scrollable surface of its own, so WG must
+    /// forward scroll input rather than synthesize a scroll of its own buffer.
+    pub fn scroll_capable(&self) -> bool {
+        self.alternate_screen || self.mouse_reporting
+    }
 }
 
 impl PtyPane {
@@ -373,6 +443,7 @@ impl PtyPane {
             input_bytes_written: Arc::new(AtomicU64::new(0)),
             tmux_scroll_lines: 0,
             child_scroll_keys: false,
+            child_modes_cache: None,
         })
     }
 
@@ -878,16 +949,89 @@ impl PtyPane {
     /// can assert the forwarded escape sequence (fix-opencode-tui).
     fn send_child_scroll_key(&mut self, code: KeyCode) {
         let bytes = key_event_to_bytes(&KeyEvent::new(code, KeyModifiers::NONE));
+        self.write_child_input(&bytes);
+    }
+
+    /// Write host-driven input bytes to the child's stdin, teeing them and
+    /// counting them toward [`child_input_bytes_written`]. The single writer
+    /// used by [`send_key`] / [`send_text`] / the scroll-forwarding path.
+    fn write_child_input(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
         if let Ok(mut w) = self.writer.lock() {
-            let _ = w.write_all(&bytes);
+            let _ = w.write_all(bytes);
             let _ = w.flush();
-            self.tee_input(&bytes);
+            self.tee_input(bytes);
             self.input_bytes_written
                 .fetch_add(bytes.len() as u64, Ordering::Relaxed);
         }
+    }
+
+    /// The child terminal's negotiated modes (alternate screen / mouse
+    /// reporting). Cached for [`CHILD_MODES_CACHE_TTL`] because the
+    /// tmux-wrapped probe shells out.
+    pub fn child_terminal_modes(&mut self) -> ChildTerminalModes {
+        if let Some((at, modes)) = self.child_modes_cache
+            && at.elapsed() < CHILD_MODES_CACHE_TTL
+        {
+            return modes;
+        }
+        let modes = self.probe_child_terminal_modes();
+        self.child_modes_cache = Some((Instant::now(), modes));
+        modes
+    }
+
+    fn probe_child_terminal_modes(&self) -> ChildTerminalModes {
+        if let Some(session) = self.tmux_session.as_deref() {
+            return tmux_pane_terminal_modes(session).unwrap_or_default();
+        }
+        let Ok(p) = self.parser.lock() else {
+            return ChildTerminalModes::default();
+        };
+        let screen = p.screen();
+        ChildTerminalModes {
+            alternate_screen: screen.alternate_screen(),
+            mouse_reporting: screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None,
+            mouse_sgr: screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr,
+        }
+    }
+
+    /// Forward a scroll gesture to the child's own scroll surface, returning
+    /// `true` when the child consumed it and `false` when the caller should
+    /// fall back to scrolling WG's own scrollback.
+    ///
+    /// Encoding (task `let-pi-own`):
+    /// * mouse-wheel gestures become SGR (or legacy X10) mouse reports when
+    ///   the child enabled mouse reporting;
+    /// * otherwise (or for key gestures) the child's own scroll keys are sent
+    ///   (`PageUp`/`PageDown`/`Home`/`End`, `Shift+PageUp/Down` for the
+    ///   shifted variants) — including wheel gestures, which map to
+    ///   PageUp/PageDown so a non-mouse scroll-capable TUI still scrolls.
+    ///
+    /// Returns `false` when the child is not a scroll-capable terminal (no
+    /// mouse reporting, no alternate screen, not an executor flagged to own
+    /// its scroll keys) so the caller keeps the historical WG-buffer scroll.
+    pub fn forward_scroll_input(&mut self, intent: ScrollIntent, column: u16, row: u16) -> bool {
+        let modes = self.child_terminal_modes();
+        let forward_mouse = modes.mouse_reporting && intent.is_wheel();
+        if !forward_mouse && !modes.scroll_capable() && !self.child_scroll_keys {
+            return false;
+        }
+        // We are about to forward into the live child. If an earlier WG-view
+        // scroll drove tmux into copy-mode, exit it first so the bytes reach
+        // the running app, not tmux's copy-mode interpreter.
+        self.exit_tmux_copy_mode();
+        if forward_mouse {
+            let up = intent == ScrollIntent::WheelUp;
+            let bytes = mouse_wheel_bytes(up, column, row, modes.mouse_sgr);
+            self.write_child_input(&bytes);
+            return true;
+        }
+        // The child scrolls itself: forward the gesture as its own key bytes.
+        let bytes = scroll_intent_key_bytes(intent);
+        self.write_child_input(&bytes);
+        true
     }
 
     /// Forward a crossterm key event to the embedded process. Returns
@@ -1228,6 +1372,41 @@ pub fn tmux_pane_in_mode(session: &str) -> Option<bool> {
     }
     let s = String::from_utf8_lossy(&out.stdout);
     Some(s.trim() == "1")
+}
+
+/// Query the *inner* pane's negotiated terminal modes through tmux.
+///
+/// A tmux-wrapped chat pane's outer vt100 parser sees tmux's own repaint
+/// stream, not the inner program's DECSET/DECRST (WG runs the session with
+/// `mouse off`), so the child's alt-screen / mouse state must be relayed from
+/// tmux itself. `mouse_any_flag`/`mouse_sgr_flag`/`alternate_on` are tmux's
+/// per-pane formats for exactly this (tmux 3.4). Returns `None` when tmux
+/// isn't installed, the session is gone, or the query fails — the caller then
+/// treats the child as non-scroll-capable.
+pub fn tmux_pane_terminal_modes(session: &str) -> Option<ChildTerminalModes> {
+    let out = std::process::Command::new("tmux")
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            session,
+            "#{alternate_on} #{mouse_any_flag} #{mouse_sgr_flag}",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    let mut parts = s.split_whitespace();
+    let alternate_screen = parts.next()? == "1";
+    let mouse_reporting = parts.next()? == "1";
+    let mouse_sgr = parts.next()? == "1";
+    Some(ChildTerminalModes {
+        alternate_screen,
+        mouse_reporting,
+        mouse_sgr,
+    })
 }
 
 /// Read a single row's content into a UTF-8 byte buffer plus its `wrapped`
@@ -1779,6 +1958,38 @@ fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
         _ => {}
     }
     out
+}
+
+/// Encode a mouse-wheel report for the child. `column`/`row` are 1-based
+/// (clamped to at least 1). SGR encoding (`mouse_sgr`) is preferred;
+/// otherwise the legacy X10 byte-encoded form is emitted. Wheel-up button
+/// code is 64, wheel-down is 65 (xterm SGR mouse protocol).
+fn mouse_wheel_bytes(up: bool, column: u16, row: u16, mouse_sgr: bool) -> Vec<u8> {
+    let button: u16 = if up { 64 } else { 65 };
+    let col = column.max(1);
+    let row = row.max(1);
+    if mouse_sgr {
+        format!("\x1b[<{};{};{}M", button, col, row).into_bytes()
+    } else {
+        // X10/VT200: ESC [ M Cb Cx Cy with 32-biased parameters. Clamp to
+        // the single-byte range so a huge coordinate still yields valid bytes.
+        let bias = |v: u16| -> u8 { (u32::from(v) + 32).min(255) as u8 };
+        vec![0x1b, b'[', b'M', bias(button), bias(col), bias(row)]
+    }
+}
+
+/// The child's own scroll key encoding for a gesture. Wheel gestures map to
+/// PageUp/PageDown so a scroll-capable child without mouse reporting still
+/// scrolls. Shift+PageUp/PageDown use the xterm CSI 1;2 modifier form.
+fn scroll_intent_key_bytes(intent: ScrollIntent) -> Vec<u8> {
+    match intent {
+        ScrollIntent::WheelUp | ScrollIntent::PageUp => b"\x1b[5~".to_vec(),
+        ScrollIntent::WheelDown | ScrollIntent::PageDown => b"\x1b[6~".to_vec(),
+        ScrollIntent::Home => b"\x1b[H".to_vec(),
+        ScrollIntent::End => b"\x1b[F".to_vec(),
+        ScrollIntent::ShiftPageUp => b"\x1b[5;2~".to_vec(),
+        ScrollIntent::ShiftPageDown => b"\x1b[6;2~".to_vec(),
+    }
 }
 
 #[cfg(test)]
@@ -2538,6 +2749,134 @@ sleep 5
             before,
             "a non-opencode pane must not forward any keystrokes to the child on scroll"
         );
+    }
+
+    /// Spawn a direct `portable-pty` child that prints `setup` then sleeps,
+    /// and wait until WG observes the requested terminal mode. Returns the
+    /// pane. Used by the scroll-forwarding tests (let-pi-own).
+    fn spawn_mode_child(setup: &str) -> PtyPane {
+        let script = format!("printf '{setup}'; sleep 60");
+        PtyPane::spawn("/bin/sh", &["-c", &script], &[], 24, 80).expect("spawn mode child")
+    }
+
+    fn wait_for_modes(pane: &mut PtyPane, want: ChildTerminalModes) -> ChildTerminalModes {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            // Bypass the TTL cache while polling.
+            pane.child_modes_cache = None;
+            let modes = pane.child_terminal_modes();
+            if modes == want || std::time::Instant::now() >= deadline {
+                return modes;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn mouse_wheel_bytes_sgr_and_legacy() {
+        assert_eq!(mouse_wheel_bytes(true, 5, 7, true), b"\x1b[<64;5;7M");
+        assert_eq!(mouse_wheel_bytes(false, 3, 9, true), b"\x1b[<65;3;9M");
+        // Legacy X10 byte encoding: ESC [ M, then 32-biased button/col/row.
+        assert_eq!(
+            mouse_wheel_bytes(true, 5, 7, false),
+            vec![0x1b, b'[', b'M', 32 + 64, 32 + 5, 32 + 7]
+        );
+        // Coordinates are clamped to at least 1 (0 is out of the protocol).
+        assert_eq!(mouse_wheel_bytes(true, 0, 0, true), b"\x1b[<64;1;1M");
+    }
+
+    #[test]
+    fn scroll_intent_key_bytes_maps_gestures() {
+        assert_eq!(scroll_intent_key_bytes(ScrollIntent::WheelUp), b"\x1b[5~");
+        assert_eq!(scroll_intent_key_bytes(ScrollIntent::PageUp), b"\x1b[5~");
+        assert_eq!(scroll_intent_key_bytes(ScrollIntent::WheelDown), b"\x1b[6~");
+        assert_eq!(scroll_intent_key_bytes(ScrollIntent::PageDown), b"\x1b[6~");
+        assert_eq!(scroll_intent_key_bytes(ScrollIntent::Home), b"\x1b[H");
+        assert_eq!(scroll_intent_key_bytes(ScrollIntent::End), b"\x1b[F");
+        assert_eq!(
+            scroll_intent_key_bytes(ScrollIntent::ShiftPageUp),
+            b"\x1b[5;2~"
+        );
+        assert_eq!(
+            scroll_intent_key_bytes(ScrollIntent::ShiftPageDown),
+            b"\x1b[6;2~"
+        );
+    }
+
+    #[test]
+    fn forward_scroll_sends_sgr_mouse_report_when_child_enables_mouse() {
+        // A child that enables SGR mouse reporting must receive SGR wheel
+        // reports, not a WG-buffer scroll (let-pi-own requirement 1).
+        let mut pane = spawn_mode_child("\\033[?1000h\\033[?1006h");
+        let modes = wait_for_modes(
+            &mut pane,
+            ChildTerminalModes {
+                alternate_screen: false,
+                mouse_reporting: true,
+                mouse_sgr: true,
+            },
+        );
+        assert!(
+            modes.mouse_reporting,
+            "child should report mouse mode: {modes:?}"
+        );
+
+        let before = pane.child_input_bytes_written();
+        assert!(pane.forward_scroll_input(ScrollIntent::WheelUp, 5, 7));
+        assert_eq!(pane.child_input_bytes_written() - before, 10);
+        let before = pane.child_input_bytes_written();
+        assert!(pane.forward_scroll_input(ScrollIntent::WheelDown, 5, 7));
+        assert_eq!(pane.child_input_bytes_written() - before, 10);
+    }
+
+    #[test]
+    fn forward_scroll_falls_back_to_keys_when_child_has_no_mouse() {
+        // Alternate-screen child without mouse reporting: the wheel must be
+        // encoded as its own PgUp/PgDn key bytes — never a WG-buffer scroll
+        // synthesized on the child's behalf (let-pi-own requirement 2).
+        let mut pane = spawn_mode_child("\\033[?1049h");
+        let modes = wait_for_modes(
+            &mut pane,
+            ChildTerminalModes {
+                alternate_screen: true,
+                mouse_reporting: false,
+                mouse_sgr: false,
+            },
+        );
+        assert!(
+            modes.alternate_screen,
+            "child should be on alt screen: {modes:?}"
+        );
+        assert!(!modes.mouse_reporting);
+
+        let before = pane.child_input_bytes_written();
+        assert!(pane.forward_scroll_input(ScrollIntent::WheelUp, 1, 1));
+        assert_eq!(pane.child_input_bytes_written() - before, 4);
+        let before = pane.child_input_bytes_written();
+        assert!(pane.forward_scroll_input(ScrollIntent::ShiftPageDown, 1, 1));
+        assert_eq!(pane.child_input_bytes_written() - before, 6);
+    }
+
+    #[test]
+    fn forward_scroll_declines_for_non_scrollable_child() {
+        // A plain child owns no scrollable surface: forwarding must decline so
+        // the caller keeps WG's own scrollback (let-pi-own requirement 3).
+        let mut pane = PtyPane::spawn("/bin/cat", &[], &[], 24, 80).expect("spawn cat");
+        let before = pane.child_input_bytes_written();
+        assert!(!pane.forward_scroll_input(ScrollIntent::WheelUp, 1, 1));
+        assert!(!pane.forward_scroll_input(ScrollIntent::PageDown, 1, 1));
+        assert_eq!(pane.child_input_bytes_written(), before);
+    }
+
+    #[test]
+    fn forward_scroll_honours_child_scroll_keys_flag_without_modes() {
+        // OpenCode-style panes flagged executor-scoped (child_scroll_keys)
+        // forward keys even when the mode probe can't see a scroll surface.
+        let mut pane = PtyPane::spawn("/bin/cat", &[], &[], 24, 80).expect("spawn cat");
+        pane.set_child_scroll_keys(true);
+        let before = pane.child_input_bytes_written();
+        assert!(pane.forward_scroll_input(ScrollIntent::PageUp, 1, 1));
+        assert_eq!(pane.child_input_bytes_written() - before, 4);
     }
 
     /// Render the parser screen via tui-term + ratatui TestBackend at the

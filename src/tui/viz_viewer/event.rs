@@ -10,6 +10,7 @@ use ratatui::DefaultTerminal;
 use ratatui::layout::{Position, Rect};
 
 use super::render;
+use crate::tui::pty_pane::ScrollIntent;
 
 /// Minimum inspector panel percentage during divider drag.
 /// Prevents collapsing the inspector to nothing — the panel always gets at
@@ -937,7 +938,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         let is_scroll = matches!(
             code,
             KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
-        ) && modifiers.is_empty();
+        ) && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT);
 
         // Policy invariant (P1): every host-escape chord is non-printable. If a
         // future edit ever adds a bare-printable interception here, this fires
@@ -955,17 +956,22 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             return;
         }
         if is_scroll {
-            if let Some(pane) = app.task_panes.get_mut(&task_id) {
-                let page = (app.last_right_content_area.height as usize).max(10);
-                match code {
-                    KeyCode::PageUp => pane.scroll_up(page),
-                    KeyCode::PageDown => pane.scroll_down(page),
-                    KeyCode::Home => pane.scroll_to_top(),
-                    KeyCode::End => pane.scroll_to_bottom(),
-                    _ => {}
-                }
-                return;
-            }
+            // Forward the scroll gesture to the child's own scroll surface when
+            // it is scroll-capable (same contract as the wheel path —
+            // let-pi-own); otherwise scroll WG's own view. Shift+PgUp/PgDn are
+            // treated as the paging variant of the bare keys.
+            let shift = modifiers.contains(KeyModifiers::SHIFT);
+            let intent = match code {
+                KeyCode::PageUp if shift => ScrollIntent::ShiftPageUp,
+                KeyCode::PageUp => ScrollIntent::PageUp,
+                KeyCode::PageDown if shift => ScrollIntent::ShiftPageDown,
+                KeyCode::PageDown => ScrollIntent::PageDown,
+                KeyCode::Home => ScrollIntent::Home,
+                KeyCode::End => ScrollIntent::End,
+                _ => return,
+            };
+            chat_pty_scroll(app, intent, 1, 1);
+            return;
         }
         if !is_command_mode_toggle {
             if let Some(pane) = app.task_panes.get_mut(&task_id) {
@@ -4652,27 +4658,66 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
     }
 }
 
-/// Route a mouse-wheel `ScrollUp` / `ScrollDown` event over the chat tab
-/// to the wg vt100 pane's own scrollback — never to the inner child's
-/// stdin.
+/// Route a mouse-wheel `ScrollUp` / `ScrollDown` event over the chat tab.
 ///
-/// Earlier versions (`fix-mouse-wheel`) translated wheel events into
-/// Up/Down arrow keys when the chat PTY was focused, with the goal of
-/// making touch and wheel feel identical for vendor CLIs. claude code
-/// detects this and emits a "Scroll wheel is sending arrow keys" warning;
-/// codex shows similar oddness. The right contract is: wheel ALWAYS
-/// scrolls the outer scrollback (the wg vt100 buffer), inner app sees
-/// nothing. Keyboard scrolling lives behind Ctrl+] scroll mode (see
-/// `implement-tui-scroll`). — fix-mouse-wheel-2.
-fn forward_chat_wheel(app: &mut VizApp, kind: MouseEventKind) {
+/// Contract (task `let-pi-own`): in chat PTY mode with a live child, the wheel
+/// is forwarded to the CHILD's own scroll surface whenever the child is a
+/// scroll-capable terminal — SGR/legacy mouse-wheel reports when the child
+/// enabled mouse reporting, else its own PgUp/PgDn key bytes. This is what
+/// makes pi's own scrollback, alternate-screen handling, and scroll UI
+/// reachable: the human scrolls the child, not a WG-owned copy of it.
+///
+/// WG's own scrollback is the fallback when the child is not scroll-capable
+/// (and is always reachable explicitly via Ctrl+] scroll mode, which drives
+/// [`PtyPane::scroll_up`] directly).
+///
+/// History: `fix-mouse-wheel` translated wheel into arrow keys (claude warned
+/// about it); `fix-mouse-wheel-2`/`-3` made the wheel scroll WG's buffer. That
+/// stranded self-scrolling children (pi) behind a copy the human couldn't ask
+/// them to scroll. — let-pi-own.
+fn forward_chat_wheel(app: &mut VizApp, kind: MouseEventKind, column: u16, row: u16) {
+    let intent = match kind {
+        MouseEventKind::ScrollUp => ScrollIntent::WheelUp,
+        MouseEventKind::ScrollDown => ScrollIntent::WheelDown,
+        _ => return,
+    };
+    chat_pty_scroll(app, intent, column, row);
+}
+
+/// Forward a scroll gesture to the active chat child when it owns a scrollable
+/// surface; otherwise fall back to scrolling WG's own vt100/tmux scrollback.
+///
+/// Observer-mode panes (no stdin forwarding) never receive forwarded input —
+/// the wheel simply scrolls WG's rendered copy, preserving the observer
+/// contract.
+fn chat_pty_scroll(app: &mut VizApp, intent: ScrollIntent, column: u16, row: u16) {
+    if app.chat_pty_forwards_stdin {
+        let task_id = app.active_chat_task_id();
+        if let Some(pane) = app.task_panes.get_mut(&task_id)
+            && pane.forward_scroll_input(intent, column, row)
+        {
+            return;
+        }
+    }
+    chat_wg_scroll(app, intent);
+}
+
+/// Scroll WG's own view of the active chat pane (tmux copy-mode for
+/// tmux-wrapped chats, the vt100 scrollback otherwise). The explicit fallback
+/// path for gestures the child cannot consume.
+fn chat_wg_scroll(app: &mut VizApp, intent: ScrollIntent) {
     let task_id = app.active_chat_task_id();
+    let page = (app.last_right_content_area.height as usize).max(10);
     let Some(pane) = app.task_panes.get_mut(&task_id) else {
         return;
     };
-    match kind {
-        MouseEventKind::ScrollUp => pane.scroll_up(3),
-        MouseEventKind::ScrollDown => pane.scroll_down(3),
-        _ => {}
+    match intent {
+        ScrollIntent::WheelUp => pane.scroll_up(3),
+        ScrollIntent::WheelDown => pane.scroll_down(3),
+        ScrollIntent::PageUp | ScrollIntent::ShiftPageUp => pane.scroll_up(page),
+        ScrollIntent::PageDown | ScrollIntent::ShiftPageDown => pane.scroll_down(page),
+        ScrollIntent::Home => pane.scroll_to_top(),
+        ScrollIntent::End => pane.scroll_to_bottom(),
     }
 }
 
@@ -5126,7 +5171,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.chat_pty_mode
                 && app.right_panel_tab == RightPanelTab::Chat
             {
-                forward_chat_wheel(app, MouseEventKind::ScrollUp);
+                forward_chat_wheel(app, MouseEventKind::ScrollUp, column, row);
             } else if in_graph && app.scroll_axis_swapped {
                 app.record_graph_hscroll_activity();
                 app.scroll.scroll_left(3);
@@ -5159,7 +5204,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.chat_pty_mode
                 && app.right_panel_tab == RightPanelTab::Chat
             {
-                forward_chat_wheel(app, MouseEventKind::ScrollDown);
+                forward_chat_wheel(app, MouseEventKind::ScrollDown, column, row);
             } else if in_graph && app.scroll_axis_swapped {
                 app.record_graph_hscroll_activity();
                 app.scroll.scroll_right(3);
@@ -11039,6 +11084,228 @@ mod chat_tab_navigation_tests {
             pane_after.child_input_bytes_written(),
             bytes_before,
             "ScrollUp in observer mode must not write to child stdin"
+        );
+    }
+
+    /// Wheel over a scroll-capable chat child is FORWARDED to the child's own
+    /// scroll surface, not applied to WG's buffer (let-pi-own). The child here
+    /// enables SGR mouse reporting, so the wheel becomes an SGR wheel report.
+    #[test]
+    fn mouse_wheel_forwards_to_scroll_capable_child() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        app.mouse_enabled = true;
+
+        let task_id = app.active_chat_task_id();
+        let Ok(mut pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "printf '\\033[?1000h\\033[?1006h'; sleep 60"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        // Wait until WG observes the child's mouse negotiation.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && !pane.child_terminal_modes().mouse_reporting {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            pane.child_terminal_modes().mouse_reporting,
+            "fixture: child should enable mouse reporting"
+        );
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
+
+        app.last_tab_bar_area = Rect {
+            x: 60,
+            y: 1,
+            width: 60,
+            height: 1,
+        };
+        app.last_right_content_area = Rect {
+            x: 60,
+            y: 2,
+            width: 60,
+            height: 24,
+        };
+
+        handle_mouse(&mut app, MouseEventKind::ScrollUp, 12, 80);
+
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert!(
+            pane_after.child_input_bytes_written() > bytes_before,
+            "wheel over a scroll-capable child must forward input to it \
+             (let-pi-own), not scroll WG's buffer"
+        );
+        assert!(
+            !pane_after.is_scrolled_back(),
+            "forwarding must NOT synthesize a WG-buffer scroll on the child's behalf"
+        );
+    }
+
+    /// Keyboard PgUp/PgDn while the chat pane has focus follow the same
+    /// contract as the wheel: forwarded to a scroll-capable child.
+    #[test]
+    fn keyboard_pageup_forwards_to_scroll_capable_child() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+
+        let task_id = app.active_chat_task_id();
+        let Ok(mut pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "printf '\\033[?1049h'; sleep 60"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && !pane.child_terminal_modes().alternate_screen
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            pane.child_terminal_modes().alternate_screen,
+            "fixture: child should take the alt screen"
+        );
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
+        app.last_right_content_area = Rect {
+            x: 60,
+            y: 2,
+            width: 60,
+            height: 24,
+        };
+
+        super::handle_key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert_eq!(
+            pane_after.child_input_bytes_written() - bytes_before,
+            4,
+            "PageUp must forward the child's own PgUp bytes (\\x1b[5~)"
+        );
+        assert!(
+            !pane_after.is_scrolled_back(),
+            "PageUp must not scroll WG's buffer for a scroll-capable child"
+        );
+    }
+
+    /// A child that owns no scroll surface keeps WG's own scrollback: the
+    /// keyboard path falls back exactly like the wheel path.
+    #[test]
+    fn keyboard_pageup_scrolls_wg_buffer_for_non_scrollable_child() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+
+        let task_id = app.active_chat_task_id();
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &[
+                "-c",
+                "for i in $(seq 1 60); do echo line $i; done; sleep 60",
+            ],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if pane.bytes_processed() > 200 {
+                break;
+            }
+        }
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
+        app.last_right_content_area = Rect {
+            x: 60,
+            y: 2,
+            width: 60,
+            height: 24,
+        };
+
+        super::handle_key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert!(
+            pane_after.is_scrolled_back(),
+            "PageUp on a non-scrollable child must scroll WG's own buffer"
+        );
+        assert_eq!(
+            pane_after.child_input_bytes_written(),
+            bytes_before,
+            "the WG-buffer fallback must not write to child stdin"
+        );
+    }
+
+    /// The explicit Ctrl+] scroll mode drives WG's own view directly even for
+    /// a scroll-capable child — the documented fallback path (let-pi-own
+    /// requirement 3). Forwarding is bypassed, so no child bytes are written.
+    #[test]
+    fn explicit_scroll_mode_scrolls_wg_buffer_for_scroll_capable_child() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+
+        let task_id = app.active_chat_task_id();
+        let Ok(mut pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "printf '\\033[?1000h\\033[?1006h'; sleep 60"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && !pane.child_terminal_modes().mouse_reporting {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(pane.child_terminal_modes().mouse_reporting);
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
+        app.last_right_content_area = Rect {
+            x: 60,
+            y: 2,
+            width: 60,
+            height: 24,
+        };
+        app.input_mode = InputMode::ScrollMode {
+            task_id: task_id.clone(),
+        };
+
+        super::handle_key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert!(
+            pane_after.is_scrolled_back(),
+            "Ctrl+] scroll mode must scroll WG's own view (explicit fallback)"
+        );
+        assert_eq!(
+            pane_after.child_input_bytes_written(),
+            bytes_before,
+            "explicit WG-view scroll must not forward child input"
         );
     }
 
