@@ -243,6 +243,15 @@ describe("fleet panel read model", () => {
     // No activity text falls back to the status.
     expect(agentActivityLabel({ id: "a", task_id: "t", status: "idle" })).toBe("idle");
   });
+
+  it("renders the WG status glyphs in the tree (one vocabulary, no drift)", () => {
+    const tree = buildFleetTree(snap());
+    const byId = new Map(tree.lines.map((l) => [l.taskId, l.text]));
+    expect(byId.get("done-a")).toContain("✓"); // done
+    expect(byId.get("active-b")).toContain("●"); // in-progress
+    expect(byId.get("open-c")).toContain("○"); // open
+    expect(byId.get("blocked-d")).toContain("⏸"); // blocked
+  });
 });
 
 // ── component interactions ───────────────────────────────────────────────────
