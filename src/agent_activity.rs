@@ -198,6 +198,7 @@ fn summarize_tool(name: &str, args: Option<&serde_json::Value>) -> Option<String
         "bash" => {
             let cmd = str_arg(&["command"]).unwrap_or_default();
             let first = first_command_line(&cmd);
+            let first = simplify_bash_command(&first);
             if first.is_empty() {
                 "bash".to_string()
             } else {
@@ -251,6 +252,71 @@ fn log_line_fallback(task: &Task) -> Option<String> {
         .map(|e| e.message.trim())
         .filter(|m| !m.is_empty())?;
     Some(truncate_chars(&first_command_line(line), LOG_MAX_CHARS))
+}
+
+/// Simplify a one-line bash command for the activity column: strip a leading
+/// `cd <path> &&` / `cd <path>;` prefix (so the operator sees WHAT before
+/// WHERE) and collapse any remaining absolute worktree path to a short form.
+///
+/// Deliberately bounded and deterministic: this only recognises the literal
+/// `cd ` prefix plus the first `&&`/`;` terminator, and the worktree-path
+/// collapse is a marker-based string substitution. No shell parsing.
+fn simplify_bash_command(s: &str) -> String {
+    let stripped = strip_leading_cd(s.trim());
+    collapse_worktree_paths(&stripped)
+}
+
+/// Strip a leading `cd <path> &&` or `cd <path>;` prefix. A bare `cd <path>`
+/// with no following command is left intact (it is a genuine command).
+fn strip_leading_cd(s: &str) -> String {
+    let Some(rest) = s.strip_prefix("cd ") else {
+        return s.to_string();
+    };
+    // Find the earliest `&&` or `;` terminator after the path.
+    let cut = [rest.find("&&"), rest.find(';')]
+        .into_iter()
+        .flatten()
+        .min();
+    let Some(idx) = cut else {
+        return s.to_string();
+    };
+    let after = &rest[idx..];
+    let after = after
+        .strip_prefix("&&")
+        .or_else(|| after.strip_prefix(';'))
+        .unwrap_or(after)
+        .trim();
+    if after.is_empty() {
+        s.to_string()
+    } else {
+        after.to_string()
+    }
+}
+
+/// Collapse whitespace-separated tokens containing a `.wg-worktrees/` marker
+/// to `…/<remainder-after-the-agent-dir>`, so an absolute worktree path does
+/// not dominate the visible budget. Tokens without the marker are untouched.
+fn collapse_worktree_paths(s: &str) -> String {
+    const MARKER: &str = ".wg-worktrees/";
+    s.split(' ')
+        .map(|token| match token.find(MARKER) {
+            Some(pos) => {
+                let after_marker = &token[pos + MARKER.len()..];
+                // Drop the agent/worktree directory component; keep the rest.
+                let rest = after_marker
+                    .split_once('/')
+                    .map(|(_, tail)| tail)
+                    .unwrap_or("");
+                if rest.is_empty() {
+                    "…".to_string()
+                } else {
+                    format!("…/{}", rest)
+                }
+            }
+            None => token.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Collapse a multi-line shell command to its first non-empty line and squeeze
@@ -462,5 +528,59 @@ mod tests {
     fn truncate_chars_adds_ellipsis() {
         assert_eq!(truncate_chars("abcdef", 4), "abc…");
         assert_eq!(truncate_chars("abc", 4), "abc");
+    }
+
+    #[test]
+    fn bash_summary_strips_leading_cd_prefix() {
+        // `cd <path> &&` and `cd <path>;` prefixes are dropped so the useful
+        // command is what remains.
+        assert_eq!(simplify_bash_command("cd a && cargo test"), "cargo test");
+        assert_eq!(simplify_bash_command("cd a; cargo test"), "cargo test");
+        assert_eq!(simplify_bash_command("cd a;cargo test"), "cargo test");
+        assert_eq!(simplify_bash_command("cd a && git status"), "git status");
+    }
+
+    #[test]
+    fn bash_summary_leaves_genuine_cd_alone() {
+        // A `cd` later in the line (not a leading prefix) is untouched.
+        assert_eq!(
+            simplify_bash_command("cargo test && cd a"),
+            "cargo test && cd a"
+        );
+        assert_eq!(simplify_bash_command("echo cd a"), "echo cd a");
+        // A bare `cd <path>` with no following command is a genuine command.
+        assert_eq!(simplify_bash_command("cd /tmp"), "cd /tmp");
+        // A no-cd command is unchanged.
+        assert_eq!(simplify_bash_command("git status"), "git status");
+    }
+
+    #[test]
+    fn bash_summary_collapses_worktree_paths() {
+        assert_eq!(
+            simplify_bash_command("cd /home/bot/wg/.wg-worktrees/agent-183 && cargo test"),
+            "cargo test"
+        );
+        assert_eq!(
+            collapse_worktree_paths("cat /home/bot/wg/.wg-worktrees/agent-183/src/foo.rs"),
+            "cat …/src/foo.rs"
+        );
+        assert_eq!(
+            collapse_worktree_paths("ls /home/bot/wg/.wg-worktrees/agent-183"),
+            "ls …"
+        );
+    }
+
+    #[test]
+    fn bash_tool_start_strips_cd_prefix_on_live_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        write_stream(
+            dir.path(),
+            "cd1",
+            r#"{"type":"tool_execution_start","toolName":"bash","args":{"command":"cd /home/bot/wg/.wg-worktrees/agent-183 && cargo test --lib"}}"#,
+        );
+        assert_eq!(
+            current_step(dir.path(), &task_with_agent("cd1")).as_deref(),
+            Some("running cargo test --lib")
+        );
     }
 }

@@ -1515,6 +1515,11 @@ fn compact_status_glyph(status: &Status) -> &'static str {
     }
 }
 
+/// Default maximum characters for the compact activity column before it is
+/// ellipsised. Bounding the activity column keeps a noisy current-step line
+/// from consuming the whole budget and clipping the age column.
+pub const COMPACT_ACTIVITY_MAX_CHARS: usize = 40;
+
 /// Whether a task is active enough to warrant a live-activity column.
 fn compact_activity_applies(status: &Status) -> bool {
     matches!(
@@ -1554,6 +1559,7 @@ pub(crate) fn generate_compact(
     activity: &HashMap<String, String>,
     show_activity: bool,
     title_width: usize,
+    activity_width: usize,
     width: Option<usize>,
 ) -> VizOutput {
     if tasks.is_empty() {
@@ -1592,20 +1598,75 @@ pub(crate) fn generate_compact(
     let render_line = |task: &Task, depth: usize| -> String {
         let indent = "  ".repeat(depth.min(6));
         let glyph = compact_status_glyph(&task.status);
-        let title = worksgood::agent_activity::truncate_chars(&task.title, title_width);
+
+        let dur = compact_duration(task);
+        let raw_activity: Option<String> =
+            if show_activity && compact_activity_applies(&task.status) {
+                activity.get(&task.id).cloned()
+            } else {
+                None
+            };
+
+        // Fixed leading width: indent + glyph + space + id + 2-col gap.
+        let prefix_width =
+            visible_len(&indent) + visible_len(glyph) + 1 + visible_len(&task.id) + 2;
+        let age_reserved = dur.as_ref().map(|d| 2 + visible_len(d)).unwrap_or(0);
+
+        // Reserve the trailing columns (age + activity) BEFORE truncating the
+        // title, so line truncation can never clip them mid-token. The activity
+        // column is bounded by `activity_width` and ellipsised itself; if the
+        // width is too tight even for that, the activity shrinks (and finally
+        // the title) — the age column always survives.
+        let (title_budget, activity_step) = match width {
+            None => (
+                title_width,
+                raw_activity.map(|s| worksgood::agent_activity::truncate_chars(&s, activity_width)),
+            ),
+            Some(w) => {
+                let budget = w.saturating_sub(prefix_width + age_reserved);
+                match raw_activity {
+                    None => (title_width.min(budget), None),
+                    Some(raw) => {
+                        let want = worksgood::agent_activity::truncate_chars(&raw, activity_width);
+                        let want_len = visible_len(&want);
+                        let want_reserved = 2 + want_len;
+                        if budget >= title_width + want_reserved {
+                            // Room for the full title and the capped activity.
+                            (title_width, Some(want))
+                        } else if budget >= want_reserved {
+                            // The title takes the truncation; the activity keeps
+                            // its bounded cap and the age stays intact.
+                            (budget - want_reserved, Some(want))
+                        } else {
+                            // Too tight for both: shrink the activity (ellipsised)
+                            // so the age survives, and let the title collapse.
+                            let act_len = budget.saturating_sub(2).min(want_len);
+                            if act_len == 0 {
+                                (budget, None)
+                            } else {
+                                let act = worksgood::agent_activity::truncate_chars(&raw, act_len);
+                                let used = 2 + visible_len(&act);
+                                (budget.saturating_sub(used), Some(act))
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        let title = worksgood::agent_activity::truncate_chars(&task.title, title_budget);
         let mut line = format!("{}{} {}  {}", indent, glyph, task.id, title);
-        if let Some(dur) = compact_duration(task) {
+        if let Some(dur) = dur {
             line.push_str("  ");
             line.push_str(&dur);
         }
-        if show_activity
-            && compact_activity_applies(&task.status)
-            && let Some(step) = activity.get(&task.id)
-        {
+        if let Some(step) = activity_step {
             line.push_str("  ");
-            line.push_str(step);
+            line.push_str(&step);
         }
         if let Some(w) = width {
+            // Defensive bound: only bites when the fixed prefix alone overflows
+            // (e.g. a pathologically long id at an absurd width).
             line = truncate_to_width(&line, w);
         }
         line

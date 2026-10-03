@@ -1218,6 +1218,11 @@ pub enum Commands {
         #[arg(long, value_name = "N")]
         title_width: Option<usize>,
 
+        /// Max characters reserved for the compact activity column before it
+        /// is ellipsised (default 40). The age column is always preserved.
+        #[arg(long, value_name = "N")]
+        activity_width: Option<usize>,
+
         /// Show the live activity column for active tasks (default: on when
         /// --compact is set).
         #[arg(long, conflicts_with = "no_activity")]

@@ -1704,6 +1704,7 @@ fn main() -> Result<()> {
             columns,
             compact,
             title_width,
+            activity_width,
             activity,
             no_activity,
         } => {
@@ -1736,6 +1737,7 @@ fn main() -> Result<()> {
                     max_columns: None, // TUI handles its own sizing
                     compact: false,
                     title_width: None,
+                    activity_width: None,
                     activity: None,
                 };
                 let mouse_override = if no_mouse { Some(false) } else { None };
@@ -1776,6 +1778,7 @@ fn main() -> Result<()> {
                     max_columns,
                     compact,
                     title_width,
+                    activity_width,
                     activity: if activity {
                         Some(true)
                     } else if no_activity {
@@ -3993,6 +3996,7 @@ fn main() -> Result<()> {
                 max_columns: None, // TUI handles its own sizing
                 compact: false,
                 title_width: None,
+                activity_width: None,
                 activity: None,
             };
             let mouse_override = if no_mouse { Some(false) } else { None };

@@ -139,6 +139,10 @@ pub struct VizOptions {
     /// Truncate task titles to this many characters in compact mode
     /// (None → 28). Titles are ellipsised, never wrapped.
     pub title_width: Option<usize>,
+    /// Maximum characters reserved for the compact activity column before it is
+    /// ellipsised (None → [`ascii::COMPACT_ACTIVITY_MAX_CHARS`]). Bounding this
+    /// keeps a noisy current step from clipping the age column.
+    pub activity_width: Option<usize>,
     /// Show the live activity column. `None` (default) means "show on active
     /// rows when --compact is set"; `Some(true/false)` forces it on/off.
     pub activity: Option<bool>,
@@ -162,6 +166,7 @@ impl Default for VizOptions {
             max_columns: None,
             compact: false,
             title_width: None,
+            activity_width: None,
             activity: None,
         }
     }
@@ -794,6 +799,9 @@ pub fn generate_viz_output_from_graph(
             if compact {
                 let show_activity = options.activity.unwrap_or(true);
                 let title_width = options.title_width.unwrap_or(28);
+                let activity_width = options
+                    .activity_width
+                    .unwrap_or(ascii::COMPACT_ACTIVITY_MAX_CHARS);
                 // Bound the derivation cost to active tasks only.
                 let mut activity: HashMap<String, String> = HashMap::new();
                 if show_activity {
@@ -816,6 +824,7 @@ pub fn generate_viz_output_from_graph(
                     &activity,
                     show_activity,
                     title_width,
+                    activity_width,
                     options.max_columns.map(|c| c as usize),
                 )
             } else {
@@ -1405,6 +1414,7 @@ mod tests {
             max_columns: None,
             compact: false,
             title_width: None,
+            activity_width: None,
             activity: None,
         };
         // We test via run() output by checking generate_ascii directly
@@ -2035,6 +2045,94 @@ mod tests {
             out.text
         );
         assert!(!out.text.contains("This is an extremely"));
+    }
+
+    /// Build a one-task compact graph whose row carries both an age column and
+    /// an activity column, and return the single rendered line.
+    fn render_compact_line(
+        dir: &Path,
+        command: &str,
+        columns: Option<u16>,
+        title_width: Option<usize>,
+        activity_width: Option<usize>,
+    ) -> String {
+        write_agent_stream(
+            dir,
+            "agent-stream",
+            &format!(
+                r#"{{"type":"tool_execution_start","toolName":"bash","args":{{"command":{}}}}}"#,
+                serde_json::Value::String(command.to_string())
+            ),
+        );
+        let mut graph = WorkGraph::new();
+        let mut t = make_task(
+            "t1",
+            "This is an extremely long task title that certainly exceeds the compact default budget",
+        );
+        t.status = Status::InProgress;
+        t.assigned = Some("agent-stream".to_string());
+        t.started_at = Some((chrono::Utc::now() - chrono::Duration::days(18)).to_rfc3339());
+        graph.add_node(Node::Task(t));
+
+        let options = VizOptions {
+            all: true,
+            compact: true,
+            max_columns: columns,
+            title_width,
+            activity_width,
+            ..VizOptions::default()
+        };
+        let out = generate_viz_output_from_graph(&graph, dir, &options).unwrap();
+        out.text.lines().next().expect("one line").to_string()
+    }
+
+    #[test]
+    fn compact_reserves_trailing_columns_so_age_is_never_clipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let long_cmd = "cargo test --lib --all-features --no-fail-fast --verbose";
+        for columns in [72u16, 64, 56, 48] {
+            for cmd in [long_cmd, "cargo test"] {
+                let line = render_compact_line(dir.path(), cmd, Some(columns), None, None);
+                assert!(
+                    ascii::visible_len(&line) <= columns as usize,
+                    "columns={columns} line exceeds width: {line:?}"
+                );
+                assert!(
+                    line.contains("18d"),
+                    "age column clipped at columns={columns}: {line:?}"
+                );
+                assert!(
+                    line.contains("cargo test"),
+                    "activity column missing at columns={columns}: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compact_activity_column_has_its_own_bounded_width() {
+        let dir = tempfile::tempdir().unwrap();
+        // A very noisy command must not eat the age column; the activity column
+        // is ellipsised to its cap even when width is plentiful.
+        let line = render_compact_line(
+            dir.path(),
+            "cargo test --lib --all-features --no-fail-fast --verbose --nocapture",
+            Some(72),
+            None,
+            Some(12),
+        );
+        assert!(
+            ascii::visible_len(&line) <= 72,
+            "line exceeds columns: {line:?}"
+        );
+        assert!(line.contains("18d"), "age column clipped: {line:?}");
+        assert!(line.contains('…'), "activity must be ellipsised: {line:?}");
+        // The activity segment (after the age) is bounded to the requested cap.
+        let activity = line.split("18d  ").nth(1).expect("activity segment");
+        assert!(
+            ascii::visible_len(activity) <= 12,
+            "activity segment exceeds cap: {activity:?}"
+        );
     }
 
     #[test]
