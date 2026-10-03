@@ -1762,6 +1762,15 @@ description = "Pins the plugin-first pi package contract: the built @worksgood/p
 timeout_seconds = 180
 
 [[scenario]]
+name = "fleet_bottom_panel_contract"
+script = "scenarios/fleet_bottom_panel_contract.sh"
+owners = [
+    "fleetview-style-bottom",
+]
+description = "Pins the FleetView-style bottom panel (fleetview-style-bottom): the config-gated /wg-fleet read-only fleet widget mounts BELOW the editor (ctx.ui.setWidget placement belowEditor) only when enabled and in TUI mode, stays unmounted by default and in print/json/rpc, and is carried by the embedded bundle. Credential-free; runs the focused fleet unit tests against the built plugin and a behavioural probe against the EMBEDDED bundle (default-off, below-editor mount, non-TUI silent degrade)."
+timeout_seconds = 180
+
+[[scenario]]
 name = "pi_handler_plugin_transports"
 script = "scenarios/pi_handler_plugin_transports.sh"
 owners = [

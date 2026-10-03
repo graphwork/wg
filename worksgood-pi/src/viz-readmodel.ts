@@ -133,7 +133,7 @@ export function tokenDisplay(usage: VizTokenUsage | null | undefined): string | 
   return parts.length ? parts.join(" ") : null;
 }
 
-function statusGlyph(status: string): string {
+export function statusGlyph(status: string): string {
   switch (status) {
     case "open":
       return "○";

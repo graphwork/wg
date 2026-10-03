@@ -105,6 +105,7 @@ fn output_json(agents: &[&AgentEntry]) -> Result<()> {
                 "id": a.id,
                 "task_id": a.task_id,
                 "executor": a.executor,
+                "model": a.model,
                 "pid": a.pid,
                 "started_at": a.started_at,
                 "last_heartbeat": a.last_heartbeat,
