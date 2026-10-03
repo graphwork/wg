@@ -126,7 +126,7 @@ export function tokenDisplay(usage) {
     }
     return parts.length ? parts.join(" ") : null;
 }
-function statusGlyph(status) {
+export function statusGlyph(status) {
     switch (status) {
         case "open":
             return "○";

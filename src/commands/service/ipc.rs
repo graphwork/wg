@@ -1920,11 +1920,13 @@ fn handle_agents(dir: &Path) -> IpcResponse {
                         "id": a.id,
                         "task_id": a.task_id,
                         "executor": a.executor,
+                        "model": a.model,
                         "pid": a.pid,
                         "status": format!("{:?}", a.status).to_lowercase(),
                         "uptime": a.uptime_human(),
                         "started_at": a.started_at,
                         "last_heartbeat": a.last_heartbeat,
+                        "process_alive": crate::commands::is_process_alive(a.pid),
                     })
                 })
                 .collect();
