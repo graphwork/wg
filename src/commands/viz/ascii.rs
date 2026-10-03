@@ -1498,6 +1498,179 @@ fn draw_back_edge_arcs(
     has_crossings
 }
 
+/// Status glyph for the compact one-line-per-task renderer. Short and
+/// unambiguous at narrow widths (paired with ANSI colour when enabled).
+fn compact_status_glyph(status: &Status) -> &'static str {
+    match status {
+        Status::Done => "✓",
+        Status::InProgress => "▸",
+        Status::Open => "○",
+        Status::Blocked => "⊘",
+        Status::Failed => "✗",
+        Status::Abandoned => "·",
+        Status::Waiting | Status::PendingValidation => "◷",
+        Status::PendingEval => "∴",
+        Status::FailedPendingEval => "✗",
+        Status::Incomplete => "◌",
+    }
+}
+
+/// Whether a task is active enough to warrant a live-activity column.
+fn compact_activity_applies(status: &Status) -> bool {
+    matches!(
+        status,
+        Status::InProgress | Status::PendingValidation | Status::PendingEval
+    )
+}
+
+/// Compact duration suffix derived from the task's live timestamp.
+fn compact_duration(task: &Task) -> Option<String> {
+    let ts_str = match task.status {
+        Status::InProgress => task.started_at.as_deref(),
+        Status::Done => task.completed_at.as_deref(),
+        _ => None,
+    }?;
+    let dt = chrono::DateTime::parse_from_rfc3339(ts_str).ok()?;
+    let secs = (chrono::Utc::now() - dt.with_timezone(&chrono::Utc))
+        .num_seconds()
+        .max(0);
+    Some(worksgood::format_duration(secs, true))
+}
+
+/// Render a dense, one-short-line-per-task view for narrow surfaces
+/// (the pi plugin fleet panel / status strip).
+///
+/// This drops exactly what cannot be read at a narrow width and nothing else:
+/// no blank separator lines between trees, titles truncated to `title_width`
+/// with an ellipsis (never wrapped), NO per-line token-usage columns, and a
+/// minimal 2-space-per-level indent with a leading status glyph. When
+/// `show_activity` is set, active rows append their live current step as a
+/// second column. Every emitted line is bounded to `width` when provided.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_compact(
+    tasks: &[&Task],
+    task_ids: &HashSet<&str>,
+    context_ids: &HashSet<String>,
+    activity: &HashMap<String, String>,
+    show_activity: bool,
+    title_width: usize,
+    width: Option<usize>,
+) -> VizOutput {
+    if tasks.is_empty() {
+        return VizOutput {
+            text: String::from("(no tasks to display)"),
+            node_line_map: HashMap::new(),
+            task_order: Vec::new(),
+            forward_edges: HashMap::new(),
+            reverse_edges: HashMap::new(),
+            char_edge_map: HashMap::new(),
+            cycle_members: HashMap::new(),
+            annotation_map: HashMap::new(),
+        };
+    }
+
+    // Parent → visible children adjacency (sorted for deterministic order).
+    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut has_parent: HashSet<&str> = HashSet::new();
+    for task in tasks {
+        for dep in &task.after {
+            if task_ids.contains(dep.as_str()) {
+                children
+                    .entry(dep.as_str())
+                    .or_default()
+                    .push(task.id.as_str());
+                has_parent.insert(task.id.as_str());
+            }
+        }
+    }
+    for kids in children.values_mut() {
+        kids.sort();
+    }
+
+    let task_map: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), *t)).collect();
+
+    let render_line = |task: &Task, depth: usize| -> String {
+        let indent = "  ".repeat(depth.min(6));
+        let glyph = compact_status_glyph(&task.status);
+        let title = worksgood::agent_activity::truncate_chars(&task.title, title_width);
+        let mut line = format!("{}{} {}  {}", indent, glyph, task.id, title);
+        if let Some(dur) = compact_duration(task) {
+            line.push_str("  ");
+            line.push_str(&dur);
+        }
+        if show_activity
+            && compact_activity_applies(&task.status)
+            && let Some(step) = activity.get(&task.id)
+        {
+            line.push_str("  ");
+            line.push_str(step);
+        }
+        if let Some(w) = width {
+            line = truncate_to_width(&line, w);
+        }
+        line
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut node_line_map: HashMap<String, usize> = HashMap::new();
+    let mut visited: HashSet<&str> = HashSet::new();
+
+    let roots: Vec<&str> = tasks
+        .iter()
+        .map(|t| t.id.as_str())
+        .filter(|id| !has_parent.contains(id))
+        .collect();
+    let mut stack: Vec<(&str, usize)> = roots.iter().rev().map(|&id| (id, 0)).collect();
+    while let Some((id, depth)) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let Some(task) = task_map.get(id) else {
+            continue;
+        };
+        node_line_map.insert(id.to_string(), lines.len());
+        lines.push(render_line(task, depth));
+        if let Some(kids) = children.get(id) {
+            for child in kids.iter().rev() {
+                if !visited.contains(child) {
+                    stack.push((child, depth + 1));
+                }
+            }
+        }
+    }
+
+    // Nodes unreachable from a root (cycle members, or a node whose only
+    // visible parents are themselves) get a single bounded line each.
+    for task in tasks {
+        if visited.insert(task.id.as_str()) {
+            let depth = if has_parent.contains(task.id.as_str()) {
+                1
+            } else {
+                0
+            };
+            node_line_map.insert(task.id.clone(), lines.len());
+            lines.push(render_line(task, depth));
+        }
+    }
+
+    let _ = context_ids; // retained for API symmetry with generate_ascii
+    // Compact output preserves first-seen (DFS) order rather than the map's
+    // hash order.
+    let mut task_order: Vec<String> = node_line_map.keys().cloned().collect();
+    task_order.sort_by_key(|id| node_line_map.get(id).copied().unwrap_or(usize::MAX));
+
+    VizOutput {
+        text: lines.join("\n"),
+        node_line_map,
+        task_order,
+        forward_edges: HashMap::new(),
+        reverse_edges: HashMap::new(),
+        char_edge_map: HashMap::new(),
+        cycle_members: HashMap::new(),
+        annotation_map: HashMap::new(),
+    }
+}
+
 /// Strip ANSI escape codes to get visible length.
 pub(crate) fn visible_len(s: &str) -> usize {
     let mut len = 0;

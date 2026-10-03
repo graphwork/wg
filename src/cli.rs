@@ -1206,6 +1206,26 @@ pub enum Commands {
         /// Force a specific output width in columns (default: auto-detect terminal width)
         #[arg(long)]
         columns: Option<u16>,
+
+        /// Dense one-line-per-task rendering for narrow surfaces (pi plugin
+        /// panel/strip): no blank separators, truncated titles, no token-usage
+        /// columns, minimal indent. `--dense` is an alias.
+        #[arg(long, alias = "dense")]
+        compact: bool,
+
+        /// Truncate task titles to this many characters in compact mode
+        /// (default 28). Titles are ellipsised, never wrapped.
+        #[arg(long, value_name = "N")]
+        title_width: Option<usize>,
+
+        /// Show the live activity column for active tasks (default: on when
+        /// --compact is set).
+        #[arg(long, conflicts_with = "no_activity")]
+        activity: bool,
+
+        /// Hide the live activity column.
+        #[arg(long = "no-activity")]
+        no_activity: bool,
     },
 
     /// Output the full graph data (DOT format with archive support)

@@ -133,6 +133,15 @@ pub struct VizOptions {
     pub edge_color: String,
     /// Maximum output width in columns (None = no limit)
     pub max_columns: Option<u16>,
+    /// Dense one-line-per-task rendering for narrow surfaces (pi plugin panel).
+    /// Drops blank separators, wraps, and token-usage columns.
+    pub compact: bool,
+    /// Truncate task titles to this many characters in compact mode
+    /// (None → 28). Titles are ellipsised, never wrapped.
+    pub title_width: Option<usize>,
+    /// Show the live activity column. `None` (default) means "show on active
+    /// rows when --compact is set"; `Some(true/false)` forces it on/off.
+    pub activity: Option<bool>,
 }
 
 impl Default for VizOptions {
@@ -151,6 +160,9 @@ impl Default for VizOptions {
             tags: Vec::new(),
             edge_color: "gray".to_string(),
             max_columns: None,
+            compact: false,
+            title_width: None,
+            activity: None,
         }
     }
 }
@@ -774,19 +786,54 @@ pub fn generate_viz_output_from_graph(
 
     // Generate output
     let output = match options.format {
-        OutputFormat::Ascii => ascii::generate_ascii(
-            graph,
-            &tasks_to_show,
-            &task_ids,
-            &annotations,
-            &live_token_usage,
-            &agency_token_usage,
-            options.layout,
-            &context_ids,
-            &options.edge_color,
-            &message_stats,
-            &coordinator_status,
-        ),
+        OutputFormat::Ascii => {
+            // --activity explicitly requests the column, so it also implies the
+            // compact rendering that hosts it; --compact alone enables it by
+            // default (and --no-activity suppresses it).
+            let compact = options.compact || options.activity == Some(true);
+            if compact {
+                let show_activity = options.activity.unwrap_or(true);
+                let title_width = options.title_width.unwrap_or(28);
+                // Bound the derivation cost to active tasks only.
+                let mut activity: HashMap<String, String> = HashMap::new();
+                if show_activity {
+                    for t in &tasks_to_show {
+                        if !matches!(
+                            t.status,
+                            Status::InProgress | Status::PendingValidation | Status::PendingEval
+                        ) {
+                            continue;
+                        }
+                        if let Some(step) = worksgood::agent_activity::current_step(dir, t) {
+                            activity.insert(t.id.clone(), step);
+                        }
+                    }
+                }
+                ascii::generate_compact(
+                    &tasks_to_show,
+                    &task_ids,
+                    &context_ids,
+                    &activity,
+                    show_activity,
+                    title_width,
+                    options.max_columns.map(|c| c as usize),
+                )
+            } else {
+                ascii::generate_ascii(
+                    graph,
+                    &tasks_to_show,
+                    &task_ids,
+                    &annotations,
+                    &live_token_usage,
+                    &agency_token_usage,
+                    options.layout,
+                    &context_ids,
+                    &options.edge_color,
+                    &message_stats,
+                    &coordinator_status,
+                )
+            }
+        }
         _ => {
             let text = match options.format {
                 OutputFormat::Dot => dot::generate_dot(
@@ -1356,6 +1403,9 @@ mod tests {
             tags: Vec::new(),
             edge_color: "gray".to_string(),
             max_columns: None,
+            compact: false,
+            title_width: None,
+            activity: None,
         };
         // We test via run() output by checking generate_ascii directly
         // with the same filter logic
@@ -1835,5 +1885,201 @@ mod tests {
         let empty: HashMap<String, AnnotationInfo> = HashMap::new();
         let (_filtered, annots) = filter_internal_tasks(&graph, graph.tasks().collect(), &empty);
         assert!(!annots.contains_key("my-task"));
+    }
+
+    // ── Compact rendering (wg viz --compact) ──────────────────────────────
+
+    fn write_agent_stream(dir: &Path, agent: &str, body: &str) {
+        let path = dir.join("agents").join(agent).join("raw_stream.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn long_title_task(id: &str) -> Task {
+        let mut t = make_task(
+            id,
+            "This is an extremely long task title that certainly exceeds the compact default",
+        );
+        t.status = Status::InProgress;
+        t.assigned = Some("agent-stream".to_string());
+        t
+    }
+
+    #[test]
+    fn compact_rendering_is_dense_truncated_and_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        write_agent_stream(
+            dir.path(),
+            "agent-stream",
+            r#"{"type":"tool_execution_start","toolName":"bash","args":{"command":"cargo test --lib"}}"#,
+        );
+        let mut graph = WorkGraph::new();
+        let mut t1 = long_title_task("t1");
+        // A usage column must be OMITTED in compact mode.
+        t1.token_usage = Some(TokenUsage {
+            cost_usd: 0.0,
+            input_tokens: 150_000,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        });
+        let mut t2 = make_task("t2", "Second short title");
+        t2.status = Status::Open;
+        t2.after = vec!["t1".to_string()];
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+
+        let options = VizOptions {
+            all: true,
+            compact: true,
+            max_columns: Some(72),
+            ..VizOptions::default()
+        };
+        let out = generate_viz_output_from_graph(&graph, dir.path(), &options).unwrap();
+
+        assert!(
+            !out.text.contains("\n\n"),
+            "compact mode must not emit blank separator lines:\n{}",
+            out.text
+        );
+        for line in out.text.lines() {
+            assert!(
+                ascii::visible_len(line) <= 72,
+                "line exceeds --columns: {:?}",
+                line
+            );
+        }
+        assert!(out.text.contains('…'), "long title must be ellipsised");
+        assert!(
+            !out.text.contains('→'),
+            "compact mode must omit token-usage columns:\n{}",
+            out.text
+        );
+        // Activity column is on by default under --compact for active rows.
+        assert!(
+            out.text.contains("running cargo test --lib"),
+            "active row should show its current step:\n{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn compact_task_without_stream_renders_no_activity_column() {
+        let dir = tempfile::tempdir().unwrap();
+        write_agent_stream(
+            dir.path(),
+            "agent-stream",
+            r#"{"type":"tool_execution_start","toolName":"bash","args":{"command":"cargo test"}}"#,
+        );
+        let mut graph = WorkGraph::new();
+        let mut active = make_task("active", "Active with stream");
+        active.status = Status::InProgress;
+        active.assigned = Some("agent-stream".to_string());
+
+        let mut quiet = make_task("quiet", "Active without stream");
+        quiet.status = Status::InProgress;
+        quiet.assigned = Some("agent-gone".to_string());
+        quiet.log.clear();
+
+        graph.add_node(Node::Task(active));
+        graph.add_node(Node::Task(quiet));
+
+        let options = VizOptions {
+            all: true,
+            compact: true,
+            max_columns: Some(72),
+            ..VizOptions::default()
+        };
+        let out = generate_viz_output_from_graph(&graph, dir.path(), &options).unwrap();
+        let quiet_line = out
+            .text
+            .lines()
+            .find(|l| l.contains("quiet"))
+            .expect("quiet task rendered");
+        assert!(
+            !quiet_line.contains("running") && !quiet_line.contains("cargo test"),
+            "task with no stream must render without an activity column: {:?}",
+            quiet_line
+        );
+        assert!(out.text.contains("running cargo test"));
+    }
+
+    #[test]
+    fn compact_activity_and_title_width_are_controllable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_agent_stream(
+            dir.path(),
+            "agent-stream",
+            r#"{"type":"tool_execution_start","toolName":"bash","args":{"command":"cargo test"}}"#,
+        );
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(long_title_task("t1")));
+
+        let no_activity = VizOptions {
+            all: true,
+            compact: true,
+            activity: Some(false),
+            title_width: Some(5),
+            ..VizOptions::default()
+        };
+        let out = generate_viz_output_from_graph(&graph, dir.path(), &no_activity).unwrap();
+        assert!(
+            !out.text.contains("running cargo test"),
+            "--no-activity must suppress the activity column:\n{}",
+            out.text
+        );
+        // Title truncated to 5 chars including the ellipsis.
+        assert!(
+            out.text.contains("This…"),
+            "title_width not applied:\n{}",
+            out.text
+        );
+        assert!(!out.text.contains("This is an extremely"));
+    }
+
+    #[test]
+    fn activity_flag_alone_implies_compact_activity_column() {
+        let dir = tempfile::tempdir().unwrap();
+        write_agent_stream(
+            dir.path(),
+            "agent-stream",
+            r#"{"type":"tool_execution_start","toolName":"bash","args":{"command":"cargo test"}}"#,
+        );
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(long_title_task("t1")));
+        let options = VizOptions {
+            all: true,
+            compact: false,
+            activity: Some(true),
+            ..VizOptions::default()
+        };
+        let out = generate_viz_output_from_graph(&graph, dir.path(), &options).unwrap();
+        assert!(
+            out.text.contains("running cargo test"),
+            "--activity alone must imply the compact activity column:\n{}",
+            out.text
+        );
+        assert!(!out.text.contains("\n\n"));
+    }
+
+    #[test]
+    fn default_rendering_still_has_blank_separators() {
+        // Two independent WCCs render with a blank separator in the default
+        // (non-compact) ASCII tree — compact is the only mode that removes them.
+        let dir = tempfile::tempdir().unwrap();
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("a", "Alpha");
+        a.status = Status::Open;
+        let mut b = make_task("b", "Bravo");
+        b.status = Status::Open;
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+
+        let options = VizOptions {
+            all: true,
+            ..VizOptions::default()
+        };
+        let out = generate_viz_output_from_graph(&graph, dir.path(), &options).unwrap();
+        assert!(out.text.contains("\n\n"), "default render keeps separators");
     }
 }

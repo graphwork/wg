@@ -1702,6 +1702,10 @@ fn main() -> Result<()> {
             tags,
             edge_color,
             columns,
+            compact,
+            title_width,
+            activity,
+            no_activity,
         } => {
             let layout_mode: commands::viz::LayoutMode = layout.parse().unwrap_or_default();
             let _explicit_static_format = dot || mermaid || graph || output.is_some();
@@ -1730,6 +1734,9 @@ fn main() -> Result<()> {
                     tags: tags.clone(),
                     edge_color: resolved_edge_color,
                     max_columns: None, // TUI handles its own sizing
+                    compact: false,
+                    title_width: None,
+                    activity: None,
                 };
                 let mouse_override = if no_mouse { Some(false) } else { None };
                 tui::viz_viewer::run(
@@ -1766,6 +1773,15 @@ fn main() -> Result<()> {
                     tags,
                     edge_color: resolved_edge_color,
                     max_columns,
+                    compact,
+                    title_width,
+                    activity: if activity {
+                        Some(true)
+                    } else if no_activity {
+                        Some(false)
+                    } else {
+                        None
+                    },
                 };
                 if cli.json {
                     commands::viz::run_json(&workgraph_dir, &options)
@@ -3972,6 +3988,9 @@ fn main() -> Result<()> {
                 // asynchronous bootstrap after its first frame.
                 edge_color: "gray".to_string(),
                 max_columns: None, // TUI handles its own sizing
+                compact: false,
+                title_width: None,
+                activity: None,
             };
             let mouse_override = if no_mouse { Some(false) } else { None };
             tui::viz_viewer::run(
