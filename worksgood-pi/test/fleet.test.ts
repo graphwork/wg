@@ -412,7 +412,7 @@ describe("installFleetView", () => {
     expect(on.isExpanded()).toBe(true);
     await enabled.commands.get("wg-fleet")!.handler("collapse", enabled.ctx);
     expect(on.isExpanded()).toBe(false);
-    await enabled.commands.get("wg-fleet")!.handler("", enabled.ctx);
+    await enabled.commands.get("wg-fleet")!.handler("toggle", enabled.ctx);
     expect(on.isExpanded()).toBe(true);
   });
 });

@@ -117,6 +117,39 @@ export {
 } from "./fleet-view.js";
 export type { FleetViewController, InstallFleetOptions } from "./fleet-view.js";
 export {
+  FleetPanelComponent,
+  openFleetPanel,
+  makeFleetFetcher,
+  FLEET_PANEL_POLL_MS,
+} from "./fleet-panel.js";
+export type { FleetPanelOptions, FleetTui, OpenFleetPanelOptions } from "./fleet-panel.js";
+export {
+  DEFAULT_TRANSCRIPT_LINES,
+  FLEET_PANEL_DEFAULT_HEIGHT,
+  FLEET_PANEL_MIN_HEIGHT,
+  MAX_TRANSCRIPT_BODY_BYTES,
+  MAX_TRANSCRIPT_LINES,
+  MAX_TRANSCRIPT_LINE_CHARS,
+  TRANSCRIPT_TAIL_BYTES,
+  agentActivityLabel,
+  agentForTask,
+  agentStreamCandidates,
+  boundTranscriptBody,
+  buildFleetTree,
+  clampScroll,
+  fleetCountsHeader,
+  getFleetRowToVizTask,
+  getFleetToVizSnapshot,
+  maxScroll,
+  pageScroll,
+  readAgentStreamTail,
+  readTextTail,
+  safeTailText,
+  scrollToKeepVisible,
+  transcriptLineLimit,
+} from "./fleet-panel-model.js";
+export type { TextTail } from "./fleet-panel-model.js";
+export {
   DEFAULT_FLEET_VIEW_CONFIG,
   FLEET_CONFIG_DIRS,
   fleetConfigPaths,

@@ -1771,6 +1771,15 @@ description = "Pins the FleetView-style bottom panel (fleetview-style-bottom): t
 timeout_seconds = 180
 
 [[scenario]]
+name = "fleet_scrollable_view_contract"
+script = "scenarios/fleet_scrollable_view_contract.sh"
+owners = [
+    "scrollable-fleet-view",
+]
+description = "Pins the scrollable /wg-fleet panel (scrollable-fleet-view): the config-gated ctx.ui.custom() fleet view scrolls the dependency TREE with wheel/PgUp/PgDn/Home/End (the selection follows and stays visible, render never exceeds the panel bounds), drills into the selected task's detail with the live agent activity + a bounded stream tail, and closes on q/Esc. Credential-free: runs the focused fleet-panel unit tests, drives the REAL embedded component through keystrokes/mouse-wheel in a node probe, exercises the read-only daemon GetFleet round trip (counts + rows + revision delta, graph unmutated), and re-asserts the ambient below-editor widget strip is unaffected."
+timeout_seconds = 240
+
+[[scenario]]
 name = "pi_handler_plugin_transports"
 script = "scenarios/pi_handler_plugin_transports.sh"
 owners = [

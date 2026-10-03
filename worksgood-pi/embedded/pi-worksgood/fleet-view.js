@@ -22,6 +22,8 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { DEFAULT_FLEET_VIEW_CONFIG, readFleetViewConfig, } from "./fleet-config.js";
 import { fleetSummaryLine, renderFleetLines, } from "./fleet-readmodel.js";
 import { fleetSnapshotWithFallback } from "./fleet-snapshot.js";
+import { DEFAULT_TRANSCRIPT_LINES } from "./fleet-panel-model.js";
+import { makeFleetFetcher, openFleetPanel } from "./fleet-panel.js";
 /** Widget registration key (also the settings-visible surface id). */
 export const FLEET_WIDGET_KEY = "wg-fleet";
 /** Default bounded poll cadence for the panel. */
@@ -127,7 +129,7 @@ export function installFleetView(pi, backend, env, options = {}) {
         return fleetSummaryLine(snapshot.agents, snapshot.tasks);
     };
     pi.registerCommand("wg-fleet", {
-        description: "Toggle/expand the read-only FleetView bottom panel (live WG agents + task counts)",
+        description: "Open the scrollable read-only fleet view (also: /wg-fleet expand|collapse toggles the ambient strip)",
         handler: async (args, ctx) => {
             // TUI-only surface: silently no-op in rpc/json/print modes.
             if (ctx.mode !== "tui")
@@ -142,15 +144,30 @@ export function installFleetView(pi, backend, env, options = {}) {
                 return;
             }
             const action = args.trim().toLowerCase();
-            if (action === "expand" || action === "on")
-                expanded = true;
-            else if (action === "collapse" || action === "compact")
-                expanded = false;
-            else if (action === "" || action === "toggle")
-                expanded = !expanded;
+            // Explicit expand/collapse sub-commands keep driving the ambient strip.
+            if (action === "expand" || action === "on" || action === "collapse" || action === "compact" || action === "toggle") {
+                if (action === "expand" || action === "on")
+                    expanded = true;
+                else if (action === "collapse" || action === "compact")
+                    expanded = false;
+                else
+                    expanded = !expanded;
+                try {
+                    await refresh(ctx);
+                    ctx.ui.notify(`${expanded ? "expanded" : "compact"} · ${summaryText()}`, "info");
+                }
+                catch {
+                    // Silent degrade: the panel must never throw into the chat.
+                }
+                return;
+            }
+            // Default (and `/wg-fleet open`): the scrollable custom-component view.
             try {
-                await refresh(ctx);
-                ctx.ui.notify(`${expanded ? "expanded" : "compact"} · ${summaryText()}`, "info");
+                await openFleetPanel(ctx, makeFleetFetcher(backend), env.dir, {
+                    pollMs: config.pollMs,
+                    transcriptLines: DEFAULT_TRANSCRIPT_LINES,
+                });
+                void refresh(ctx);
             }
             catch {
                 // Silent degrade: the panel must never throw into the chat.
