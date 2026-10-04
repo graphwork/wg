@@ -203,13 +203,24 @@ export class WgBackend {
                     cmd: "get_fleet",
                     since_revision: opts.sinceRevision,
                     max_rows: opts.maxRows,
+                    include_tree: opts.includeTree ?? false,
+                    tree_columns: opts.treeColumns,
                 }, opts.timeoutMs ?? 2000, opts.signal);
                 // A well-formed get_fleet response MUST carry counts + a task array.
                 // Anything else is a protocol mismatch (an older daemon) → CLI.
                 if (!isRecord(raw) || !isRecord(raw.counts) || !Array.isArray(raw.tasks)) {
                     throw new Error("get_fleet protocol mismatch");
                 }
-                return normalizeGetFleet(raw, "daemon");
+                const snapshot = normalizeGetFleet(raw, "daemon");
+                // A daemon that predates the `tree` field still satisfies the protocol;
+                // when the caller asked for the rendered tree, back-fill it from the
+                // read-only CLI (`wg viz --json`) rather than dropping to the fallback.
+                if (opts.includeTree && !snapshot.tree) {
+                    const cli = await this.getFleetViaCli(opts).catch(() => null);
+                    if (cli?.tree)
+                        snapshot.tree = cli.tree;
+                }
+                return snapshot;
             }
             catch {
                 // Any daemon failure degrades to the CLI path below.
@@ -220,17 +231,26 @@ export class WgBackend {
     /** The safe default: derive the same fleet shape from read-only CLI verbs. */
     async getFleetViaCli(opts) {
         try {
-            const [listRes, agentsRes, readyRes] = await Promise.all([
+            const vizArgs = ["viz", "--json"];
+            if (typeof opts.treeColumns === "number" && Number.isFinite(opts.treeColumns)) {
+                vizArgs.push("--columns", String(Math.trunc(opts.treeColumns)));
+            }
+            const [listRes, agentsRes, readyRes, vizRes] = await Promise.all([
                 this.run(["list"], { json: true, signal: opts.signal }),
                 this.run(["agents"], { json: true, signal: opts.signal }),
                 this.run(["ready"], { json: true, signal: opts.signal }),
+                // Only render WG's tree on the CLI fallback when a caller asked for it.
+                opts.includeTree
+                    ? this.run(vizArgs, { signal: opts.signal }).catch(() => null)
+                    : Promise.resolve(null),
             ]);
             const tasksRaw = parseJsonArray(listRes.stdout);
             const agentsRaw = parseJsonArray(agentsRes.stdout);
             const readyRaw = parseJsonArray(readyRes.stdout);
             if (!tasksRaw && !agentsRaw && !readyRaw)
                 return null;
-            return buildCliFleet(tasksRaw ?? [], agentsRaw ?? [], readyRaw ?? []);
+            const tree = vizRes ? parseVizJson(vizRes.stdout) : undefined;
+            return buildCliFleet(tasksRaw ?? [], agentsRaw ?? [], readyRaw ?? [], tree);
         }
         catch {
             return null;
@@ -400,8 +420,38 @@ export function normalizeGetFleet(raw, source = "daemon") {
             }
             : undefined,
         truncated: r.truncated === true,
+        tree: normalizeTree(r.tree),
         source,
     };
+}
+/** Normalize a decoded `tree` payload into WG's rendered-tree shape. */
+function normalizeTree(raw) {
+    if (!isRecord(raw) || typeof raw.text !== "string")
+        return undefined;
+    const nodeLines = {};
+    if (isRecord(raw.node_lines)) {
+        for (const [id, line] of Object.entries(raw.node_lines)) {
+            if (typeof line === "number" && Number.isFinite(line))
+                nodeLines[id] = line;
+        }
+    }
+    return { text: raw.text, node_lines: nodeLines };
+}
+/**
+ * Parse the JSON emitted by `wg viz --json` into the panel's rendered-tree
+ * shape. This is the CLI fallback for the daemon's `GetFleet.tree` field — the
+ * bytes are still WG's own renderer output, so structure stays identical.
+ */
+export function parseVizJson(out) {
+    try {
+        const parsed = JSON.parse((out ?? "").trim());
+        if (!isRecord(parsed) || typeof parsed.text !== "string")
+            return undefined;
+        return normalizeTree(parsed);
+    }
+    catch {
+        return undefined;
+    }
 }
 const TERMINAL_AGENT_STATUSES = new Set(["done", "failed", "dead"]);
 function agentAlive(status, processAlive) {
@@ -416,7 +466,7 @@ function agentAlive(status, processAlive) {
  * count), `wg agents --json` (runtime worker rows). No revision is available
  * on this path, so `revision` is empty and `unchanged` is always false.
  */
-export function buildCliFleet(rawTasks, rawAgents, rawReady) {
+export function buildCliFleet(rawTasks, rawAgents, rawReady, tree) {
     const tasks = rawTasks
         .map(normalizeTaskRow)
         .filter((t) => t !== null);
@@ -465,6 +515,7 @@ export function buildCliFleet(rawTasks, rawAgents, rawReady) {
         counts,
         tasks,
         agents,
+        tree,
         source: "cli",
     };
 }

@@ -151,6 +151,15 @@ pub enum IpcRequest {
         /// Max rows per section (bounded; default 500, clamped to 1..=2000).
         #[serde(default)]
         max_rows: Option<usize>,
+        /// When true, also return the rendered `wg viz` ASCII tree
+        /// (`tree.text` + `tree.node_lines`) so a panel can render WG's own
+        /// structure verbatim instead of re-deriving it client-side.
+        #[serde(default)]
+        include_tree: Option<bool>,
+        /// Panel width in columns for the rendered tree (bounded; None = no
+        /// truncation — the client clips to its own width).
+        #[serde(default)]
+        tree_columns: Option<u16>,
     },
     /// Send a message to a task's message queue
     SendMessage {
@@ -1646,9 +1655,17 @@ fn handle_request(
         IpcRequest::GetFleet {
             since_revision,
             max_rows,
+            include_tree,
+            tree_columns,
         } => {
             logger.info("IPC GetFleet (read-only)");
-            handle_get_fleet(dir, since_revision.as_deref(), max_rows)
+            handle_get_fleet(
+                dir,
+                since_revision.as_deref(),
+                max_rows,
+                include_tree.unwrap_or(false),
+                tree_columns,
+            )
         }
         IpcRequest::SendMessage {
             task_id,
@@ -2781,6 +2798,8 @@ fn handle_get_fleet(
     dir: &Path,
     since_revision: Option<&str>,
     max_rows: Option<usize>,
+    include_tree: bool,
+    tree_columns: Option<u16>,
 ) -> IpcResponse {
     let limits = worksgood::service::fleet_snapshot::FleetLimits::clamp(max_rows);
     let graph_path = graph_path(dir);
@@ -2789,13 +2808,54 @@ fn handle_get_fleet(
         Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
     };
     let registry = AgentRegistry::load(dir).unwrap_or_default();
-    IpcResponse::success(worksgood::service::fleet_snapshot::build_fleet_snapshot(
+    let mut body = worksgood::service::fleet_snapshot::build_fleet_snapshot(
         dir,
         &graph,
         &registry,
         limits,
         since_revision,
-    ))
+    );
+    // Structure parity: the panel renders WG's OWN `wg viz` text rather than a
+    // client-side re-derivation. Rendering here (server-side, same
+    // `generate_viz_output_from_graph` the CLI uses) means the tree is byte-for-byte
+    // the `wg viz` render and the panel never spawns `wg` per refresh.
+    if include_tree {
+        if let Some(tree) = render_fleet_tree(&graph, dir, tree_columns) {
+            body["tree"] = tree;
+        }
+    }
+    IpcResponse::success(body)
+}
+
+/// Render the `wg viz` ASCII tree for the `GetFleet` payload.
+///
+/// Uses the exact same renderer as the CLI (`generate_viz_output_from_graph`
+/// with `OutputFormat::Ascii` and default filters), so the emitted `text` is
+/// WG's own tree by construction. ANSI is stripped so the panel applies its own
+/// per-line status styling (the daemon is not a terminal anyway).
+fn render_fleet_tree(
+    graph: &worksgood::graph::WorkGraph,
+    dir: &Path,
+    tree_columns: Option<u16>,
+) -> Option<serde_json::Value> {
+    let options = crate::commands::viz::VizOptions {
+        format: crate::commands::viz::OutputFormat::Ascii,
+        // Bound the request: a panel column count is a small positive width;
+        // clamp so a hostile/buggy client cannot ask for an unbounded render.
+        max_columns: tree_columns.map(|c| c.clamp(20, 400)),
+        ..Default::default()
+    };
+    let output = crate::commands::viz::generate_viz_output_from_graph(graph, dir, &options).ok()?;
+    let text = crate::commands::viz::ascii::strip_ansi_for_map(&output.text);
+    let node_lines: serde_json::Map<String, serde_json::Value> = output
+        .node_line_map
+        .iter()
+        .map(|(id, line)| (id.clone(), serde_json::json!(line)))
+        .collect();
+    Some(serde_json::json!({
+        "text": text,
+        "node_lines": node_lines,
+    }))
 }
 
 /// Append a user chat message to a coordinator's inbox.
@@ -6419,7 +6479,7 @@ poll_interval = 60
         worksgood::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         let before = fs::read(dir.join("graph.jsonl")).unwrap();
-        let resp = handle_get_fleet(dir, None, None);
+        let resp = handle_get_fleet(dir, None, None, true, Some(100));
         assert!(resp.ok, "get_fleet should succeed: {:?}", resp.error);
         // Read-only: the graph file is byte-identical after the snapshot.
         assert_eq!(
@@ -6437,9 +6497,54 @@ poll_interval = 60
         assert_eq!(data["tasks"].as_array().unwrap().len(), 2);
         assert!(data["agents"].as_array().unwrap().is_empty());
 
+        // ── structure parity: the `tree` field IS the `wg viz` render ──────
+        // The daemon must emit the exact same ASCII the `wg viz` CLI produces
+        // (same renderer + options), never a client-side re-derivation.
+        let expected = crate::commands::viz::generate_viz_output_from_graph(
+            &graph,
+            dir,
+            &crate::commands::viz::VizOptions {
+                format: crate::commands::viz::OutputFormat::Ascii,
+                max_columns: Some(100),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let expected_text = crate::commands::viz::ascii::strip_ansi_for_map(&expected.text);
+        let tree = &data["tree"];
+        assert_eq!(tree["text"].as_str().unwrap(), expected_text);
+        // Plain text: no ANSI escapes leak into the IPC JSON.
+        assert!(!tree["text"].as_str().unwrap().contains('\x1b'));
+
+        // node_lines maps task id -> rendered line index; the referenced line
+        // actually contains that task id.
+        let lines: Vec<&str> = tree["text"].as_str().unwrap().lines().collect();
+        let node_lines = tree["node_lines"].as_object().unwrap();
+        assert_eq!(node_lines.len(), 2);
+        for id in ["parent-a", "child-b"] {
+            let line = node_lines[id].as_u64().unwrap() as usize;
+            assert!(
+                lines[line].contains(id),
+                "node_lines[{id}]={line} must point at its rendered line: {:?}",
+                lines[line]
+            );
+        }
+        // Top-level row sits at column 0 with no edge glyph; the child uses the
+        // `└→` edge with the WG 2-space-per-depth prefix by construction.
+        let parent_line = lines[node_lines["parent-a"].as_u64().unwrap() as usize];
+        assert!(parent_line.starts_with("parent-a"), "{parent_line:?}");
+        let child_line = lines[node_lines["child-b"].as_u64().unwrap() as usize];
+        assert!(child_line.starts_with("└→ "), "{child_line:?}");
+
+        // No tree when not requested (the ambient widget must not pay for it).
+        let no_tree = handle_get_fleet(dir, None, None, false, None).data.unwrap();
+        assert!(no_tree.get("tree").is_none());
+
         // Delta: echoing the current revision yields counts but no rows.
         let revision = data["revision"].as_str().unwrap().to_string();
-        let delta = handle_get_fleet(dir, Some(&revision), None).data.unwrap();
+        let delta = handle_get_fleet(dir, Some(&revision), None, false, None)
+            .data
+            .unwrap();
         assert_eq!(delta["unchanged"], true);
         assert_eq!(delta["revision"], revision);
         assert!(delta["tasks"].as_array().unwrap().is_empty());

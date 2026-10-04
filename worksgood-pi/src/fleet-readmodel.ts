@@ -15,8 +15,24 @@
 import type { VizTask } from "./viz-snapshot.js";
 import { ageOf, statusGlyph, taskCounts } from "./viz-readmodel.js";
 
-/** Semantic colour names — a subset of pi's `ThemeColor`. */
-export type FleetColor = "accent" | "success" | "warning" | "error" | "muted" | "dim" | "text";
+/**
+ * Semantic colour names — a subset of pi's `ThemeColor`. The task palette uses
+ * `borderAccent` (cyan) / `border` (blue) / `customMessageLabel` (purple)
+ * because pi exposes no dedicated `info`/`purple` foreground tokens; the role
+ * mapping in {@link taskColor} documents which WG TUI palette entry each one
+ * stands in for.
+ */
+export type FleetColor =
+  | "accent"
+  | "border"
+  | "borderAccent"
+  | "customMessageLabel"
+  | "success"
+  | "warning"
+  | "error"
+  | "muted"
+  | "dim"
+  | "text";
 
 /** One runtime worker, projected from the daemon `agents` lane (or `wg agents --json`). */
 export interface FleetAgent {
@@ -115,24 +131,51 @@ export function agentColor(status: string, alive?: boolean): FleetColor {
   }
 }
 
-/** Semantic colour for a task status, matching the TUI's per-status colouring. */
+/**
+ * Semantic colour for a task status. Mirrors WG's TUI status palette
+ * (`src/tui/viz_viewer/state.rs::flash_color_for_status`, the same RGB set
+ * `src/html.rs::status_color` renders), mapped onto the nearest pi theme token:
+ *
+ * | status                     | TUI RGB / role     | pi token             |
+ * |----------------------------|--------------------|----------------------|
+ * | done                       | green  80,220,100  | `success`            |
+ * | failed                     | red   220,60,60    | `error`              |
+ * | in-progress                | cyan   60,200,220  | `borderAccent`       |
+ * | open                       | yellow 200,200,80  | `warning`            |
+ * | blocked                    | orange 180,120,60  | `warning`            |
+ * | abandoned                  | purple 140,100,160 | `customMessageLabel` |
+ * | waiting/pending-validation | blue    60,160,220 | `border`             |
+ * | pending-eval               | chartreuse 140,230,80 | `success`         |
+ * | failed-pending-eval        | coral  210,130,70  | `error`              |
+ * | unknown                    | grey               | `dim`                |
+ *
+ * (Previously `abandoned` wrongly mapped to `error`/red and every active
+ * status to `warning`; the operator saw no colour at all, so the panel also
+ * re-applies the style per rendered line — see `fleet-panel.ts::render`.)
+ */
 export function taskColor(status: string): FleetColor {
   switch (status) {
     case "done":
       return "success";
     case "failed":
-    case "abandoned":
       return "error";
     case "in-progress":
-    case "waiting":
-    case "pending-validation":
-    case "pending-eval":
-    case "failed-pending-eval":
+      return "borderAccent";
+    case "open":
       return "warning";
     case "blocked":
       return "warning";
-    case "open":
-      return "accent";
+    case "abandoned":
+      return "customMessageLabel";
+    case "waiting":
+    case "pending-validation":
+      return "border";
+    case "pending-eval":
+      return "success";
+    case "failed-pending-eval":
+      return "error";
+    case "incomplete":
+      return "warning";
     default:
       return "dim";
   }

@@ -9,14 +9,19 @@
  * per-task activity/transcript tails, and drill-down into the existing task
  * detail rendering.
  *
+ * Structure is WG's own: the tree is `GetFleet.tree.text` — the exact ASCII
+ * `wg viz` renders — returned verbatim, with per-line status colour from
+ * `tree.node_lines`. The legacy TypeScript tree (`buildFleetTree`) is a
+ * best-effort fallback only (when no rendered tree is available).
+ *
  * Interactions:
  *   - **wheel / PgUp / PgDn / Home / End** scroll the dependency TREE; the
  *     selection is dragged along so it always stays visible;
  *   - **↑/↓** move the selection and scroll it into view;
  *   - **Enter / → / l** drill into the selected task's detail (reusing
  *     `detailLines` from the viz read-model, plus the live agent activity and a
- *     bounded stream tail); **← / Enter / l** return to the tree;
- *   - **o** expand/collapse the selected subtree;
+ *     bounded stream tail); **← / h / Backspace / l** return to the tree;
+ *   - **o / space** expand/collapse the selected subtree;
  *   - **q / Esc** close.
  *
  * Strictly read-only: the only data source is the daemon's `GetFleet` read
@@ -43,6 +48,7 @@ import {
   maxScroll,
   pageScroll,
   readAgentStreamTail,
+  renderWgTree,
   scrollToKeepVisible,
 } from "./fleet-panel-model.js";
 import { detailLines } from "./viz-readmodel.js";
@@ -53,7 +59,7 @@ export const FLEET_PANEL_POLL_MS = 5000;
 /** The slice of pi-tui's `TUI` the panel needs. */
 export type FleetTui = {
   requestRender: (force?: boolean) => void;
-  terminal?: { rows?: number };
+  terminal?: { rows?: number; columns?: number };
 };
 
 export interface FleetPanelOptions {
@@ -140,9 +146,25 @@ export class FleetPanelComponent {
 
   // ── tree / selection helpers ──────────────────────────────────────────────
 
+  /**
+   * The active tree rows. Prefers WG's own rendered text (`GetFleet.tree`);
+   * only when it is unavailable does it fall back to the legacy TS re-derivation
+   * (best-effort — explicitly not the default path).
+   */
+  private treeLines(): Array<{ text: string; taskId: string | null }> {
+    if (!this.snapshot) return [];
+    const wg = renderWgTree(this.snapshot.tree, this.collapsed);
+    if (wg.fromWg) return wg.lines.map((l) => ({ text: l.text, taskId: l.taskId }));
+    return buildFleetTree(this.snapshot, this.collapsed).lines.map((l) => ({
+      text: l.text,
+      taskId: l.taskId,
+    }));
+  }
+
   private visibleOrder(): string[] {
-    const tree = this.snapshot ? buildFleetTree(this.snapshot, this.collapsed) : { lines: [], roots: 0 };
-    return tree.lines.map((l) => l.taskId).filter((id): id is string => id !== null);
+    return this.treeLines()
+      .map((l) => l.taskId)
+      .filter((id): id is string => id !== null);
   }
 
   private firstVisibleId(): string | null {
@@ -294,7 +316,16 @@ export class FleetPanelComponent {
       return;
     }
     if (this.mode === "detail") {
-      if (matchesKey(data, Key.enter) || data === "l" || matchesKey(data, Key.left)) {
+      // NOTE: Enter deliberately does NOT close the detail view. Some terminals
+      // deliver Enter as `\r\n`, which `matchesKey` accepts twice; when Enter
+      // both opened and closed the view it appeared to "only open/close tasks".
+      // Go back with ←/h/Backspace, close the panel with q/Esc.
+      if (
+        matchesKey(data, Key.left) ||
+        matchesKey(data, Key.backspace) ||
+        data === "h" ||
+        data === "l"
+      ) {
         this.closeDetail();
       } else if (matchesKey(data, Key.up)) this.scrollBy(-1);
       else if (matchesKey(data, Key.down)) this.scrollBy(1);
@@ -311,7 +342,7 @@ export class FleetPanelComponent {
     else if (matchesKey(data, Key.home) || data === "g") this.selectFirst();
     else if (matchesKey(data, Key.end) || data === "G") this.selectLast();
     else if (matchesKey(data, Key.enter) || data === "l" || matchesKey(data, Key.right)) this.openDetail();
-    else if (data === "o") this.toggleExpand();
+    else if (data === "o" || matchesKey(data, Key.space)) this.toggleExpand();
   }
 
   /** Mouse support: `wheel` scrolls; press/click selects the hit tree line. */
@@ -370,10 +401,9 @@ export class FleetPanelComponent {
   private treeContent(): { lines: PaintedLine[]; taskIds: Array<string | null> } {
     if (!this.snapshot) return { lines: [], taskIds: [] };
     const statusById = new Map(this.snapshot.tasks.map((t) => [t.id, t.status]));
-    const tree = buildFleetTree(this.snapshot, this.collapsed);
     const lines: PaintedLine[] = [];
     const taskIds: Array<string | null> = [];
-    for (const line of tree.lines) {
+    for (const line of this.treeLines()) {
       const marker = line.taskId !== null && line.taskId === this.selectedId ? "❯ " : "  ";
       let text = `${marker}${line.text}`;
       if (line.taskId) {
@@ -381,6 +411,9 @@ export class FleetPanelComponent {
         const activity = agentActivityLabel(agent);
         if (activity) text += ` · ${activity}`;
       }
+      // Every rendered line is painted with WG's status palette (task lines) or
+      // dim (separators/arc rows); the caller re-applies this per line in
+      // `render` so the computed style actually reaches the terminal.
       const status = line.taskId ? statusById.get(line.taskId) : undefined;
       lines.push({ text, color: status ? taskColor(status) : "dim" });
       taskIds.push(line.taskId);
@@ -415,7 +448,7 @@ export class FleetPanelComponent {
       if (detail.length > this.detailScroll + body) {
         lines.push({ text: `  … +${detail.length - this.detailScroll - body} more (↓/PgDn)`, color: "dim" });
       } else {
-        lines.push({ text: "  ↑/↓ scroll · ← or enter back · q close", color: "dim" });
+        lines.push({ text: "  ↑/↓ scroll · ← back · q close", color: "dim" });
       }
     } else {
       const header = fleetCountsHeader(snapshot.counts);
@@ -428,8 +461,8 @@ export class FleetPanelComponent {
       // Footer: bounded so the panel never renders past `height`.
       const overflow = tree.lines.length > this.treeScroll + body;
       const footer = overflow
-        ? `  ↓ ${tree.lines.length - (this.treeScroll + body)} more · wheel/PgDn · enter detail · q close`
-        : "  wheel/PgUp/PgDn/Home/End scroll · enter detail · q close";
+        ? `  ↓ ${tree.lines.length - (this.treeScroll + body)} more · wheel/PgDn · enter detail · o expand · q close`
+        : "  ↑/↓ select · enter detail · o/space expand · q close";
       lines.push({ text: footer, color: "dim" });
     }
 
@@ -487,13 +520,20 @@ export interface OpenFleetPanelOptions {
 }
 
 /**
+ * The panel's bounded snapshot fetcher. `columns` (when supplied) is passed to
+ * the backend so a rendered tree is truncated to the panel width WG-side; the
+ * text is still rendered verbatim.
+ */
+export type FleetSnapshotFetcher = (columns?: number) => Promise<GetFleetSnapshot | null>;
+
+/**
  * Open the scrollable panel via `ctx.ui.custom()` (TUI mode only). `done()` is
  * supplied to the component so q/Esc resolves the custom prompt; a bounded
  * poller keeps the snapshot live.
  */
 export async function openFleetPanel(
   ctx: ExtensionContext,
-  fetchSnapshot: () => Promise<GetFleetSnapshot | null>,
+  fetchSnapshot: FleetSnapshotFetcher,
   liveDir: string | undefined,
   options: OpenFleetPanelOptions = {},
 ): Promise<void> {
@@ -504,6 +544,14 @@ export async function openFleetPanel(
         return tui.terminal?.rows ?? FLEET_PANEL_DEFAULT_HEIGHT;
       } catch {
         return FLEET_PANEL_DEFAULT_HEIGHT;
+      }
+    };
+    const columns = (): number | undefined => {
+      try {
+        const c = tui.terminal?.columns;
+        return typeof c === "number" && c > 0 ? c : undefined;
+      } catch {
+        return undefined;
       }
     };
     const component = new FleetPanelComponent(
@@ -518,7 +566,7 @@ export async function openFleetPanel(
     const timer = setInterval(() => {
       if (inFlight || component.isDisposed) return;
       inFlight = true;
-      void fetchSnapshot()
+      void fetchSnapshot(columns())
         .then((snapshot) => component.setSnapshot(snapshot))
         .catch(() => undefined)
         .finally(() => {
@@ -545,14 +593,26 @@ export async function openFleetPanel(
 /**
  * The `/wg-fleet` data fetcher: prefer the daemon `GetFleet` read (which itself
  * falls back to the read-only CLI), and degrade to `null` when unavailable.
+ *
+ * `includeTree` (default true) asks the daemon for WG's own rendered `wg viz`
+ * tree so the panel has structure parity without spawning `wg` per refresh.
  */
 export function makeFleetFetcher(
   backend: Pick<WgBackend, "run"> & Partial<Pick<WgBackend, "getFleet">>,
-): () => Promise<GetFleetSnapshot | null> {
-  return async () => {
+  options: { includeTree?: boolean } = {},
+): FleetSnapshotFetcher {
+  const includeTree = options.includeTree ?? true;
+  return async (columns?: number) => {
     if (typeof backend.getFleet === "function") {
       try {
-        return await backend.getFleet({ timeoutMs: 2000 });
+        return await backend.getFleet({
+          timeoutMs: 2000,
+          includeTree,
+          treeColumns:
+            typeof columns === "number" && Number.isFinite(columns) && columns > 0
+              ? Math.trunc(columns)
+              : undefined,
+        });
       } catch {
         return null;
       }

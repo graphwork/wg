@@ -284,6 +284,8 @@ export class WgBackend {
             cmd: "get_fleet",
             since_revision: opts.sinceRevision,
             max_rows: opts.maxRows,
+            include_tree: opts.includeTree ?? false,
+            tree_columns: opts.treeColumns,
           },
           opts.timeoutMs ?? 2000,
           opts.signal,
@@ -293,7 +295,15 @@ export class WgBackend {
         if (!isRecord(raw) || !isRecord(raw.counts) || !Array.isArray(raw.tasks)) {
           throw new Error("get_fleet protocol mismatch");
         }
-        return normalizeGetFleet(raw, "daemon");
+        const snapshot = normalizeGetFleet(raw, "daemon");
+        // A daemon that predates the `tree` field still satisfies the protocol;
+        // when the caller asked for the rendered tree, back-fill it from the
+        // read-only CLI (`wg viz --json`) rather than dropping to the fallback.
+        if (opts.includeTree && !snapshot.tree) {
+          const cli = await this.getFleetViaCli(opts).catch(() => null);
+          if (cli?.tree) snapshot.tree = cli.tree;
+        }
+        return snapshot;
       } catch {
         // Any daemon failure degrades to the CLI path below.
       }
@@ -304,16 +314,25 @@ export class WgBackend {
   /** The safe default: derive the same fleet shape from read-only CLI verbs. */
   private async getFleetViaCli(opts: GetFleetOptions): Promise<GetFleetSnapshot | null> {
     try {
-      const [listRes, agentsRes, readyRes] = await Promise.all([
+      const vizArgs = ["viz", "--json"];
+      if (typeof opts.treeColumns === "number" && Number.isFinite(opts.treeColumns)) {
+        vizArgs.push("--columns", String(Math.trunc(opts.treeColumns)));
+      }
+      const [listRes, agentsRes, readyRes, vizRes] = await Promise.all([
         this.run(["list"], { json: true, signal: opts.signal }),
         this.run(["agents"], { json: true, signal: opts.signal }),
         this.run(["ready"], { json: true, signal: opts.signal }),
+        // Only render WG's tree on the CLI fallback when a caller asked for it.
+        opts.includeTree
+          ? this.run(vizArgs, { signal: opts.signal }).catch(() => null)
+          : Promise.resolve(null),
       ]);
       const tasksRaw = parseJsonArray(listRes.stdout);
       const agentsRaw = parseJsonArray(agentsRes.stdout);
       const readyRaw = parseJsonArray(readyRes.stdout);
       if (!tasksRaw && !agentsRaw && !readyRaw) return null;
-      return buildCliFleet(tasksRaw ?? [], agentsRaw ?? [], readyRaw ?? []);
+      const tree = vizRes ? parseVizJson(vizRes.stdout) : undefined;
+      return buildCliFleet(tasksRaw ?? [], agentsRaw ?? [], readyRaw ?? [], tree);
     } catch {
       return null;
     }
@@ -362,6 +381,19 @@ export interface GetFleetAgentRow {
   activity?: string | null;
 }
 
+/**
+ * WG's OWN rendered `wg viz` tree, emitted by the `GetFleet` read so the panel
+ * renders WG's structure verbatim (top-level rows unindented, `└→` edges with
+ * WG's own 2-space-per-depth prefix) instead of re-deriving it in TypeScript.
+ *
+ * `text` is the exact plain-text ASCII `wg viz` prints; `node_lines` maps a
+ * task id to the rendered line index that shows it (for per-line status colour).
+ */
+export interface GetFleetTree {
+  text: string;
+  node_lines: Record<string, number>;
+}
+
 /** Aggregate counts rendered as the fleet header. */
 export interface GetFleetCounts {
   in_progress: number;
@@ -384,6 +416,8 @@ export interface GetFleetSnapshot {
   agents: GetFleetAgentRow[];
   graph?: { identity?: string | null; task_count?: number; agent_count?: number };
   truncated?: boolean;
+  /** WG's own rendered `wg viz` tree (present when requested). */
+  tree?: GetFleetTree;
   /** Which source produced the snapshot. */
   source: "daemon" | "cli";
 }
@@ -393,6 +427,14 @@ export interface GetFleetOptions {
   sinceRevision?: string;
   /** Max rows per section (server clamps to 1..=2000). */
   maxRows?: number;
+  /**
+   * Ask the daemon to include WG's own rendered `wg viz` tree
+   * (`tree.text` + `tree.node_lines`). Off by default so the ambient widget
+   * (which renders only counts/agent rows) never pays for the tree render.
+   */
+  includeTree?: boolean;
+  /** Panel width in columns for the rendered tree (server clamps 20..=400). */
+  treeColumns?: number;
   /** Per-request deadline for the daemon path. Default 2000ms. */
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -569,8 +611,36 @@ export function normalizeGetFleet(raw: unknown, source: "daemon" | "cli" = "daem
         }
       : undefined,
     truncated: r.truncated === true,
+    tree: normalizeTree(r.tree),
     source,
   };
+}
+
+/** Normalize a decoded `tree` payload into WG's rendered-tree shape. */
+function normalizeTree(raw: unknown): GetFleetTree | undefined {
+  if (!isRecord(raw) || typeof raw.text !== "string") return undefined;
+  const nodeLines: Record<string, number> = {};
+  if (isRecord(raw.node_lines)) {
+    for (const [id, line] of Object.entries(raw.node_lines)) {
+      if (typeof line === "number" && Number.isFinite(line)) nodeLines[id] = line;
+    }
+  }
+  return { text: raw.text, node_lines: nodeLines };
+}
+
+/**
+ * Parse the JSON emitted by `wg viz --json` into the panel's rendered-tree
+ * shape. This is the CLI fallback for the daemon's `GetFleet.tree` field — the
+ * bytes are still WG's own renderer output, so structure stays identical.
+ */
+export function parseVizJson(out: string | undefined): GetFleetTree | undefined {
+  try {
+    const parsed = JSON.parse((out ?? "").trim());
+    if (!isRecord(parsed) || typeof parsed.text !== "string") return undefined;
+    return normalizeTree(parsed);
+  } catch {
+    return undefined;
+  }
 }
 
 const TERMINAL_AGENT_STATUSES = new Set(["done", "failed", "dead"]);
@@ -592,6 +662,7 @@ export function buildCliFleet(
   rawTasks: unknown[],
   rawAgents: unknown[],
   rawReady: unknown[],
+  tree?: GetFleetTree,
 ): GetFleetSnapshot {
   const tasks = rawTasks
     .map(normalizeTaskRow)
@@ -639,6 +710,7 @@ export function buildCliFleet(
     counts,
     tasks,
     agents,
+    tree,
     source: "cli",
   };
 }

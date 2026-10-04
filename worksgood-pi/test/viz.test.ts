@@ -353,23 +353,30 @@ describe("VizPanelComponent", () => {
     expect(render().length).toBeGreaterThan(0);
   });
 
-  it("expands/collapses the selected subtree (enter) and shows detail lines (l)", () => {
+  it("expands/collapses the selected subtree (o) and enters detail (enter/l)", () => {
     const { component, render } = makeComponent();
     render();
     // Select smoke-pin (second visible line), then collapse its subtree.
     component.handleInput("\x1b[B");
     expect(component.selected).toBe("smoke-pin");
-    component.handleInput("\r"); // Key.enter → toggle collapse
+    component.handleInput("o"); // Key 'o' → toggle collapse
     const collapsed = render();
     expect(collapsed.some((l) => l.includes("(+1)"))).toBe(true);
+    // Space is an equivalent expand/collapse key.
+    component.handleInput(" ");
+    expect(render().some((l) => l.includes("(+1)"))).toBe(false);
+    component.handleInput(" ");
 
     // opaque-exec is hidden by the collapse; the selection clamps at
     // smoke-pin, which is now the last visible task.
     component.handleInput("\x1b[B");
     expect(component.selected).toBe("smoke-pin");
-    component.handleInput("l");
+    component.handleInput("\r"); // Key.enter → DETAIL view (not collapse)
     const detail = render();
     expect(detail.some((l) => l.includes("── smoke-pin ──"))).toBe(true);
+    expect(component.detailVisible).toBe(true);
+    // A second Enter is inert in detail mode (guards `\r\n` double delivery).
+    component.handleInput("\r");
     expect(component.detailVisible).toBe(true);
     component.handleInput("l");
     expect(component.detailVisible).toBe(false);

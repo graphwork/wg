@@ -88,14 +88,14 @@ export default function worksgoodPi(pi) {
     });
 }
 // Re-export the building blocks so the SDK host and tests can use them directly.
-export { WgBackend, readWgEnv, canonicalChatId, normalizeGetFleet, buildCliFleet } from "./wg-backend.js";
+export { WgBackend, readWgEnv, canonicalChatId, normalizeGetFleet, buildCliFleet, parseVizJson } from "./wg-backend.js";
 export { registerWgTools } from "./tools.js";
 export { registerWgCommands, parseModelSpec } from "./commands.js";
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";
 export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_WIDGET_KEY, VIZ_WIDGET_POLL_MS } from "./viz-panel.js";
 export { installFleetView, FLEET_WIDGET_KEY, FLEET_POLL_MS, } from "./fleet-view.js";
 export { FleetPanelComponent, openFleetPanel, makeFleetFetcher, FLEET_PANEL_POLL_MS, } from "./fleet-panel.js";
-export { DEFAULT_TRANSCRIPT_LINES, FLEET_PANEL_DEFAULT_HEIGHT, FLEET_PANEL_MIN_HEIGHT, MAX_TRANSCRIPT_BODY_BYTES, MAX_TRANSCRIPT_LINES, MAX_TRANSCRIPT_LINE_CHARS, TRANSCRIPT_TAIL_BYTES, agentActivityLabel, agentForTask, agentStreamCandidates, boundTranscriptBody, buildFleetTree, clampScroll, fleetCountsHeader, getFleetRowToVizTask, getFleetToVizSnapshot, maxScroll, pageScroll, readAgentStreamTail, readTextTail, safeTailText, scrollToKeepVisible, transcriptLineLimit, } from "./fleet-panel-model.js";
+export { DEFAULT_TRANSCRIPT_LINES, FLEET_PANEL_DEFAULT_HEIGHT, FLEET_PANEL_MIN_HEIGHT, MAX_TRANSCRIPT_BODY_BYTES, MAX_TRANSCRIPT_LINES, MAX_TRANSCRIPT_LINE_CHARS, TRANSCRIPT_TAIL_BYTES, agentActivityLabel, agentForTask, agentStreamCandidates, boundTranscriptBody, buildFleetTree, clampScroll, fleetCountsHeader, getFleetRowToVizTask, getFleetToVizSnapshot, maxScroll, pageScroll, readAgentStreamTail, readTextTail, renderWgTree, safeTailText, scrollToKeepVisible, transcriptLineLimit, wgTreeLineDepth, } from "./fleet-panel-model.js";
 export { DEFAULT_FLEET_VIEW_CONFIG, FLEET_CONFIG_DIRS, fleetConfigPaths, parseFleetViewConfig, readFleetViewConfig, resolveAgentDir, } from "./fleet-config.js";
 export { agentColor, agentElapsed, agentGlyph, agentLine, agentModel, fleetCounts, fleetHeaderLine, fleetSummaryLine, isAgentAlive, renderFleetLines, taskColor, taskGlyph, } from "./fleet-readmodel.js";
 export { FleetPoller, fetchAgents, fetchFleetOverSocket, fleetSnapshotWithFallback, normalizeAgent, } from "./fleet-snapshot.js";

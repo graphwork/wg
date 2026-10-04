@@ -1016,7 +1016,10 @@ fn is_tree_connector(c: char) -> bool {
 }
 
 /// Strip ANSI escape codes from a string to get plain visible text.
-fn strip_ansi_for_map(s: &str) -> String {
+///
+/// Public within the crate so the daemon's `GetFleet` tree projection can emit
+/// the same plain-text ASCII the panel renders (no ANSI leaking into IPC JSON).
+pub(crate) fn strip_ansi_for_map(s: &str) -> String {
     let mut result = String::new();
     let mut in_escape = false;
     for ch in s.chars() {

@@ -154,14 +154,31 @@ describe("fleet read model — glyph + colour mapping", () => {
     expect(taskGlyph("open")).toBe("○");
   });
 
-  it("maps to the WG TUI colours (green ok, red bad, yellow busy)", () => {
+  it("maps agent statuses to the WG TUI colours (green ok, red bad, yellow busy)", () => {
     expect(agentColor("working")).toBe("success");
     expect(agentColor("failed")).toBe("error");
     expect(agentColor("dead")).toBe("error");
     expect(agentColor("working", false)).toBe("error");
     expect(agentColor("parked")).toBe("warning");
-    expect(taskColor("in-progress")).toBe("warning");
-    expect(taskColor("done")).toBe("success");
+  });
+
+  // Colour-role parity with the TUI status palette
+  // (`src/tui/viz_viewer/state.rs::flash_color_for_status`, mirrored by
+  // `src/html.rs::status_color`): done=green, in-progress=cyan/blue,
+  // failed=red, abandoned=purple, open/blocked yellow-orange.
+  it("maps every task status to its WG TUI palette role", () => {
+    expect(taskColor("done")).toBe("success"); // green 80,220,100
+    expect(taskColor("in-progress")).toBe("borderAccent"); // cyan 60,200,220
+    expect(taskColor("failed")).toBe("error"); // red 220,60,60
+    expect(taskColor("abandoned")).toBe("customMessageLabel"); // purple 140,100,160
+    expect(taskColor("open")).toBe("warning"); // yellow 200,200,80
+    expect(taskColor("blocked")).toBe("warning"); // orange 180,120,60
+    expect(taskColor("waiting")).toBe("border"); // blue 60,160,220
+    expect(taskColor("pending-validation")).toBe("border");
+    expect(taskColor("pending-eval")).toBe("success"); // chartreuse 140,230,80
+    expect(taskColor("failed-pending-eval")).toBe("error"); // coral 210,130,70
+    expect(taskColor("incomplete")).toBe("warning");
+    expect(taskColor("something-unknown")).toBe("dim");
   });
 
   it("formats an agent row with id, task, model and elapsed", () => {

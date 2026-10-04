@@ -178,7 +178,7 @@ function fakeVerbHost(map: Record<string, { stdout?: string; code?: number }>) {
   const host = {
     exec: vi.fn(async (command: string, args: string[]) => {
       calls.push({ command, args });
-      const verb = args.find((a) => ["list", "agents", "ready"].includes(a)) ?? "";
+      const verb = args.find((a) => ["list", "agents", "ready", "viz"].includes(a)) ?? "";
       const entry = map[verb] ?? { stdout: "[]", code: 0 };
       return { stdout: entry.stdout ?? "", stderr: "", code: entry.code ?? 0, killed: false };
     }),
@@ -236,6 +236,12 @@ const CLI_AGENTS = JSON.stringify([
   },
 ]);
 const CLI_READY = JSON.stringify([{ id: "t3", title: "T3", ready: true }]);
+const CLI_VIZ_TEXT = "t1  (in-progress)\n└→ t2  (done)";
+const CLI_VIZ = JSON.stringify({
+  text: CLI_VIZ_TEXT,
+  node_lines: { t1: 0, t2: 1 },
+  forward_edges: { t1: ["t2"] },
+});
 
 describe("WgBackend.getFleet", () => {
   it("reads the bounded snapshot from the daemon over the IPC socket", async () => {
@@ -411,5 +417,62 @@ describe("WgBackend.getFleet", () => {
     });
     const backend = new WgBackend(host, { dir });
     expect(await backend.getFleet()).toBeNull();
+  });
+
+  it("requests WG's rendered tree from the daemon and normalizes it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-fleet-"));
+    const socket = join(dir, "daemon.sock");
+    const daemon = await fakeDaemon(socket, () => ({
+      body: JSON.stringify({
+        ok: true,
+        revision: "r",
+        unchanged: false,
+        counts: { in_progress: 1, ready: 0, blocked: 0, done: 1, total: 2 },
+        tasks: [{ id: "t1", title: "T1", status: "in-progress", depends_on: [] }],
+        agents: [],
+        tree: { text: CLI_VIZ_TEXT, node_lines: { t1: 0, t2: 1 } },
+      }),
+    }));
+    try {
+      const { host, calls } = fakeVerbHost({});
+      const backend = new WgBackend(host, { daemonSocket: socket });
+      const snapshot = await backend.getFleet({ includeTree: true, treeColumns: 72 });
+      expect(snapshot?.source).toBe("daemon");
+      expect(snapshot?.tree?.text).toBe(CLI_VIZ_TEXT);
+      expect(snapshot?.tree?.node_lines).toEqual({ t1: 0, t2: 1 });
+      expect(daemon.requests[0].include_tree).toBe(true);
+      expect(daemon.requests[0].tree_columns).toBe(72);
+      // A daemon that carried the tree needs no CLI fallback at all.
+      expect(calls).toHaveLength(0);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it("back-fills the tree from `wg viz --json` on the CLI path when requested", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-fleet-"));
+    const { host, calls } = fakeVerbHost({
+      list: { stdout: CLI_LIST },
+      agents: { stdout: CLI_AGENTS },
+      ready: { stdout: CLI_READY },
+      viz: { stdout: CLI_VIZ },
+    });
+    const backend = new WgBackend(host, { dir });
+    const snapshot = await backend.getFleet({ includeTree: true, treeColumns: 80 });
+    expect(snapshot?.source).toBe("cli");
+    expect(snapshot?.tree?.text).toBe(CLI_VIZ_TEXT);
+    const vizCall = calls.find((c) => c.args.includes("viz"));
+    expect(vizCall).toBeTruthy();
+    expect(vizCall!.args).toContain("--json");
+    expect(vizCall!.args).toContain("--columns");
+    expect(vizCall!.args).toContain("80");
+    // The default path (no includeTree) never shells `wg viz`.
+    const { host: host2, calls: calls2 } = fakeVerbHost({
+      list: { stdout: CLI_LIST },
+      agents: { stdout: CLI_AGENTS },
+      ready: { stdout: CLI_READY },
+    });
+    await new WgBackend(host2, { dir }).getFleet();
+    expect(calls2.some((c) => c.args.includes("viz"))).toBe(false);
   });
 });

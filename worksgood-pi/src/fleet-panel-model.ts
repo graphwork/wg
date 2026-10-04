@@ -30,6 +30,7 @@ import type {
   GetFleetCounts,
   GetFleetSnapshot,
   GetFleetTaskRow,
+  GetFleetTree,
 } from "./wg-backend.js";
 import type { VizSnapshot, VizTask } from "./viz-snapshot.js";
 import { buildTree, type TreeRender } from "./viz-readmodel.js";
@@ -135,12 +136,144 @@ export function getFleetToVizSnapshot(snapshot: GetFleetSnapshot): VizSnapshot {
   return { tasks };
 }
 
-/** Build the nested dependency tree (reusing the viz read-model) for a snapshot. */
+/**
+ * Build the nested dependency tree (reusing the viz read-model) for a snapshot.
+ *
+ * **Best-effort fallback only.** This is the legacy TypeScript re-derivation of
+ * WG's tree; it drifts from the Rust renderer's prefixes/edges and must not be
+ * the default path. The panel prefers {@link renderWgTree} (WG's own rendered
+ * text from `GetFleet.tree` / `wg viz --json`) and only falls back here when no
+ * rendered tree is available.
+ */
 export function buildFleetTree(
   snapshot: GetFleetSnapshot,
   collapsed: ReadonlySet<string> = new Set(),
 ): TreeRender {
   return buildTree(getFleetToVizSnapshot(snapshot), collapsed);
+}
+
+// ── WG's own rendered tree (`GetFleet.tree` / `wg viz --json`) ───────────────
+
+/** One line of WG's rendered ASCII tree. */
+export interface WgTreeLine {
+  text: string;
+  /** Task id hit-mapped to this line (null for blank/arc-only lines). */
+  taskId: string | null;
+  /** WG depth from the prefix (0 = top-level, no edge glyph). */
+  depth: number;
+}
+
+export interface WgTreeRender {
+  lines: WgTreeLine[];
+  /** Root (depth-0 task) count — used for the panel footer. */
+  roots: number;
+  /** True when the lines are WG's own rendered text (structure parity). */
+  fromWg: boolean;
+}
+
+/**
+ * Depth of a rendered `wg viz` line, derived from WG's own prefix. WG renders a
+ * top-level row at column 0 with no connector; a node at depth `d >= 1` sits
+ * behind `2*(d-1)` prefix cells (`  ` or `│ `) then a `├→ `/`└→ ` connector.
+ * Returns `null` for lines that carry no node depth (blank separators, arc-only
+ * continuation rows).
+ */
+export function wgTreeLineDepth(text: string): number | null {
+  if (text.trim().length === 0) return null;
+  let i = 0;
+  while (i + 2 <= text.length) {
+    const pair = text.slice(i, i + 2);
+    if (pair === "├→" || pair === "└→") return i / 2 + 1;
+    if (pair === "  " || pair === "│ ") {
+      i += 2;
+      continue;
+    }
+    // A non-prefix, non-connector pair means a top-level row (task text or an
+    // arc-only root row) at column 0.
+    return 0;
+  }
+  // Ran off the end without a connector (e.g. a short/blank-ish row).
+  return i === 0 ? null : 0;
+}
+
+/**
+ * Render WG's OWN tree text verbatim.
+ *
+ * `tree.text` is split on newlines and returned **unchanged** — structure and
+ * indentation are WG's by construction, never re-derived. `node_lines` is
+ * inverted to hit-map each rendered line to its task id so the caller can colour
+ * it with WG's status palette.
+ *
+ * `collapsed` is a display-only overlay: the contiguous rendered range behind a
+ * collapsed task's line is hidden (WG's text for the visible rows is still used
+ * verbatim). Returns `fromWg: false` when no rendered tree is available, so the
+ * caller can use the explicitly best-effort TS fallback instead.
+ */
+export function renderWgTree(
+  tree: GetFleetTree | undefined,
+  collapsed: ReadonlySet<string> = new Set(),
+): WgTreeRender {
+  if (!tree || typeof tree.text !== "string" || tree.text.length === 0) {
+    return { lines: [], roots: 0, fromWg: false };
+  }
+  const raw = tree.text.split("\n");
+  const taskByLine = new Map<number, string>();
+  for (const [id, line] of Object.entries(tree.node_lines ?? {})) {
+    if (typeof line === "number" && Number.isInteger(line) && line >= 0 && line < raw.length) {
+      taskByLine.set(line, id);
+    }
+  }
+  // A collapsed task hides its own descendant block: the rows strictly after
+  // its line and deeper than it, up to the next row at its depth or shallower.
+  const collapsedLines = new Set<number>();
+  for (const [line, id] of taskByLine) {
+    if (collapsed.has(id)) collapsedLines.add(line);
+  }
+
+  const lines: WgTreeLine[] = [];
+  let roots = 0;
+  let hideDeeperThan: number | null = null;
+  // Open collapsed block, awaiting its hidden-descendant count.
+  let pending: { lineIndex: number; count: number } | null = null;
+  const markers: Array<{ lineIndex: number; count: number }> = [];
+  const flushPending = () => {
+    if (pending) {
+      markers.push(pending);
+      pending = null;
+    }
+  };
+  for (let line = 0; line < raw.length; line++) {
+    const text = raw[line] ?? "";
+    const taskId = taskByLine.get(line) ?? null;
+    const depth = wgTreeLineDepth(text);
+    const isCollapsedNode = collapsedLines.has(line);
+    let hidden = false;
+    if (isCollapsedNode) {
+      // The collapsed row itself stays visible; hide everything deeper after it.
+      flushPending();
+      pending = { lineIndex: lines.length, count: 0 };
+      hideDeeperThan = depth ?? 0;
+    } else if (hideDeeperThan !== null) {
+      if (depth === null || depth > hideDeeperThan) {
+        // Blank/arc continuation, or a deeper descendant row.
+        hidden = true;
+        if (taskId !== null && pending) pending.count += 1;
+      } else {
+        // Resynchronised at the collapsed node's depth (or shallower).
+        hideDeeperThan = null;
+        flushPending();
+      }
+    }
+    if (hidden) continue;
+    if (taskId !== null && depth === 0) roots += 1;
+    lines.push({ text, taskId, depth: depth ?? 0 });
+  }
+  flushPending();
+  for (const marker of markers) {
+    const row = lines[marker.lineIndex];
+    if (row && marker.count > 0) row.text = `${row.text} (+${marker.count})`;
+  }
+  return { lines, roots, fromWg: true };
 }
 
 // ── counts header + agent lookup ────────────────────────────────────────────

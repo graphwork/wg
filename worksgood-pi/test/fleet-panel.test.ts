@@ -35,8 +35,10 @@ import {
   pageScroll,
   readAgentStreamTail,
   readTextTail,
+  renderWgTree,
   scrollToKeepVisible,
   transcriptLineLimit,
+  wgTreeLineDepth,
 } from "../pi-worksgood/index.js";
 // @ts-expect-error — built ESM artifact import (see above)
 import { FleetPanelComponent } from "../pi-worksgood/fleet-panel.js";
@@ -74,6 +76,48 @@ function snap() {
         status: "working",
         activity: "running cargo test --lib",
       },
+    ],
+  };
+}
+
+/**
+ * A snapshot carrying WG's OWN rendered tree (`GetFleet.tree`) — the exact
+ * plain-text `wg viz` output for a small fixture graph (captured from the real
+ * renderer): a paused root, a nested child/grandchild and a failed child, plus
+ * a second component. Structure is WG's, verbatim.
+ */
+const WG_TREE_TEXT = [
+  "‖ root-a  (open) 5s",
+  "├→ ‖ child-1  (open) 2s",
+  "│ └→ ‖ grand-1  (open) 2s",
+  "└→ ‖ child-2  (failed) 2s",
+  "",
+  "‖ loner  (open) 2s",
+].join("\n");
+
+const WG_TREE_NODE_LINES = {
+  "root-a": 0,
+  "child-1": 1,
+  "grand-1": 2,
+  "child-2": 3,
+  loner: 5,
+};
+
+function treeSnap() {
+  return {
+    ...snap(),
+    tree: { text: WG_TREE_TEXT, node_lines: WG_TREE_NODE_LINES },
+    tasks: [
+      { id: "done-a", title: "Done A", status: "done", depends_on: [] },
+      { id: "active-b", title: "Active B", status: "in-progress", depends_on: ["done-a"] },
+      { id: "blocked-d", title: "Blocked D", status: "blocked", depends_on: ["active-b"] },
+      { id: "open-c", title: "Open C", status: "open", depends_on: [] },
+      { id: "gone-e", title: "Gone E", status: "abandoned", depends_on: [] },
+      { id: "root-a", title: "Root A", status: "open", depends_on: [] },
+      { id: "child-1", title: "Child 1", status: "open", depends_on: ["root-a"] },
+      { id: "grand-1", title: "Grand 1", status: "open", depends_on: ["child-1"] },
+      { id: "child-2", title: "Child 2", status: "failed", depends_on: ["root-a"] },
+      { id: "loner", title: "Loner", status: "open", depends_on: [] },
     ],
   };
 }
@@ -254,6 +298,71 @@ describe("fleet panel read model", () => {
   });
 });
 
+// ── structure parity with `wg viz` (WG's own rendered text) ──────────────────
+
+describe("fleet tree structure parity — renders WG's own `wg viz` text", () => {
+  it("returns WG's rendered lines byte-for-byte (verbatim, no re-derivation)", () => {
+    const render = renderWgTree({ text: WG_TREE_TEXT, node_lines: WG_TREE_NODE_LINES });
+    expect(render.fromWg).toBe(true);
+    expect(render.lines.map((l) => l.text)).toEqual(WG_TREE_TEXT.split("\n"));
+  });
+
+  it("hits each line to its task id and derives WG's depth from the prefix", () => {
+    const render = renderWgTree({ text: WG_TREE_TEXT, node_lines: WG_TREE_NODE_LINES });
+    const byTask = new Map(render.lines.filter((l) => l.taskId).map((l) => [l.taskId!, l]));
+    // top-level row: column 0, no edge glyph
+    expect(byTask.get("root-a")!.depth).toBe(0);
+    expect(byTask.get("root-a")!.text.startsWith("├→")).toBe(false);
+    expect(byTask.get("root-a")!.text.startsWith("└→")).toBe(false);
+    // children: `├→`/`└→` at column 0 → depth 1
+    expect(byTask.get("child-1")!.depth).toBe(1);
+    expect(byTask.get("child-1")!.text.startsWith("├→ ")).toBe(true);
+    expect(byTask.get("child-2")!.depth).toBe(1);
+    expect(byTask.get("child-2")!.text.startsWith("└→ ")).toBe(true);
+    // grandchildren: WG's 2-space-per-depth prefix (`│ `/`  `) → depth 2
+    expect(byTask.get("grand-1")!.depth).toBe(2);
+    expect(byTask.get("grand-1")!.text.startsWith("│ └→ ")).toBe(true);
+    // A second component's root is still top-level.
+    expect(byTask.get("loner")!.depth).toBe(0);
+  });
+
+  it("derives line depth from WG's connector/prefix shape", () => {
+    expect(wgTreeLineDepth("root-a  (open)")).toBe(0);
+    expect(wgTreeLineDepth("└→ child")).toBe(1);
+    expect(wgTreeLineDepth("├→ child")).toBe(1);
+    expect(wgTreeLineDepth("  └→ grand")).toBe(2);
+    expect(wgTreeLineDepth("│ └→ grand")).toBe(2);
+    expect(wgTreeLineDepth("  │ └→ great")).toBe(3);
+    expect(wgTreeLineDepth("")).toBeNull();
+  });
+
+  it("collapse is a display overlay: it hides WG's rendered descendant block only", () => {
+    const none = renderWgTree({ text: WG_TREE_TEXT, node_lines: WG_TREE_NODE_LINES });
+    expect(none.lines.map((l) => l.text)).toEqual(WG_TREE_TEXT.split("\n"));
+
+    const collapsed = renderWgTree(
+      { text: WG_TREE_TEXT, node_lines: WG_TREE_NODE_LINES },
+      new Set(["root-a"]),
+    );
+    const texts = collapsed.lines.map((l) => l.text);
+    // The collapsed row stays (with a bounded hidden count)…
+    expect(texts[0]).toContain("root-a");
+    expect(texts[0]).toContain("(+3)");
+    // …its 3 descendants and the blank continuation inside the block are hidden…
+    expect(texts.some((t) => t.includes("child-1"))).toBe(false);
+    expect(texts.some((t) => t.includes("grand-1"))).toBe(false);
+    expect(texts.some((t) => t.includes("child-2"))).toBe(false);
+    // …and the sibling component is untouched.
+    expect(texts.some((t) => t.includes("loner"))).toBe(true);
+  });
+
+  it("has no rendered tree when the payload is absent (fallback only)", () => {
+    const render = renderWgTree(undefined);
+    expect(render.fromWg).toBe(false);
+    expect(render.lines).toEqual([]);
+  });
+});
+
 // ── component interactions ───────────────────────────────────────────────────
 
 describe("FleetPanelComponent", () => {
@@ -350,6 +459,64 @@ describe("FleetPanelComponent", () => {
     expect(detail.length).toBeLessThanOrEqual(20);
     component.handleInput("l"); // back to tree
     expect(component.detailVisible).toBe(false);
+  });
+
+  it("Enter opens the selected task's detail; a doubled Enter does not close it; 'o'/space expand", () => {
+    const { component, render } = makeComponent(treeSnap(), 20);
+    render();
+    // First visible task in WG's own render is the paused root.
+    expect(component.selected).toBe("root-a");
+    expect(component.detailVisible).toBe(false);
+    component.handleInput("\r"); // Enter → detail
+    expect(component.detailVisible).toBe(true);
+    expect(render().some((l) => l.includes("── root-a ──"))).toBe(true);
+    // Some terminals deliver Enter as `\r\n`; the second event must NOT close it.
+    component.handleInput("\r");
+    component.handleInput("\n");
+    expect(component.detailVisible).toBe(true);
+    component.handleInput("l"); // back to the tree
+    expect(component.detailVisible).toBe(false);
+
+    // 'o' collapses (WG overlay), space toggles it back; neither enters detail.
+    component.handleInput("o");
+    expect(component.detailVisible).toBe(false);
+    expect(render().some((l) => l.includes("(+3)"))).toBe(true);
+    component.handleInput(" ");
+    expect(render().some((l) => l.includes("(+3)"))).toBe(false);
+  });
+
+  it("paints every task line with WG's status palette (style reaches the line)", () => {
+    const codes: Record<string, string> = {
+      success: "\x1b[32m",
+      error: "\x1b[31m",
+      warning: "\x1b[33m",
+      borderAccent: "\x1b[36m",
+      border: "\x1b[94m",
+      customMessageLabel: "\x1b[35m",
+      accent: "\x1b[34m",
+      muted: "\x1b[90m",
+      dim: "\x1b[2m",
+      text: "\x1b[37m",
+    };
+    const theme = { fg: (color: string, text: string) => `${codes[color] ?? ""}${text}\x1b[0m` };
+    const tui = { requestRender: vi.fn(), terminal: { rows: 30 } };
+    const component = new FleetPanelComponent(
+      treeSnap() as never,
+      tui as never,
+      vi.fn(),
+      theme as never,
+      {},
+    );
+    const lines = component.render(200);
+    const lineFor = (task: string) => lines.find((l) => l.includes(`${task}  (`)) ?? "";
+    // The computed style is actually present in the rendered line, per status.
+    expect(lineFor("root-a")).toContain(codes.warning); // open → yellow
+    expect(lineFor("child-1")).toContain(codes.warning); // open sibling
+    expect(lineFor("child-2")).toContain(codes.error); // failed → red
+    // Every visible task row carries a colour escape (not computed-but-dropped).
+    for (const task of ["root-a", "child-1", "grand-1", "child-2", "loner"]) {
+      expect(lineFor(task)).toContain("\x1b[");
+    }
   });
 
   it("closes on q and Esc", () => {

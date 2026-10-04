@@ -150,24 +150,39 @@ export class VizPanelComponent {
         this.onClose();
     }
     handleInput(data) {
+        // Detail view: Enter is deliberately inert (some terminals deliver Enter as
+        // `\r\n`, and when Enter both opened and closed detail it looked like
+        // "Enter only opens/closes"). Use ←/h/Backspace/l to go back, q/Esc to close.
+        if (this.showDetail) {
+            if (matchesKey(data, Key.escape) || data === "q")
+                this.close();
+            else if (data === "l" || data === "h" || matchesKey(data, Key.left) || matchesKey(data, Key.backspace)) {
+                this.toggleDetail();
+            }
+            else if (matchesKey(data, Key.up))
+                this.scrollDetail(-1);
+            else if (matchesKey(data, Key.down))
+                this.scrollDetail(1);
+            else if (matchesKey(data, Key.pageUp))
+                this.scrollDetail(-10);
+            else if (matchesKey(data, Key.pageDown))
+                this.scrollDetail(10);
+            return;
+        }
         if (matchesKey(data, Key.up))
             this.moveSelection(-1);
         else if (matchesKey(data, Key.down))
             this.moveSelection(1);
-        else if (matchesKey(data, Key.enter) || data === "o")
-            this.toggleExpand();
-        else if (data === "l")
+        else if (matchesKey(data, Key.enter) || data === "l" || matchesKey(data, Key.right))
             this.toggleDetail();
+        else if (data === "o" || matchesKey(data, Key.space))
+            this.toggleExpand();
         else if (matchesKey(data, Key.escape) || data === "q")
             this.close();
         else if (data === "g")
             this.selectFirst();
         else if (data === "G")
             this.selectLast();
-        else if (matchesKey(data, Key.pageUp))
-            this.scrollDetail(-10);
-        else if (matchesKey(data, Key.pageDown))
-            this.scrollDetail(10);
     }
     invalidate() {
         this.cachedLines = null;
@@ -207,7 +222,7 @@ export class VizPanelComponent {
         }
         else {
             lines.push(this.color("accent", widgetLine(counts)));
-            lines.push(this.color("dim", "wg-viz · ↑/↓ select · enter expand · l detail · q close"));
+            lines.push(this.color("dim", "wg-viz · ↑/↓ select · enter detail · o/space expand · q close"));
             lines.push(...treeText(buildTree(snapshot, this.collapsed), this.selectedId));
         }
         this.hitMap = lineTaskMap(buildTree(snapshot, this.collapsed));

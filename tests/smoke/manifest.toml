@@ -1780,6 +1780,15 @@ description = "Pins the scrollable /wg-fleet panel (scrollable-fleet-view): the 
 timeout_seconds = 240
 
 [[scenario]]
+name = "fleet_graph_view_parity"
+script = "scenarios/fleet_graph_view_parity.sh"
+owners = [
+    "fleet-graph-view",
+]
+description = "Pins the /wg-fleet graph/structure PARITY (fleet-graph-view): the panel renders WG's OWN `wg viz` text verbatim (`renderWgTree`) — top-level rows unindented and children using WG's `└→`/`├→` edges with WG's 2-space-per-depth prefix, by construction, never a TS re-derivation — and paints each task line with WG's TUI status palette (the style really reaches the rendered string). Enter opens the detail view (a doubled Enter does not close it), o/space expand, q closes, the TS tree is explicit fallback-only, and the ambient below-editor widget is unaffected. Credential-free: runs the focused plugin tests, drives the REAL embedded component in a node probe, and proves the live daemon `GetFleet.tree` is byte-for-byte the same `wg viz --json` render for the same graph."
+timeout_seconds = 240
+
+[[scenario]]
 name = "pi_handler_plugin_transports"
 script = "scenarios/pi_handler_plugin_transports.sh"
 owners = [

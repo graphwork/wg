@@ -96,7 +96,7 @@ export default function worksgoodPi(pi: ExtensionAPI): void {
 }
 
 // Re-export the building blocks so the SDK host and tests can use them directly.
-export { WgBackend, readWgEnv, canonicalChatId, normalizeGetFleet, buildCliFleet } from "./wg-backend.js";
+export { WgBackend, readWgEnv, canonicalChatId, normalizeGetFleet, buildCliFleet, parseVizJson } from "./wg-backend.js";
 export type {
   GetFleetAgentRow,
   GetFleetCounts,
@@ -104,6 +104,7 @@ export type {
   GetFleetSnapshot,
   GetFleetTaskRow,
   GetFleetTokenSummary,
+  GetFleetTree,
 } from "./wg-backend.js";
 export type { WgEnv, ExecHost } from "./wg-backend.js";
 export { registerWgTools } from "./tools.js";
@@ -122,7 +123,7 @@ export {
   makeFleetFetcher,
   FLEET_PANEL_POLL_MS,
 } from "./fleet-panel.js";
-export type { FleetPanelOptions, FleetTui, OpenFleetPanelOptions } from "./fleet-panel.js";
+export type { FleetPanelOptions, FleetTui, OpenFleetPanelOptions, FleetSnapshotFetcher } from "./fleet-panel.js";
 export {
   DEFAULT_TRANSCRIPT_LINES,
   FLEET_PANEL_DEFAULT_HEIGHT,
@@ -144,11 +145,13 @@ export {
   pageScroll,
   readAgentStreamTail,
   readTextTail,
+  renderWgTree,
   safeTailText,
   scrollToKeepVisible,
   transcriptLineLimit,
+  wgTreeLineDepth,
 } from "./fleet-panel-model.js";
-export type { TextTail } from "./fleet-panel-model.js";
+export type { TextTail, WgTreeLine, WgTreeRender } from "./fleet-panel-model.js";
 export {
   DEFAULT_FLEET_VIEW_CONFIG,
   FLEET_CONFIG_DIRS,
