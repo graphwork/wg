@@ -309,20 +309,27 @@ export class FleetPanelComponent {
         else if (data === "o" || matchesKey(data, Key.space))
             this.toggleExpand();
     }
-    /** Mouse support: `wheel` scrolls; press/click selects the hit tree line. */
+    /**
+     * Mouse support: `wheel` scrolls; press/click selects the hit tree line.
+     *
+     * Returns pi's `PiMouseResult` shape — `{ handled: true }` for a consumed
+     * event and `undefined` when the event is not ours — NEVER a bare boolean
+     * (a truthy non-object crashes pi core in `dispatchMouseEvent`; see
+     * `mouse.ts`).
+     */
     handleMouse(event) {
         if (this.disposed)
-            return false;
+            return undefined;
         const type = event.type ?? "";
         if (type === "wheel" || type === "mouse.wheel") {
             const delta = typeof event.wheelDelta === "number" && event.wheelDelta !== 0 ? event.wheelDelta : 0;
             if (delta !== 0)
                 this.scrollBy(delta);
-            return true;
+            return { handled: true };
         }
         if (type === "press" || type === "click" || type === "mouse.press") {
             if (this.mode !== "tree")
-                return false;
+                return undefined;
             const y = typeof event.y === "number" ? event.y : -1;
             const idx = y - 1 + this.treeScroll; // header occupies line 0
             const order = this.visibleOrder();
@@ -330,10 +337,10 @@ export class FleetPanelComponent {
                 this.selectedId = order[idx] ?? null;
                 this.invalidate();
                 this.tui.requestRender();
-                return true;
+                return { handled: true };
             }
         }
-        return false;
+        return undefined;
     }
     // ── rendering ─────────────────────────────────────────────────────────────
     invalidate() {

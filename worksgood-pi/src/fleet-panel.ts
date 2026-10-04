@@ -52,6 +52,7 @@ import {
   scrollToKeepVisible,
 } from "./fleet-panel-model.js";
 import { detailLines } from "./viz-readmodel.js";
+import type { PiMouseResult } from "./mouse.js";
 
 /** Default bounded poll cadence for the open panel. */
 export const FLEET_PANEL_POLL_MS = 5000;
@@ -345,17 +346,24 @@ export class FleetPanelComponent {
     else if (data === "o" || matchesKey(data, Key.space)) this.toggleExpand();
   }
 
-  /** Mouse support: `wheel` scrolls; press/click selects the hit tree line. */
-  handleMouse(event: { type?: string; y?: number; wheelDelta?: number }): boolean {
-    if (this.disposed) return false;
+  /**
+   * Mouse support: `wheel` scrolls; press/click selects the hit tree line.
+   *
+   * Returns pi's `PiMouseResult` shape — `{ handled: true }` for a consumed
+   * event and `undefined` when the event is not ours — NEVER a bare boolean
+   * (a truthy non-object crashes pi core in `dispatchMouseEvent`; see
+   * `mouse.ts`).
+   */
+  handleMouse(event: { type?: string; y?: number; wheelDelta?: number }): PiMouseResult {
+    if (this.disposed) return undefined;
     const type = event.type ?? "";
     if (type === "wheel" || type === "mouse.wheel") {
       const delta = typeof event.wheelDelta === "number" && event.wheelDelta !== 0 ? event.wheelDelta : 0;
       if (delta !== 0) this.scrollBy(delta);
-      return true;
+      return { handled: true };
     }
     if (type === "press" || type === "click" || type === "mouse.press") {
-      if (this.mode !== "tree") return false;
+      if (this.mode !== "tree") return undefined;
       const y = typeof event.y === "number" ? event.y : -1;
       const idx = y - 1 + this.treeScroll; // header occupies line 0
       const order = this.visibleOrder();
@@ -363,10 +371,10 @@ export class FleetPanelComponent {
         this.selectedId = order[idx] ?? null;
         this.invalidate();
         this.tui.requestRender();
-        return true;
+        return { handled: true };
       }
     }
-    return false;
+    return undefined;
   }
 
   // ── rendering ─────────────────────────────────────────────────────────────
@@ -579,7 +587,8 @@ export async function openFleetPanel(
         component.handleInput(data);
         tui.requestRender();
       },
-      handleMouse: (event: unknown) => component.handleMouse(event as { type?: string; y?: number; wheelDelta?: number }),
+      handleMouse: (event: unknown): PiMouseResult =>
+        component.handleMouse(event as { type?: string; y?: number; wheelDelta?: number }),
       invalidate: () => component.invalidate(),
       dispose: () => {
         clearInterval(timer);

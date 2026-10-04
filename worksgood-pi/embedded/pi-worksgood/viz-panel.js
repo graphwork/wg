@@ -242,11 +242,17 @@ export class VizPanelComponent {
         const render = buildTree(this.snapshot ?? { tasks: [] }, this.collapsed);
         return render.lines.map((l) => l.taskId).filter((id) => id !== null);
     }
-    /** Mouse support: dispatched by pi-tui builds that route mouse to custom components. */
+    /**
+     * Mouse support: dispatched by pi-tui builds that route mouse to custom
+     * components. Returns pi's `PiMouseResult` shape — `{ handled: true }` when a
+     * line is selected, `undefined` otherwise — NEVER a bare boolean (a truthy
+     * non-object crashes pi core in `dispatchMouseEvent`; see `mouse.ts`). Wheel
+     * events are left unhandled so the host scroll view scrolls the panel.
+     */
     handleMouse(event) {
         if (event.type !== "mouse.press" && event.type !== "click")
             return undefined;
-        return this.selectLine(event.y);
+        return this.selectLine(event.y) ? { handled: true } : undefined;
     }
     /** Exposed for tests / future MouseRegion wiring. */
     get hitLines() {

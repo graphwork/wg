@@ -36,6 +36,8 @@ import {
 } from "../pi-worksgood/viz-readmodel.js";
 // @ts-expect-error — built artifact import (see above)
 import { VizPanelComponent, installVizPanel, VIZ_WIDGET_KEY } from "../pi-worksgood/viz-panel.js";
+// @ts-expect-error — built artifact import (see above)
+import { isPiMouseResult } from "../pi-worksgood/mouse.js";
 
 // ── fixture graph ────────────────────────────────────────────────────────────
 
@@ -386,8 +388,44 @@ describe("VizPanelComponent", () => {
     const { component, render } = makeComponent();
     render();
     const line = component.hitLines.findIndex((id: string | null) => id === "opaque-exec");
-    expect(component.handleMouse({ type: "mouse.press", y: line })).toBe(true);
+    expect(component.handleMouse({ type: "mouse.press", y: line })).toEqual({ handled: true });
     expect(component.selected).toBe("opaque-exec");
+  });
+
+  it("CONTRACT: handleMouse never returns a truthy non-object (pi-core crash guard)", () => {
+    // Regression for the wheel-scroll crash:
+    //   TypeError: Cannot use 'in' operator to search for 'target' in true
+    // pi's dispatchMouseEvent does `if (result) { if ("target" in result) ... }`,
+    // so a truthy primitive (a bare boolean) crashes pi core. The return must
+    // be falsy or a real object over the whole mouse battery. Wheel events must
+    // stay UNCONSUMED so the host scroll view scrolls the panel.
+    const { component, render } = makeComponent();
+    render();
+    const line = component.hitLines.findIndex((id: string | null) => id === "opaque-exec");
+    const battery: Array<{ label: string; event: Record<string, unknown> }> = [
+      { label: "wheel up", event: { type: "wheel", wheelDelta: -8, y: 2 } },
+      { label: "wheel down", event: { type: "wheel", wheelDelta: 8, y: 2 } },
+      { label: "press on a row", event: { type: "mouse.press", y: line } },
+      { label: "press outside (negative)", event: { type: "mouse.press", y: -5 } },
+      { label: "press outside (below)", event: { type: "mouse.press", y: 9999 } },
+      { label: "click on a row", event: { type: "click", y: line } },
+      { label: "drag", event: { type: "drag", y: 2 } },
+      { label: "release", event: { type: "release", y: 2 } },
+      { label: "move", event: { type: "move", y: 2 } },
+      { label: "junk: empty event", event: {} },
+      { label: "junk: unknown type", event: { type: "nonsense", y: 1 } },
+      { label: "junk: NaN y", event: { type: "mouse.press", y: Number.NaN } },
+    ];
+    for (const { label, event } of battery) {
+      const result = component.handleMouse(event as never);
+      expect(
+        result === undefined || result === false || (typeof result === "object" && result !== null),
+        `handleMouse(${label}) returned a truthy non-object: ${String(result)}`,
+      ).toBe(true);
+      expect(isPiMouseResult(result), `isPiMouseResult(${label})`).toBe(true);
+    }
+    // Wheel is deliberately not consumed so the host scrolls instead.
+    expect(component.handleMouse({ type: "wheel", wheelDelta: 8, y: 2 })).toBeUndefined();
   });
 
   it("closes via q/escape and stops its poller on dispose", async () => {

@@ -44,8 +44,41 @@ import {
 import { FleetPanelComponent } from "../pi-worksgood/fleet-panel.js";
 // @ts-expect-error — built ESM artifact import (see above)
 import { installFleetView } from "../pi-worksgood/fleet-view.js";
+// @ts-expect-error — built ESM artifact import (see above)
+import { isPiMouseResult } from "../pi-worksgood/mouse.js";
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
+
+/**
+ * A faithful clone of pi-tui's `dispatchMouseEvent` (bundle
+ * `chunk-6FX7UEPL.js`) — the exact function that crashed on the panel's
+ * bare-boolean `handleMouse` return:
+ *   TypeError: Cannot use 'in' operator to search for 'target' in true
+ * Feeding panel results through this MUST NOT throw.
+ */
+function piDispatchMouseEvent(
+  component: { handleMouse?: (event: unknown) => unknown },
+  event: Record<string, unknown>,
+): unknown {
+  const result = component.handleMouse?.(event) as
+    | { handled?: boolean; capture?: boolean; focus?: boolean; target?: unknown }
+    | undefined
+    | false
+    | true;
+  if (result) {
+    if ("target" in (result as object)) return result;
+    const r = result as { handled?: boolean; capture?: boolean; focus?: boolean };
+    if (!(!r.handled && !r.capture && !r.focus)) {
+      return {
+        ...r,
+        handled: true,
+        ...(r.focus ? { focusTarget: component } : {}),
+        target: { component, originX: 0, originY: 0, width: 1, height: 1 },
+      };
+    }
+  }
+  return undefined;
+}
 
 function snap() {
   return {
@@ -427,8 +460,11 @@ describe("FleetPanelComponent", () => {
     component.handleInput("\x1b[6~");
     const mid = component.treeScrollOffset;
     expect(mid).toBeGreaterThan(0);
-    // Wheel up (negative delta) scrolls toward the top and clamps at 0.
-    expect(component.handleMouse({ type: "wheel", wheelDelta: -100 })).toBe(true);
+    // Wheel up (negative delta) scrolls toward the top and clamps at 0; the
+    // return is pi's consumed-object shape, never a bare boolean.
+    const wheelUp = component.handleMouse({ type: "wheel", wheelDelta: -100 });
+    expect(wheelUp).toEqual({ handled: true });
+    expect(isPiMouseResult(wheelUp)).toBe(true);
     expect(component.treeScrollOffset).toBe(0);
     // Wheel down (positive delta) scrolls away from the top.
     component.handleMouse({ type: "wheel", wheelDelta: 8 });
@@ -532,8 +568,52 @@ describe("FleetPanelComponent", () => {
     const { component, render } = makeComponent(bigSnap(), 8);
     render();
     const hit = component.hitLines.findIndex((id) => id === "task-001");
-    expect(component.handleMouse({ type: "press", y: hit + 1 })).toBe(true); // +1 for the header line
+    expect(component.handleMouse({ type: "press", y: hit + 1 })).toEqual({ handled: true }); // +1 for the header line
     expect(component.selected).toBe("task-001");
+  });
+
+  it("CONTRACT: handleMouse never returns a truthy non-object (pi-core crash guard)", () => {
+    // Regression for the wheel-scroll crash:
+    //   TypeError: Cannot use 'in' operator to search for 'target' in true
+    // pi's dispatchMouseEvent does `if (result) { if ("target" in result) ... }`,
+    // so any truthy primitive (a bare `true`) crashes pi core. The return must
+    // be falsy or a real object over the whole mouse battery.
+    const { component, render } = makeComponent(bigSnap(40), 8);
+    render();
+    const hit = component.hitLines.findIndex((id) => id === "task-001");
+    const battery: Array<{ label: string; event: Record<string, unknown> }> = [
+      { label: "wheel up", event: { type: "wheel", wheelDelta: -8 } },
+      { label: "wheel down", event: { type: "wheel", wheelDelta: 8 } },
+      { label: "wheel zero delta", event: { type: "wheel", wheelDelta: 0 } },
+      { label: "wheel no delta", event: { type: "wheel" } },
+      { label: "legacy mouse.wheel", event: { type: "mouse.wheel", wheelDelta: 5 } },
+      { label: "press on a row", event: { type: "press", y: hit + 1 } },
+      { label: "press on the header", event: { type: "press", y: 0 } },
+      { label: "press outside (negative)", event: { type: "press", y: -5 } },
+      { label: "press outside (below)", event: { type: "press", y: 9999 } },
+      { label: "click on a row", event: { type: "click", y: hit + 1 } },
+      { label: "drag", event: { type: "drag", y: 3 } },
+      { label: "release", event: { type: "release", y: 3 } },
+      { label: "move", event: { type: "move", y: 3 } },
+      { label: "junk: empty event", event: {} },
+      { label: "junk: unknown type", event: { type: "nonsense", y: 1 } },
+      { label: "junk: non-numeric wheelDelta", event: { type: "wheel", wheelDelta: "nope" } },
+      { label: "junk: NaN y", event: { type: "press", y: Number.NaN } },
+    ];
+    for (const { label, event } of battery) {
+      const result = component.handleMouse(event as never);
+      // The exact contract assertion (also centralised in isPiMouseResult).
+      expect(
+        result === undefined || result === false || (typeof result === "object" && result !== null),
+        `handleMouse(${label}) returned a truthy non-object: ${String(result)}`,
+      ).toBe(true);
+      expect(isPiMouseResult(result), `isPiMouseResult(${label})`).toBe(true);
+      // The real failure mode: pi's dispatch throws on a truthy primitive.
+      expect(
+        () => piDispatchMouseEvent(component, event),
+        `pi dispatchMouseEvent threw on handleMouse(${label})`,
+      ).not.toThrow();
+    }
   });
 });
 

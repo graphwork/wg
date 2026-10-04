@@ -48,6 +48,7 @@ import {
   treeText,
   widgetLine,
 } from "./viz-readmodel.js";
+import type { PiMouseResult } from "./mouse.js";
 
 /** Widget registration key (also the settings-visible extension surface id). */
 export const VIZ_WIDGET_KEY = "wg-viz";
@@ -258,10 +259,16 @@ export class VizPanelComponent {
     return render.lines.map((l) => l.taskId).filter((id): id is string => id !== null);
   }
 
-  /** Mouse support: dispatched by pi-tui builds that route mouse to custom components. */
-  handleMouse(event: { type: string; y: number }): boolean | undefined {
+  /**
+   * Mouse support: dispatched by pi-tui builds that route mouse to custom
+   * components. Returns pi's `PiMouseResult` shape — `{ handled: true }` when a
+   * line is selected, `undefined` otherwise — NEVER a bare boolean (a truthy
+   * non-object crashes pi core in `dispatchMouseEvent`; see `mouse.ts`). Wheel
+   * events are left unhandled so the host scroll view scrolls the panel.
+   */
+  handleMouse(event: { type: string; y: number }): PiMouseResult {
     if (event.type !== "mouse.press" && event.type !== "click") return undefined;
-    return this.selectLine(event.y);
+    return this.selectLine(event.y) ? { handled: true } : undefined;
   }
 
   /** Exposed for tests / future MouseRegion wiring. */
