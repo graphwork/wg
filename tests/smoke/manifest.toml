@@ -3360,6 +3360,13 @@ description = "Real CLI regression for the 555-protected baseline EPERM bug: a s
 timeout_seconds = 30
 
 [[scenario]]
+name = "disk_cleanup_reaps_unkeyed_scratch"
+script = "scenarios/disk_cleanup_reaps_unkeyed_scratch.sh"
+owners = ["fix-disk-cleanup"]
+description = "Real CLI regression for the unkeyed build-scratch leak found by survey-build-size: a stale `build-tmp/<name>` directory with no ownership row (the orphaned manual-service-merge analogue) is listed as a stale legacy/unkeyed target by `wg disk doctor --json`, is the only unkeyed dir eligible in the dry run, and is reaped by `wg disk cleanup --execute`; a directory held open by a live process cwd and a fresh unkeyed dir are both preserved, and a second execute pass is a no-op."
+timeout_seconds = 60
+
+[[scenario]]
 name = "reap_orphaned_descendant_group"
 script = "scenarios/reap_orphaned_descendant_group.sh"
 owners = ["reap-orphan-descendant-pgroups"]

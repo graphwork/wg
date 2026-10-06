@@ -1270,6 +1270,23 @@ pub fn refresh_snapshot(dir: &Path, cfg: &ResourceManagementConfig) -> Result<Di
             stale: owner_is_stale(cache, &registry, graph.as_ref()),
         });
     }
+    // Unkeyed/legacy build scratch has no ownership row, so surface it here as
+    // an observable target. `cache_key` stays `None` (rendered as
+    // `legacy/unkeyed`) and the owner fields are `-`; the conservative
+    // staleness rule is age-plus-no-live-open-files, not a lease.
+    for scratch in unkeyed_build_scratch_dirs(dir, cfg, &ownership, &registry) {
+        let usage = bounded_size(&scratch, cfg.disk_scan_max_entries);
+        targets.push(TargetUsage {
+            path: scratch.to_string_lossy().to_string(),
+            task_id: "-".into(),
+            agent_id: "-".into(),
+            bytes: usage.bytes,
+            private_bytes: bounded_physical_size(&scratch, cfg.disk_scan_max_entries),
+            cache_key: None,
+            growth_bytes_per_sec: 0,
+            stale: unkeyed_scratch_is_stale(&scratch, cfg),
+        });
+    }
     let _ = save_high_water(dir, &high_water);
     let active_builds = ownership
         .caches
@@ -2118,6 +2135,10 @@ pub fn cleanup_owned(
     let project_root = dir.parent().unwrap_or(dir);
     let mut report = CleanupReport::default();
 
+    // Enumerate unkeyed/legacy scratch BEFORE the ownership rows are drained
+    // below, so the keyed set is still intact when we decide what is unkeyed.
+    let unkeyed_scratch = unkeyed_build_scratch_dirs(dir, cfg, &ownership, &registry);
+
     // Capture the last size before explicit cleanup can retire the ownership
     // row. Otherwise a fast terminal cleanup between periodic snapshots would
     // forget the very 40–60 GiB high-water needed for the next admission.
@@ -2248,6 +2269,50 @@ pub fn cleanup_owned(
     }
     ownership.schema = OWNERSHIP_SCHEMA;
     ownership.caches = keep;
+
+    // Conservative unkeyed-scratch leg: reap build-scratch directories that
+    // were never registered in the ownership registry (e.g. an orphaned
+    // manual/legacy `build-tmp/<name>`). Such a directory has no lease, so
+    // removal requires BOTH an age over the configured threshold AND no live
+    // process holding a cwd/root/open file inside it. A keyed directory or a
+    // live agent's expected scratch path is excluded during enumeration, and
+    // any inconclusive check fails closed to preservation.
+    for scratch in unkeyed_scratch {
+        let path_str = scratch.to_string_lossy().to_string();
+        report.considered += 1;
+        if !unkeyed_scratch_is_stale(&scratch, cfg) {
+            report.preserved.push(PreservedPath {
+                path: path_str,
+                reason: "unkeyed build scratch is not stale (within age threshold or live-open)"
+                    .into(),
+            });
+            continue;
+        }
+        if execute {
+            let bytes = bounded_physical_size(&scratch, cfg.disk_scan_max_entries);
+            match fs::remove_dir_all(&scratch) {
+                Ok(()) => {
+                    report.reaped += 1;
+                    report.bytes_freed = report.bytes_freed.saturating_add(bytes);
+                    report.reaped_paths.push(PreservedPath {
+                        path: path_str,
+                        reason: format!(
+                            "removed stale unkeyed build scratch ({bytes} physical bytes)"
+                        ),
+                    });
+                }
+                Err(error) => report.preserved.push(PreservedPath {
+                    path: path_str,
+                    reason: format!("unkeyed scratch removal failed closed: {error}"),
+                }),
+            }
+        } else {
+            report.eligible.push(PreservedPath {
+                path: path_str,
+                reason: "stale unkeyed build scratch passes all removal guards".into(),
+            });
+        }
+    }
     if execute {
         save_ownership(dir, &ownership)?;
         let cache_root = target_cache_root(dir, cfg);
@@ -2349,6 +2414,118 @@ fn build_tmp_root(dir: &Path, cfg: &ResourceManagementConfig) -> PathBuf {
         };
     }
     dir.join("build-tmp")
+}
+
+/// The build-scratch roots whose immediate children are candidate scratch
+/// directories. The project-local/configured root is always swept. The legacy
+/// pre-project root is swept only when the operator (or a test) explicitly
+/// overrides `legacy_build_tmp_root`: the built-in legacy default lives under
+/// the shared OS temp directory and may contain unrelated projects'
+/// allocations, so it is reaped exclusively through keyed ownership.
+fn build_scratch_roots(dir: &Path, cfg: &ResourceManagementConfig) -> Vec<PathBuf> {
+    let mut roots = vec![build_tmp_root(dir, cfg)];
+    if cfg.legacy_build_tmp_root.is_some() {
+        roots.push(legacy_build_tmp_root(Some(cfg)));
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Immediate child directories of the build-scratch roots that are NOT
+/// registered (`keyed`) in the ownership registry and are not the expected
+/// scratch path of any live agent process.
+///
+/// These "unkeyed"/legacy scratch directories are invisible to the
+/// ownership-driven reaper, so they are exposed here to make them observable
+/// in `wg disk doctor` and eligible for the conservative unkeyed-reap leg.
+fn unkeyed_build_scratch_dirs(
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    ownership: &OwnershipRegistry,
+    registry: &AgentRegistry,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for root in build_scratch_roots(dir, cfg) {
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            // Never follow symlinks: an unkeyed scratch entry must be a real
+            // directory, not a link to somewhere else on the filesystem.
+            if !meta.file_type().is_dir() {
+                continue;
+            }
+            let abs = absolute_lexical(&path);
+            if !seen.insert(abs.clone()) {
+                continue;
+            }
+            if scratch_path_is_referenced(&abs, dir, cfg, ownership, registry) {
+                continue;
+            }
+            out.push(path);
+        }
+    }
+    out.sort();
+    // Bound the walk exactly like the owners loop so a corrupt scratch root
+    // cannot turn a status refresh into an unbounded traversal.
+    out.truncate(512);
+    out
+}
+
+/// Is a candidate scratch path still referenced by a keyed ownership row or by
+/// the expected scratch path of a live agent process? A keyed directory is
+/// handled by the ownership-driven reaper and must never be touched by the
+/// unkeyed leg; a live agent's expected scratch path is a soft lease even when
+/// its ownership row is missing.
+fn scratch_path_is_referenced(
+    abs: &Path,
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    ownership: &OwnershipRegistry,
+    registry: &AgentRegistry,
+) -> bool {
+    if ownership.caches.iter().any(|cache| {
+        let owned = absolute_lexical(Path::new(&cache.path));
+        abs == owned || abs.starts_with(&owned) || owned.starts_with(abs)
+    }) {
+        return true;
+    }
+    registry.all().any(|agent| {
+        crate::service::is_process_alive(agent.pid)
+            && absolute_lexical(&build_tmp_path_for_agent(dir, cfg, &agent.id)) == abs
+    })
+}
+
+/// Conservative staleness for an unkeyed scratch directory: it must exceed the
+/// configured age threshold and no live process may hold a cwd, root, or open
+/// file inside it. There is no lease row to consult, so the age floor plus the
+/// live-open-file guard is the entire safety envelope. Any inconclusive age or
+/// open-file check fails closed (preserve).
+fn unkeyed_scratch_is_stale(path: &Path, cfg: &ResourceManagementConfig) -> bool {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !meta.file_type().is_dir() {
+        return false;
+    }
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
+    let age_secs = match SystemTime::now().duration_since(modified) {
+        Ok(duration) => duration.as_secs(),
+        // A future mtime is inconclusive, not stale.
+        Err(_) => return false,
+    };
+    if age_secs < cfg.stale_build_scratch_min_age_seconds {
+        return false;
+    }
+    !has_open_files(path)
 }
 
 /// Create one private target layer, seeded with verified reflinks or private
@@ -4012,5 +4189,195 @@ mod tests {
             fs::read_to_string(dir.join("agents/a/output.log")).unwrap(),
             readable
         );
+    }
+
+    fn isolated_scratch_cfg(min_age_seconds: u64) -> (ResourceManagementConfig, TempDir) {
+        let isolated_legacy = TempDir::new().unwrap();
+        let legacy_root = isolated_legacy
+            .path()
+            .join("wg")
+            .join("build-tmp")
+            .display()
+            .to_string();
+        let cfg = ResourceManagementConfig {
+            legacy_build_tmp_root: Some(legacy_root),
+            stale_build_scratch_min_age_seconds: min_age_seconds,
+            ..Default::default()
+        };
+        (cfg, isolated_legacy)
+    }
+
+    /// The `manual-service-merge` regression: an unkeyed `build-tmp/<name>`
+    /// directory with no ownership row must be reaped by
+    /// `wg disk cleanup --execute`, while a live-owner scratch directory and a
+    /// directory held open by a live process are never touched.
+    #[test]
+    fn cleanup_reaps_stale_unkeyed_build_scratch_and_preserves_live_owner() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        save_graph(&WorkGraph::new(), dir.join("graph.jsonl")).unwrap();
+        let (cfg, _legacy) = isolated_scratch_cfg(0);
+        let scratch_root = dir.join("build-tmp");
+
+        // 1) Stale, unkeyed orphan — the manual-service-merge analogue.
+        let orphan = scratch_root.join("manual-service-merge");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join("payload"), vec![0u8; 4096]).unwrap();
+
+        // 2) Keyed scratch whose owner (this process) is alive with a future
+        //    lease: the ownership-driven reaper must preserve it.
+        let live_owned = scratch_root.join("agent-live");
+        fs::create_dir_all(&live_owned).unwrap();
+        fs::write(live_owned.join("payload"), b"live").unwrap();
+        register_owned_cache(
+            &dir,
+            make_owned_cache(
+                &live_owned,
+                CacheKind::CargoInstallScratch,
+                "live-task",
+                "agent-live",
+                std::process::id(),
+                None,
+                3_600,
+            ),
+        )
+        .unwrap();
+
+        // 3) Unkeyed scratch held open by a live process cwd: age alone is not
+        //    enough — the live-open-file guard must preserve it.
+        let live_open = scratch_root.join("agent-orphan-open");
+        fs::create_dir_all(&live_open).unwrap();
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .current_dir(&live_open)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+
+        let dry = cleanup_owned(&dir, &cfg, false).unwrap();
+        assert!(
+            dry.eligible
+                .iter()
+                .any(|item| item.path == orphan.display().to_string()),
+            "dry run must list the stale unkeyed scratch as eligible: {dry:?}"
+        );
+        assert!(
+            !dry.eligible
+                .iter()
+                .any(|item| item.path == live_owned.display().to_string()),
+            "a live-owner scratch must never be eligible"
+        );
+        assert!(
+            dry.preserved
+                .iter()
+                .any(|item| item.path == live_open.display().to_string()),
+            "an unkeyed dir held open by a live pid must be preserved: {dry:?}"
+        );
+        assert!(orphan.exists() && live_owned.exists() && live_open.exists());
+
+        let applied = cleanup_owned(&dir, &cfg, true).unwrap();
+        assert!(
+            !orphan.exists(),
+            "stale unkeyed build scratch must be reaped: {applied:?}"
+        );
+        assert!(
+            live_owned.exists(),
+            "live-owner scratch must never be reaped"
+        );
+        assert!(
+            live_open.exists(),
+            "scratch held open by a live pid must never be reaped"
+        );
+        assert!(
+            applied
+                .reaped_paths
+                .iter()
+                .any(|item| item.path == orphan.display().to_string()),
+            "reaped report must name the orphan: {applied:?}"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn snapshot_lists_stale_unkeyed_build_scratch_targets() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        save_graph(&WorkGraph::new(), dir.join("graph.jsonl")).unwrap();
+        let (cfg, _legacy) = isolated_scratch_cfg(0);
+        let scratch_root = dir.join("build-tmp");
+
+        let orphan = scratch_root.join("legacy-orphan");
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join("payload"), b"orphan").unwrap();
+
+        let live_owned = scratch_root.join("agent-live");
+        fs::create_dir_all(&live_owned).unwrap();
+        register_owned_cache(
+            &dir,
+            make_owned_cache(
+                &live_owned,
+                CacheKind::CargoInstallScratch,
+                "live-task",
+                "agent-live",
+                std::process::id(),
+                None,
+                3_600,
+            ),
+        )
+        .unwrap();
+
+        let snapshot = refresh_snapshot(&dir, &cfg).unwrap();
+        let listed = snapshot
+            .targets
+            .iter()
+            .find(|target| target.path == orphan.display().to_string())
+            .expect("stale unkeyed scratch must be listed as a snapshot target");
+        assert!(
+            listed.cache_key.is_none(),
+            "unkeyed scratch has no cache key"
+        );
+        assert!(listed.stale, "the orphan must be reported stale");
+
+        let live = snapshot
+            .targets
+            .iter()
+            .find(|target| target.path == live_owned.display().to_string())
+            .expect("keyed live scratch must remain listed");
+        assert!(!live.stale, "a live-owner scratch must not be stale");
+    }
+
+    #[test]
+    fn fresh_unkeyed_build_scratch_is_preserved_by_age_threshold() {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        save_graph(&WorkGraph::new(), dir.join("graph.jsonl")).unwrap();
+        let (cfg, _legacy) = isolated_scratch_cfg(3_600);
+
+        let fresh = dir.join("build-tmp").join("just-created");
+        fs::create_dir_all(&fresh).unwrap();
+        fs::write(fresh.join("payload"), b"fresh").unwrap();
+
+        let dry = cleanup_owned(&dir, &cfg, false).unwrap();
+        assert!(
+            !dry.eligible
+                .iter()
+                .any(|item| item.path == fresh.display().to_string()),
+            "a fresh unkeyed scratch is within the age threshold: {dry:?}"
+        );
+        assert!(
+            dry.preserved
+                .iter()
+                .any(|item| item.path == fresh.display().to_string()),
+            "a fresh unkeyed scratch must be reported preserved: {dry:?}"
+        );
+        assert!(fresh.exists());
     }
 }
