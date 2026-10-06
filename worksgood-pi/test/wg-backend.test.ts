@@ -241,6 +241,7 @@ const CLI_VIZ = JSON.stringify({
   text: CLI_VIZ_TEXT,
   node_lines: { t1: 0, t2: 1 },
   forward_edges: { t1: ["t2"] },
+  palette: { "in-progress": [60, 200, 220], done: [80, 220, 100] },
 });
 
 describe("WgBackend.getFleet", () => {
@@ -430,7 +431,7 @@ describe("WgBackend.getFleet", () => {
         counts: { in_progress: 1, ready: 0, blocked: 0, done: 1, total: 2 },
         tasks: [{ id: "t1", title: "T1", status: "in-progress", depends_on: [] }],
         agents: [],
-        tree: { text: CLI_VIZ_TEXT, node_lines: { t1: 0, t2: 1 } },
+        tree: { text: CLI_VIZ_TEXT, node_lines: { t1: 0, t2: 1 }, palette: { "in-progress": [60, 200, 220], done: [80, 220, 100] } },
       }),
     }));
     try {
@@ -440,6 +441,7 @@ describe("WgBackend.getFleet", () => {
       expect(snapshot?.source).toBe("daemon");
       expect(snapshot?.tree?.text).toBe(CLI_VIZ_TEXT);
       expect(snapshot?.tree?.node_lines).toEqual({ t1: 0, t2: 1 });
+      expect(snapshot?.tree?.palette).toEqual({ "in-progress": [60, 200, 220], done: [80, 220, 100] });
       expect(daemon.requests[0].include_tree).toBe(true);
       expect(daemon.requests[0].tree_columns).toBe(72);
       // A daemon that carried the tree needs no CLI fallback at all.
@@ -461,6 +463,7 @@ describe("WgBackend.getFleet", () => {
     const snapshot = await backend.getFleet({ includeTree: true, treeColumns: 80 });
     expect(snapshot?.source).toBe("cli");
     expect(snapshot?.tree?.text).toBe(CLI_VIZ_TEXT);
+    expect(snapshot?.tree?.palette).toEqual({ "in-progress": [60, 200, 220], done: [80, 220, 100] });
     const vizCall = calls.find((c) => c.args.includes("viz"));
     expect(vizCall).toBeTruthy();
     expect(vizCall!.args).toContain("--json");

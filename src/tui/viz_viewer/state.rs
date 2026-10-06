@@ -1273,19 +1273,13 @@ impl AnimationMode {
 }
 
 /// Flash color for a given status transition.
+///
+/// Delegates to the canonical graph-view palette (`crate::status_palette`),
+/// the single source of truth also exported by `wg viz --json` and the daemon's
+/// `GetFleet` tree payload. See that module for the palette-table rationale and
+/// the documented InProgress-vs-`html.rs` divergence.
 fn flash_color_for_status(status: &Status) -> (u8, u8, u8) {
-    match status {
-        Status::Done => (80, 220, 100),       // green
-        Status::Failed => (220, 60, 60),      // red
-        Status::InProgress => (60, 200, 220), // cyan
-        Status::Open => (200, 200, 80),       // yellow
-        Status::Blocked => (180, 120, 60),    // orange
-        Status::Abandoned => (140, 100, 160), // muted purple
-        Status::Waiting | Status::PendingValidation => (60, 160, 220), // blue
-        Status::PendingEval => (140, 230, 80), // chartreuse: between yellow (in-progress) and green (done)
-        Status::FailedPendingEval => (210, 130, 70), // warm coral: between failed-red and pending-yellow
-        Status::Incomplete => (255, 165, 0),         // orange
-    }
+    worksgood::status_palette::status_rgb(status)
 }
 
 /// Flash color for non-status changes.

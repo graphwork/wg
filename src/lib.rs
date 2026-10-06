@@ -118,6 +118,7 @@ pub mod setup_two_tier;
 pub mod simple_land;
 pub mod smoke;
 pub mod source_provider_recovery;
+pub mod status_palette;
 pub mod stream_event;
 pub mod syntect_convert;
 pub mod target_cache;

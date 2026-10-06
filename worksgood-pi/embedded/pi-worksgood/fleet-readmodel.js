@@ -7,9 +7,13 @@
  * instead of forking a second one.
  *
  * Pure: snapshot in, renderable (text, colour) lines out. No I/O, no mutation —
- * the panel is strictly read-only. Colours are semantic names so the caller can
- * paint per line through the active theme (and tests can pin the mapping
- * without a theme).
+ * the panel is strictly read-only.
+ *
+ * NOTE on colour: the *task-status* palette is WG's explicit-RGB table, exported
+ * over `wg viz --json` / `GetFleet.tree` and painted by `status-palette.ts`.
+ * The semantic `FleetColor` names below are the **documented fallback** used
+ * only when WG's palette is unavailable (the caller surfaces that via
+ * `paletteNotice`), plus the colour for chrome/agent rows.
  */
 import { ageOf, statusGlyph, taskCounts } from "./viz-readmodel.js";
 const TERMINAL_AGENT_STATUSES = new Set(["done", "failed", "dead"]);
@@ -72,9 +76,13 @@ export function agentColor(status, alive) {
     }
 }
 /**
- * Semantic colour for a task status. Mirrors WG's TUI status palette
- * (`src/tui/viz_viewer/state.rs::flash_color_for_status`, the same RGB set
- * `src/html.rs::status_color` renders), mapped onto the nearest pi theme token:
+ * Semantic colour for a task status. **Fallback only** — the default path paints
+ * WG's exact RGB from the exported palette (`status-palette.ts`); this is used
+ * when the palette is unavailable, and the caller makes that visible with
+ * `paletteNotice`. Values mirror WG's TUI status palette
+ * (`src/status_palette.rs`, canonicalised from
+ * `src/tui/viz_viewer/state.rs::flash_color_for_status`), mapped onto the
+ * nearest pi theme token:
  *
  * | status                     | TUI RGB / role     | pi token             |
  * |----------------------------|--------------------|----------------------|

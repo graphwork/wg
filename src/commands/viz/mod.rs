@@ -923,8 +923,14 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
 ///     {"line": <usize>, "col": <usize>, "from": "src-id", "to": "tgt-id"},
 ///     ...
 ///   ],
-///   "cycle_members": {"task-id": ["other-id-in-scc", ...], ...}
+///   "cycle_members": {"task-id": ["other-id-in-scc", ...], ...},
+///   "palette": {"done": [80, 220, 100], "in-progress": [60, 200, 220], ...}
 /// }
+///
+/// `palette` is WG's canonical graph-view status palette
+/// (`worksgood::status_palette`), emitted so clients (notably the Pi
+/// fleet/graph panel) render the *exact* RGB values instead of guessing a theme
+/// role. Keys are status names (`status.to_string()`).
 /// ```
 pub fn run_json(dir: &Path, options: &VizOptions) -> Result<()> {
     let output = generate_viz_output(dir, options)?;
@@ -971,6 +977,7 @@ pub fn run_json(dir: &Path, options: &VizOptions) -> Result<()> {
         "reverse_edges": output.reverse_edges,
         "char_edges": char_edges,
         "cycle_members": cycle_members,
+        "palette": worksgood::status_palette::palette_json(),
     });
     println!("{}", serde_json::to_string(&payload)?);
     Ok(())

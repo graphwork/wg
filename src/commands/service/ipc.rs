@@ -2833,6 +2833,10 @@ fn handle_get_fleet(
 /// with `OutputFormat::Ascii` and default filters), so the emitted `text` is
 /// WG's own tree by construction. ANSI is stripped so the panel applies its own
 /// per-line status styling (the daemon is not a terminal anyway).
+///
+/// Carries `palette` — WG's canonical graph-view status palette
+/// (`worksgood::status_palette`) — so the panel paints each status line the
+/// *exact* RGB the TUI uses, with no semantic-theme indirection.
 fn render_fleet_tree(
     graph: &worksgood::graph::WorkGraph,
     dir: &Path,
@@ -2855,6 +2859,7 @@ fn render_fleet_tree(
     Some(serde_json::json!({
         "text": text,
         "node_lines": node_lines,
+        "palette": worksgood::status_palette::palette_json(),
     }))
 }
 
@@ -6535,6 +6540,17 @@ poll_interval = 60
         assert!(parent_line.starts_with("parent-a"), "{parent_line:?}");
         let child_line = lines[node_lines["child-b"].as_u64().unwrap() as usize];
         assert!(child_line.starts_with("└→ "), "{child_line:?}");
+
+        // ── palette parity: the tree carries WG's canonical status palette ──
+        // The panel paints exact RGB from here; no semantic-theme indirection.
+        let palette = tree["palette"].as_object().unwrap();
+        assert_eq!(palette["done"], serde_json::json!([80, 220, 100]));
+        assert_eq!(palette["in-progress"], serde_json::json!([60, 200, 220]));
+        assert_eq!(
+            palette["pending-validation"],
+            serde_json::json!([60, 160, 220])
+        );
+        assert_eq!(palette["incomplete"], serde_json::json!([255, 165, 0]));
 
         // No tree when not requested (the ambient widget must not pay for it).
         let no_tree = handle_get_fleet(dir, None, None, false, None).data.unwrap();
