@@ -81,7 +81,10 @@ const DEPRECATED_KEYS: &[(&str, &str)] = &[
     ("guardrails", "max_task_depth"),
     // The daemon's model-registry background refresh was retired: no daemon
     // code requests provider API keys for catalog refresh anymore (Pi's
-    // models-store.json is the catalog source of truth).
+    // models-store.json is the catalog source of truth). Listed for both
+    // sections (like the compactor/verify keys above): older configs parked
+    // this knob under `[dispatcher]`.
+    ("dispatcher", "registry_refresh_interval"),
     ("coordinator", "registry_refresh_interval"),
 ];
 
@@ -473,6 +476,37 @@ model = "claude:opus"
         );
         assert!(!report.removed.is_empty());
         assert!(!report.renamed.is_empty());
+    }
+
+    #[test]
+    fn canonicalize_drops_dispatcher_registry_refresh_interval() {
+        let mut doc = parse(
+            r#"
+[agent]
+model = "claude:opus"
+
+[dispatcher]
+registry_refresh_interval = 3600
+"#,
+        );
+        let report = canonicalize_in_place(&mut doc);
+        let body = toml::to_string_pretty(&doc).unwrap();
+        assert!(
+            !body.contains("registry_refresh_interval"),
+            "dispatcher.registry_refresh_interval must be dropped: {body}"
+        );
+        assert!(
+            report
+                .removed
+                .iter()
+                .any(|key| key == "dispatcher.registry_refresh_interval"),
+            "removal must be reported: {:?}",
+            report.removed
+        );
+        assert!(
+            body.contains("claude:opus"),
+            "agent.model must be preserved: {body}"
+        );
     }
 
     #[test]
