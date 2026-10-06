@@ -568,8 +568,136 @@ describe("FleetPanelComponent", () => {
     const { component, render } = makeComponent(bigSnap(), 8);
     render();
     const hit = component.hitLines.findIndex((id) => id === "task-001");
-    expect(component.handleMouse({ type: "press", y: hit + 1 })).toEqual({ handled: true }); // +1 for the header line
+    // A press consumes the event, focuses the panel and captures the gesture
+    // so a following drag keeps routing here — pi's object shape, not a bool.
+    expect(component.handleMouse({ type: "press", y: hit + 1 })).toEqual({
+      handled: true,
+      capture: true,
+      focus: true,
+    }); // +1 for the header line
     expect(component.selected).toBe("task-001");
+  });
+
+  // ── full mouse parity with the TUI: select / inspect / drag-pan ───────────
+
+  it("press-selects the correct task at a scrolled offset, honoring blank/arc rows", () => {
+    // `treeSnap` uses WG's own rendered tree, whose line 4 is a blank separator
+    // (taskId === null). Hit-testing must index the *rendered* line list, not
+    // the task-only order, or every row after the blank line is mis-mapped.
+    const { component, render } = makeComponent(treeSnap(), 5); // body = 3
+    render();
+    expect(component.selected).toBe("root-a");
+    component.handleInput("\x1b[6~"); // PageDown
+    render();
+    expect(component.treeScrollOffset).toBe(2);
+    // The window now shows rendered lines 2,3,4 = grand-1, child-2, <blank>.
+    component.handleMouse({ type: "press", y: 1, button: "left" });
+    expect(component.selected).toBe("grand-1");
+    component.handleMouse({ type: "press", y: 2, button: "left" });
+    expect(component.selected).toBe("child-2");
+    // y=3 is the blank separator: consumed but selects nothing.
+    component.handleMouse({ type: "press", y: 3, button: "left" });
+    expect(component.selected).toBe("child-2");
+  });
+
+  it("press-selects the correct task after a subtree is collapsed", () => {
+    const { component, render } = makeComponent(treeSnap(), 6); // body = 4
+    render();
+    expect(component.selected).toBe("root-a");
+    component.handleInput("o"); // collapse root-a → child-1/grand-1/child-2 hidden
+    const collapsed = render();
+    expect(collapsed.some((l) => l.includes("loner"))).toBe(true);
+    // Rendered lines are now [root-a (+3), loner].
+    component.handleMouse({ type: "press", y: 2, button: "left" });
+    expect(component.selected).toBe("loner");
+    component.handleMouse({ type: "press", y: 1, button: "left" });
+    expect(component.selected).toBe("root-a");
+  });
+
+  it("press-drag pans the tree; the gesture captures and release ends it", () => {
+    const { component, render } = makeComponent(bigSnap(40), 6); // body = 4
+    render();
+    expect(component.treeScrollOffset).toBe(0);
+    const start = component.handleMouse({ type: "press", y: 4, button: "left" });
+    expect(start).toEqual({ handled: true, capture: true, focus: true });
+    expect(component.isDragging).toBe(true);
+    // Natural panning: dragging the pointer UP scrolls the content DOWN by the
+    // row delta (y 4 → 1 = +3).
+    const drag = component.handleMouse({ type: "drag", y: 1, button: "left" });
+    expect(drag).toMatchObject({ handled: true, capture: true });
+    expect(component.treeScrollOffset).toBe(3);
+    // A second drag step is incremental.
+    component.handleMouse({ type: "move", y: 0, button: "left" });
+    expect(component.treeScrollOffset).toBe(4);
+    // Release ends the gesture.
+    expect(component.handleMouse({ type: "release", y: 0, button: "left" })).toMatchObject({ handled: true });
+    expect(component.isDragging).toBe(false);
+    // After release a stray drag is no longer ours.
+    expect(component.handleMouse({ type: "drag", y: 8, button: "left" })).toBeUndefined();
+    expect(component.treeScrollOffset).toBe(4);
+  });
+
+  it("capture: a drag that leaves the content area keeps panning and stays captured", () => {
+    const { component, render } = makeComponent(bigSnap(40), 6); // body = 4
+    render();
+    component.handleMouse({ type: "press", y: 2, button: "left" }); // inside content
+    // Drag far above the panel: content scrolls down, clamped at the end. The
+    // pointer is outside the content area but the gesture is captured.
+    const out = component.handleMouse({ type: "drag", y: -50, button: "left" });
+    expect(out).toMatchObject({ handled: true, capture: true });
+    expect(component.treeScrollOffset).toBe(maxScroll(40, component.bodyViewport()));
+    expect(component.isDragging).toBe(true);
+    // Drag far below: offset clamps back to the top, still captured.
+    const back = component.handleMouse({ type: "drag", y: 500, button: "left" });
+    expect(back).toMatchObject({ handled: true, capture: true });
+    expect(component.treeScrollOffset).toBe(0);
+    component.handleMouse({ type: "release", y: 500, button: "left" });
+    expect(component.isDragging).toBe(false);
+  });
+
+  it("ignores presses outside the content area (header/footer/off-panel/NaN)", () => {
+    const { component, render } = makeComponent(bigSnap(40), 6); // rows 0..5, content 1..4
+    render();
+    const sel = component.selected;
+    for (const y of [0, 5, -1, 9999, Number.NaN]) {
+      expect(component.handleMouse({ type: "press", y, button: "left" })).toBeUndefined();
+    }
+    expect(component.selected).toBe(sel);
+    expect(component.isDragging).toBe(false);
+  });
+
+  it("click selects; clicking the already-selected row (or a double-click) opens detail", () => {
+    const { component, render } = makeComponent(bigSnap(40), 8);
+    render();
+    // First click on an as-yet-unselected row: select only, no detail.
+    component.handleMouse({ type: "press", y: 2, button: "left" });
+    expect(component.handleMouse({ type: "click", y: 2, button: "left", clickCount: 1 })).toMatchObject({
+      handled: true,
+    });
+    expect(component.detailVisible).toBe(false);
+    expect(component.selected).toBe("task-001");
+    // Click the SAME (already-selected) row again → open detail (TUI parity:
+    // the inspector shows the clicked node).
+    component.handleMouse({ type: "press", y: 2, button: "left" });
+    component.handleMouse({ type: "click", y: 2, button: "left", clickCount: 1 });
+    expect(component.detailVisible).toBe(true);
+
+    // A double-click (clickCount >= 2) opens detail even on a fresh row.
+    const other = makeComponent(bigSnap(40), 8);
+    other.render();
+    other.component.handleMouse({ type: "press", y: 3, button: "left" });
+    other.component.handleMouse({ type: "click", y: 3, button: "left", clickCount: 2 });
+    expect(other.component.detailVisible).toBe(true);
+  });
+
+  it("advertises drag in the footer hint (mouse/keyboard discovery)", () => {
+    const { component, render } = makeComponent(bigSnap(40), 6);
+    const lines = render();
+    expect(lines.at(-1)).toContain("drag");
+    // A scrolled view still advertises drag-pan.
+    component.handleInput("\x1b[6~");
+    const scrolled = component.render(100);
+    expect(scrolled.at(-1)).toContain("drag");
   });
 
   it("CONTRACT: handleMouse never returns a truthy non-object (pi-core crash guard)", () => {
@@ -609,6 +737,31 @@ describe("FleetPanelComponent", () => {
       ).toBe(true);
       expect(isPiMouseResult(result), `isPiMouseResult(${label})`).toBe(true);
       // The real failure mode: pi's dispatch throws on a truthy primitive.
+      expect(
+        () => piDispatchMouseEvent(component, event),
+        `pi dispatchMouseEvent threw on handleMouse(${label})`,
+      ).not.toThrow();
+    }
+
+    // Stateful gesture battery: press → drag (in and out of content) → move →
+    // release → click. Every return must still be pi's shape, and pi's real
+    // dispatch must not throw across the whole gesture.
+    component.handleMouse({ type: "press", y: 2, clickCount: 1 });
+    const gesture: Array<{ label: string; event: Record<string, unknown> }> = [
+      { label: "gesture: drag in content", event: { type: "drag", y: 1 } },
+      { label: "gesture: drag outside content", event: { type: "drag", y: -10 } },
+      { label: "gesture: move while dragging", event: { type: "move", y: 3 } },
+      { label: "gesture: release", event: { type: "release", y: 3 } },
+      { label: "gesture: click", event: { type: "click", y: 2, clickCount: 1 } },
+      { label: "gesture: double click", event: { type: "click", y: 2, clickCount: 2 } },
+      { label: "gesture: drag with no active gesture", event: { type: "drag", y: 5 } },
+      { label: "gesture: release with no active gesture", event: { type: "release", y: 5 } },
+      { label: "gesture: legacy mouse.drag", event: { type: "mouse.drag", y: 4 } },
+      { label: "gesture: legacy mouse.release", event: { type: "mouse.release", y: 4 } },
+    ];
+    for (const { label, event } of gesture) {
+      const result = component.handleMouse(event as never);
+      expect(isPiMouseResult(result), `isPiMouseResult(${label})`).toBe(true);
       expect(
         () => piDispatchMouseEvent(component, event),
         `pi dispatchMouseEvent threw on handleMouse(${label})`,

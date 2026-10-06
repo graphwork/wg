@@ -1789,6 +1789,15 @@ description = "Pins the /wg-fleet graph/structure PARITY (fleet-graph-view): the
 timeout_seconds = 240
 
 [[scenario]]
+name = "fleet_mouse_parity"
+script = "scenarios/fleet_mouse_parity.sh"
+owners = [
+    "full-mouse-parity",
+]
+description = "Pins full mouse parity between /wg-fleet and the WG TUI (full-mouse-parity): a press selects the hit tree row from the RENDERED line hit-map (correct at any scroll offset and across collapsed subtrees, including blank/arc rows), a second click on the already-selected row (or a double-click) opens its detail exactly like the TUI's click-selects/inspector-shows model, press-and-drag pans the tree with pi's `{handled, capture, focus}` capture semantics (the pan keeps routing to the panel when the pointer leaves the content area; release ends it), out-of-content presses are ignored, and every handleMouse return is pi's object shape or falsy (never the bare boolean that crashes pi core). Credential-free: runs the focused unit tests, drives the REAL embedded component through pi-tui's exact dispatch + capture loop, then drives a LIVE fullscreen `pi` session with synthetic SGR mouse events and a LIVE `wg tui` reference click."
+timeout_seconds = 360
+
+[[scenario]]
 name = "pi_handler_plugin_transports"
 script = "scenarios/pi_handler_plugin_transports.sh"
 owners = [

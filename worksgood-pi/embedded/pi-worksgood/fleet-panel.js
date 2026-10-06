@@ -17,6 +17,12 @@
  * Interactions:
  *   - **wheel / PgUp / PgDn / Home / End** scroll the dependency TREE; the
  *     selection is dragged along so it always stays visible;
+ *   - **press-and-drag** over the content pans the tree (touch-style drag-pan)
+ *     and the gesture is *captured* so it keeps panning even when the pointer
+ *     leaves the content area; release ends the drag;
+ *   - **click** selects the hit tree row; clicking the already-selected row
+ *     (or a double-click) opens its detail — mirroring the TUI's
+ *     click-selects/inspector-shows model;
  *   - **↑/↓** move the selection and scroll it into view;
  *   - **Enter / → / l** drill into the selected task's detail (reusing
  *     `detailLines` from the viz read-model, plus the live agent activity and a
@@ -56,6 +62,16 @@ export class FleetPanelComponent {
     /** Cached, bounded transcript tail lines for the selected task (detail mode). */
     detailTail = [];
     hitMap = [];
+    /**
+     * An active press-and-drag pan gesture. Set on a content-area press and kept
+     * until release; while set, every drag/move keeps panning the active pane
+     * even when the pointer leaves the content area (capture semantics).
+     */
+    drag = null;
+    /** True while a press gesture is awaiting its synthesized `click`. */
+    pressGesture = false;
+    /** Whether the row under the current press was selected *before* the press. */
+    pressWasSelected = false;
     cachedLines = null;
     cachedWidth = -1;
     cachedHeight = -1;
@@ -101,6 +117,30 @@ export class FleetPanelComponent {
     bodyViewport() {
         return Math.max(1, this.viewportHeight() - 2);
     }
+    /**
+     * Inclusive panel rows that hold scrollable body content: row 0 is the
+     * header, the last row is the footer, everything between is content. Presses
+     * outside this range are ignored (never start a selection or a drag).
+     */
+    contentRows() {
+        return { top: 1, bottom: this.viewportHeight() - 2 };
+    }
+    /**
+     * Map a panel-local `y` to the index of the rendered tree line it hit, or
+     * `null` when it is outside the content area. The index addresses the *whole*
+     * rendered line list (including blank/arc rows with `taskId === null`), which
+     * is what keeps hit-testing correct when the tree is scrolled or has sections
+     * collapsed — the panel's own window is `[treeScroll, treeScroll + body)`.
+     */
+    contentLineIndex(y) {
+        if (typeof y !== "number" || !Number.isFinite(y))
+            return null;
+        const { top, bottom } = this.contentRows();
+        const row = Math.trunc(y);
+        if (row < top || row > bottom)
+            return null;
+        return this.treeScroll + (row - top);
+    }
     // ── tree / selection helpers ──────────────────────────────────────────────
     /**
      * The active tree rows. Prefers WG's own rendered text (`GetFleet.tree`);
@@ -123,6 +163,16 @@ export class FleetPanelComponent {
             .map((l) => l.taskId)
             .filter((id) => id !== null);
     }
+    /** Total rendered tree line count (includes blank/arc rows). */
+    treeLineCount() {
+        return this.treeLines().length;
+    }
+    /** Index of the selected task within the *rendered* line list, or -1. */
+    selectedLineIndex() {
+        if (!this.selectedId)
+            return -1;
+        return this.treeLines().findIndex((l) => l.taskId !== null && l.taskId === this.selectedId);
+    }
     firstVisibleId() {
         return this.visibleOrder()[0] ?? null;
     }
@@ -131,24 +181,30 @@ export class FleetPanelComponent {
             return -1;
         return this.visibleOrder().indexOf(this.selectedId);
     }
-    /** Keep the selected id inside the current viewport (drag it if needed). */
+    /**
+     * Keep the selection inside the current viewport after a scroll/page: if the
+     * selected line fell outside the window, snap the *selection* to the nearest
+     * visible task (the "selection is dragged along" rule). The scroll offset is
+     * left untouched here — wheel/PgDn own it, `moveSelection` moves the view.
+     */
     dragSelectionIntoView() {
-        const order = this.visibleOrder();
-        if (order.length === 0) {
+        const lines = this.treeLines();
+        if (lines.length === 0) {
             this.selectedId = null;
             this.treeScroll = 0;
             return;
         }
-        const idx = this.selectedId ? order.indexOf(this.selectedId) : -1;
-        if (idx === -1) {
-            this.selectedId = order[this.treeScroll] ?? order[0] ?? null;
-            return;
-        }
         const view = this.bodyViewport();
-        if (idx < this.treeScroll)
-            this.selectedId = order[this.treeScroll] ?? null;
-        else if (idx >= this.treeScroll + view)
-            this.selectedId = order[this.treeScroll + view - 1] ?? null;
+        const idx = this.selectedLineIndex();
+        if (idx === -1 || idx < this.treeScroll) {
+            const hit = lines.slice(this.treeScroll).find((l) => l.taskId !== null);
+            this.selectedId = hit?.taskId ?? this.selectedId;
+        }
+        else if (idx >= this.treeScroll + view) {
+            const window = lines.slice(this.treeScroll, this.treeScroll + view);
+            const hit = [...window].reverse().find((l) => l.taskId !== null);
+            this.selectedId = hit?.taskId ?? this.selectedId;
+        }
     }
     // ── navigation ────────────────────────────────────────────────────────────
     /** Move the selection by `delta` visible rows and scroll it into view. */
@@ -161,7 +217,9 @@ export class FleetPanelComponent {
         this.selectedId = order[next] ?? null;
         this.mode = "tree";
         this.detailScroll = 0;
-        this.treeScroll = scrollToKeepVisible(this.treeScroll, this.bodyViewport(), next, order.length);
+        const lines = this.treeLines();
+        const lineIdx = lines.findIndex((l) => l.taskId !== null && l.taskId === this.selectedId);
+        this.treeScroll = scrollToKeepVisible(this.treeScroll, this.bodyViewport(), lineIdx, lines.length);
         this.invalidate();
         this.tui.requestRender();
     }
@@ -177,7 +235,7 @@ export class FleetPanelComponent {
         const order = this.visibleOrder();
         const last = order.length - 1;
         this.selectedId = order[last] ?? null;
-        this.treeScroll = maxScroll(order.length, this.bodyViewport());
+        this.treeScroll = maxScroll(this.treeLineCount(), this.bodyViewport());
         this.mode = "tree";
         this.invalidate();
         this.tui.requestRender();
@@ -191,12 +249,50 @@ export class FleetPanelComponent {
             this.detailScroll = clampScroll(this.detailScroll + delta, total, this.bodyViewport());
         }
         else {
-            const total = this.visibleOrder().length;
+            const total = this.treeLineCount();
             this.treeScroll = clampScroll(this.treeScroll + delta, total, this.bodyViewport());
             this.dragSelectionIntoView();
         }
         this.invalidate();
         this.tui.requestRender();
+    }
+    /**
+     * Pan the active pane by `delta` rows *without* dragging the selection.
+     *
+     * This is the drag gesture's scroll primitive: a pan moves the content under
+     * the pointer (the TUI's `graph_pan_last` behaviour) and leaves the selection
+     * where the user put it, unlike wheel/PgDn which drag the selection along.
+     */
+    panBy(delta) {
+        if (!Number.isFinite(delta) || delta === 0)
+            return;
+        if (this.mode === "detail") {
+            const total = this.detailContent().length;
+            this.detailScroll = clampScroll(this.detailScroll + delta, total, this.bodyViewport());
+        }
+        else {
+            this.treeScroll = clampScroll(this.treeScroll + delta, this.treeLineCount(), this.bodyViewport());
+        }
+        this.invalidate();
+        this.tui.requestRender();
+    }
+    /**
+     * Select the task rendered at `lineIndex` (an index into the *rendered* line
+     * list). Returns the selected id, or `null` for a blank/arc row that maps to
+     * no task (the press is then consumed but changes nothing).
+     */
+    selectTreeLine(lineIndex) {
+        if (lineIndex < 0)
+            return null;
+        const id = this.treeLines()[lineIndex]?.taskId ?? null;
+        if (!id)
+            return null;
+        this.selectedId = id;
+        this.mode = "tree";
+        this.detailScroll = 0;
+        this.invalidate();
+        this.tui.requestRender();
+        return id;
     }
     /** Page the active pane by `direction` (±1), keeping the selection visible. */
     pageBy(direction) {
@@ -206,7 +302,7 @@ export class FleetPanelComponent {
             this.detailScroll = pageScroll(this.detailScroll, view, direction, total);
         }
         else {
-            const total = this.visibleOrder().length;
+            const total = this.treeLineCount();
             this.treeScroll = pageScroll(this.treeScroll, view, direction, total);
             this.dragSelectionIntoView();
         }
@@ -310,12 +406,24 @@ export class FleetPanelComponent {
             this.toggleExpand();
     }
     /**
-     * Mouse support: `wheel` scrolls; press/click selects the hit tree line.
+     * Mouse support, mirroring the WG TUI's mouse model.
      *
-     * Returns pi's `PiMouseResult` shape — `{ handled: true }` for a consumed
-     * event and `undefined` when the event is not ours — NEVER a bare boolean
-     * (a truthy non-object crashes pi core in `dispatchMouseEvent`; see
-     * `mouse.ts`).
+     *   - **wheel** scrolls the active pane (selection follows);
+     *   - **press** in the content area selects the hit row (from the rendered
+     *     line hit-map, so it is correct under scroll/collapse), focuses the
+     *     panel, and begins a pan gesture with `capture: true` so the subsequent
+     *     drag/release keep routing here even when the pointer leaves the
+     *     content area;
+     *   - **drag** pans the active pane by the pointer delta (no selection drag);
+     *   - **release** ends the gesture;
+     *   - **click** (pi synthesizes it on a release that did not move) selects the
+     *     hit row and — when it was *already* selected before the press, or on a
+     *     double-click — opens its detail, mirroring the TUI's click-selects /
+     *     inspector-shows behaviour with an explicit second click.
+     *
+     * Returns pi's `PiMouseResult` shape — a truthy object for a consumed event
+     * and `undefined` when the event is not ours — NEVER a bare boolean (a
+     * truthy non-object crashes pi core in `dispatchMouseEvent`; see `mouse.ts`).
      */
     handleMouse(event) {
         if (this.disposed)
@@ -327,18 +435,69 @@ export class FleetPanelComponent {
                 this.scrollBy(delta);
             return { handled: true };
         }
-        if (type === "press" || type === "click" || type === "mouse.press") {
-            if (this.mode !== "tree")
+        // A live pan gesture owns the pointer stream until release. pi retargets
+        // drag/release to the component that handled the press, so this runs even
+        // for coordinates outside the content area (capture semantics).
+        if (type === "drag" || type === "mouse.drag" || type === "move" || type === "mouse.move") {
+            if (!this.drag)
                 return undefined;
-            const y = typeof event.y === "number" ? event.y : -1;
-            const idx = y - 1 + this.treeScroll; // header occupies line 0
-            const order = this.visibleOrder();
-            if (idx >= 0 && idx < order.length) {
-                this.selectedId = order[idx] ?? null;
-                this.invalidate();
-                this.tui.requestRender();
-                return { handled: true };
+            const y = typeof event.y === "number" && Number.isFinite(event.y) ? Math.trunc(event.y) : this.drag.prevY;
+            const dy = this.drag.prevY - y;
+            if (dy !== 0) {
+                this.drag.moved = true;
+                this.panBy(dy);
             }
+            this.drag.prevY = y;
+            return { handled: true, capture: true };
+        }
+        if (type === "release" || type === "mouse.release") {
+            if (!this.drag && !this.pressGesture)
+                return undefined;
+            const moved = this.drag?.moved ?? false;
+            this.drag = null;
+            // A moved gesture never produces a synthesized click, so its press state
+            // must not linger into the next gesture.
+            if (moved) {
+                this.pressGesture = false;
+                this.pressWasSelected = false;
+            }
+            return { handled: true };
+        }
+        if (type === "press" || type === "mouse.press") {
+            const lineIndex = this.contentLineIndex(event.y);
+            if (lineIndex === null)
+                return undefined; // header/footer/out of content area
+            const y = Math.trunc(event.y);
+            const wasSelected = this.selectedId;
+            this.drag = { prevY: y, moved: false };
+            this.pressGesture = true;
+            const hitId = this.mode === "tree" ? this.selectTreeLine(lineIndex) : null;
+            this.pressWasSelected = hitId !== null && hitId === wasSelected;
+            this.tui.requestRender?.();
+            return { handled: true, capture: true, focus: true };
+        }
+        if (type === "click") {
+            const lineIndex = this.contentLineIndex(event.y);
+            const fromPress = this.pressGesture;
+            const preSelected = fromPress && this.pressWasSelected;
+            const double = typeof event.clickCount === "number" && event.clickCount >= 2;
+            const wasSelected = this.selectedId;
+            this.pressGesture = false;
+            this.pressWasSelected = false;
+            this.drag = null;
+            if (this.mode !== "tree")
+                return fromPress ? { handled: true } : undefined;
+            if (lineIndex === null)
+                return fromPress ? { handled: true } : undefined;
+            const id = this.selectTreeLine(lineIndex);
+            if (!id)
+                return { handled: true };
+            // Open detail when the row was already selected before the press (the
+            // "click the selected node" affordance), on a double-click, or when a
+            // standalone click (no preceding press) hit the current selection.
+            if (double || preSelected || (!fromPress && id === wasSelected))
+                this.openDetail();
+            return { handled: true };
         }
         return undefined;
     }
@@ -439,8 +598,8 @@ export class FleetPanelComponent {
             // Footer: bounded so the panel never renders past `height`.
             const overflow = tree.lines.length > this.treeScroll + body;
             const footer = overflow
-                ? `  ↓ ${tree.lines.length - (this.treeScroll + body)} more · wheel/PgDn · enter detail · o expand · q close`
-                : "  ↑/↓ select · enter detail · o/space expand · q close";
+                ? `  ↓ ${tree.lines.length - (this.treeScroll + body)} more · wheel/drag pan · enter detail · o expand · q close`
+                : "  ↑/↓ select · drag pan · enter detail · o expand · q close";
             lines.push({ text: footer, color: "dim" });
         }
         // Never render past the panel bounds; truncate ANSI-safely per line.
@@ -466,6 +625,10 @@ export class FleetPanelComponent {
     /** Scroll offset of the currently active pane. */
     get scrollOffset() {
         return this.mode === "detail" ? this.detailScroll : this.treeScroll;
+    }
+    /** True while a press-and-drag pan gesture is active (until release). */
+    get isDragging() {
+        return this.drag !== null;
     }
     get treeScrollOffset() {
         return this.treeScroll;
