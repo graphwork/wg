@@ -5243,6 +5243,23 @@ pub struct ResourceManagementConfig {
     /// or configured target projection.
     #[serde(default = "default_build_link_test_safety_bytes")]
     pub build_link_test_safety_bytes: u64,
+    /// Decay the measured per-class build high-water after this many days
+    /// without observing a build of that class. The high-water is halved once
+    /// per elapsed window so a one-off cold build's peak cannot pin admission
+    /// forever. Decay never drops below the configured class floor or the
+    /// hard-refuse floor. Set 0 to keep the historical sticky high-water.
+    #[serde(default = "default_build_high_water_decay_days")]
+    pub build_high_water_decay_days: u64,
+    /// Share a lock-safe `sccache` compiler cache across private per-attempt
+    /// Cargo targets. Rust dependency compilations and C/C++ build-script
+    /// output are reused across attempts and worktrees while each attempt keeps
+    /// its own private `CARGO_TARGET_DIR` (no cargo target-lock serialization).
+    /// No-op when `sccache` is not installed.
+    #[serde(default = "default_sccache_enabled")]
+    pub sccache_enabled: bool,
+    /// Disk bound for the shared sccache cache (a size string such as `20G`).
+    #[serde(default = "default_sccache_cache_size")]
+    pub sccache_cache_size: String,
     #[serde(default = "default_disk_scan_interval_seconds")]
     pub disk_scan_interval_seconds: u64,
     #[serde(default = "default_disk_scan_max_entries")]
@@ -5526,6 +5543,15 @@ fn default_estimated_cargo_baseline_bytes() -> u64 {
 fn default_build_link_test_safety_bytes() -> u64 {
     4 * 1024 * 1024 * 1024
 }
+fn default_build_high_water_decay_days() -> u64 {
+    14
+}
+fn default_sccache_enabled() -> bool {
+    true
+}
+fn default_sccache_cache_size() -> String {
+    "20G".to_string()
+}
 fn default_disk_scan_interval_seconds() -> u64 {
     30
 }
@@ -5578,6 +5604,9 @@ impl Default for ResourceManagementConfig {
             estimated_build_heavy_bytes: default_estimated_build_heavy_bytes(),
             estimated_cargo_baseline_bytes: default_estimated_cargo_baseline_bytes(),
             build_link_test_safety_bytes: default_build_link_test_safety_bytes(),
+            build_high_water_decay_days: default_build_high_water_decay_days(),
+            sccache_enabled: default_sccache_enabled(),
+            sccache_cache_size: default_sccache_cache_size(),
             disk_scan_interval_seconds: default_disk_scan_interval_seconds(),
             disk_scan_max_entries: default_disk_scan_max_entries(),
             owned_cache_lease_seconds: default_owned_cache_lease_seconds(),

@@ -236,6 +236,53 @@ struct BuildHighWater {
     build_capable_delta_bytes: u64,
     #[serde(default)]
     build_heavy_delta_bytes: u64,
+    /// Last wall-clock time a build of this class was observed. Used to decay a
+    /// stale peak; absent means legacy/never-observed and applies no decay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    build_capable_observed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    build_heavy_observed_at: Option<String>,
+}
+
+fn record_high_water_observation(high_water: &mut BuildHighWater, class: BuildClass, now: &str) {
+    if class.is_heavy() {
+        high_water.build_heavy_observed_at = Some(now.to_string());
+    } else {
+        high_water.build_capable_observed_at = Some(now.to_string());
+    }
+}
+
+/// Decay a measured high-water that has not been refreshed for a while.
+///
+/// The projection must not be pinned forever by a single historical cold build
+/// (`survey-build-size.md` R8). After each `decay_days` window without an
+/// observation the value is halved. The floor is the larger of the configured
+/// class floor and the hard-refuse floor, so decay can never under-reserve
+/// below the operator's absolute minimum. `decay_days == 0` disables decay.
+fn decayed_high_water(
+    value: u64,
+    observed_at: Option<&str>,
+    decay_days: u64,
+    floor: u64,
+    now: DateTime<Utc>,
+) -> u64 {
+    if value == 0 {
+        return 0;
+    }
+    if decay_days == 0 {
+        return value.max(floor);
+    }
+    let Some(observed) = observed_at.and_then(|stamp| DateTime::parse_from_rfc3339(stamp).ok())
+    else {
+        // Never observed under the current schema: treat as fresh (no decay).
+        return value.max(floor);
+    };
+    let elapsed_days = (now - observed.with_timezone(&Utc)).num_days();
+    if elapsed_days < decay_days as i64 {
+        return value.max(floor);
+    }
+    let halvings = (elapsed_days / decay_days as i64).clamp(0, 63) as u32;
+    value.checked_shr(halvings).unwrap_or(0).max(floor)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -796,13 +843,39 @@ fn projection_for_class(
     class: BuildClass,
     cold_baseline: bool,
 ) -> u64 {
+    projection_for_class_at(cfg, high_water, class, cold_baseline, Utc::now())
+}
+
+fn projection_for_class_at(
+    cfg: &ResourceManagementConfig,
+    high_water: &BuildHighWater,
+    class: BuildClass,
+    cold_baseline: bool,
+    now: DateTime<Utc>,
+) -> u64 {
+    let decay_days = cfg.build_high_water_decay_days;
+    let heavy_floor = cfg
+        .estimated_build_heavy_bytes
+        .max(cfg.disk_hard_refuse_bytes);
+    let capable_floor = cfg.estimated_build_bytes.max(cfg.disk_hard_refuse_bytes);
+    let heavy = decayed_high_water(
+        high_water.build_heavy_delta_bytes,
+        high_water.build_heavy_observed_at.as_deref(),
+        decay_days,
+        heavy_floor,
+        now,
+    );
+    let capable = decayed_high_water(
+        high_water.build_capable_delta_bytes,
+        high_water.build_capable_observed_at.as_deref(),
+        decay_days,
+        capable_floor,
+        now,
+    );
     let mut target = if class.is_heavy() {
-        cfg.estimated_build_heavy_bytes
-            .max(high_water.build_heavy_delta_bytes)
-            .max(high_water.build_capable_delta_bytes)
+        cfg.estimated_build_heavy_bytes.max(heavy).max(capable)
     } else {
-        cfg.estimated_build_bytes
-            .max(high_water.build_capable_delta_bytes)
+        cfg.estimated_build_bytes.max(capable)
     };
     if cold_baseline && class.is_build_capable() {
         target = target.max(cfg.estimated_cargo_baseline_bytes);
@@ -1217,6 +1290,7 @@ pub fn refresh_snapshot(dir: &Path, cfg: &ResourceManagementConfig) -> Result<Di
     let registry = AgentRegistry::load(dir).unwrap_or_default();
     let graph = load_graph(dir.join("graph.jsonl")).ok();
     let mut high_water = load_high_water(dir);
+    let observed_now = Utc::now().to_rfc3339();
     let elapsed = previous
         .as_ref()
         .and_then(|p| DateTime::parse_from_rfc3339(&p.generated_at).ok())
@@ -1249,12 +1323,20 @@ pub fn refresh_snapshot(dir: &Path, cfg: &ResourceManagementConfig) -> Result<Di
             .map(classify_task)
             .unwrap_or(BuildClass::BuildCapable);
         if cache.kind == CacheKind::CargoTarget && cache_key.is_some() {
-            if class.is_heavy() {
-                high_water.build_heavy_delta_bytes =
-                    high_water.build_heavy_delta_bytes.max(private_bytes);
+            let raised = if class.is_heavy() {
+                let was = high_water.build_heavy_delta_bytes;
+                high_water.build_heavy_delta_bytes = was.max(private_bytes);
+                private_bytes > was
             } else {
-                high_water.build_capable_delta_bytes =
-                    high_water.build_capable_delta_bytes.max(private_bytes);
+                let was = high_water.build_capable_delta_bytes;
+                high_water.build_capable_delta_bytes = was.max(private_bytes);
+                private_bytes > was
+            };
+            // Stamp "last build of this class" only on a new peak or an actual
+            // size change, never on an idle refresh, so the decay window
+            // measures time since a real build, not time since the last tick.
+            if raised || (private_bytes > 0 && private_bytes != old) {
+                record_high_water_observation(&mut high_water, class, &observed_now);
             }
         }
         targets.push(TargetUsage {
@@ -2139,6 +2221,7 @@ pub fn cleanup_owned(
         } else {
             high_water.build_capable_delta_bytes = high_water.build_capable_delta_bytes.max(bytes);
         }
+        record_high_water_observation(&mut high_water, class, &Utc::now().to_rfc3339());
     }
     if execute {
         let _ = save_high_water(dir, &high_water);
@@ -2287,6 +2370,151 @@ pub fn cleanup_owned(
     deduplicate_terminal_outputs(dir, cfg, &registry, &graph, execute, &mut report);
     compact_terminal_outputs(dir, cfg, &registry, &graph, execute, &mut report);
     let _ = refresh_snapshot(dir, cfg);
+    Ok(report)
+}
+
+/// Promptly cull the private build layers owned by one attempt as it reaches a
+/// terminal state, instead of waiting for the next periodic `cleanup_owned`
+/// sweep. The private per-attempt `CARGO_TARGET_DIR` is rebuildable, so
+/// attempt-end is the natural moment to reclaim it; keeping it only "until
+/// stale" lets a burst of finished attempts accumulate `N x target` on disk
+/// with no live writer.
+///
+/// This is deliberately conservative and shares every destructive guard with
+/// `cleanup_owned`:
+/// * immutable Cargo layers are promoted to a shared baseline first when
+///   possible, so a finished layer seeds future attempts instead of being lost;
+/// * a path is removed only when *every* recorded owner is stale (terminal
+///   registry row or expired lease) *and* the exact PID identity is gone;
+/// * the shared guards reject a live/open/cwd writer, a changed mount, a path
+///   containing the project/worktree/artifact, and an inconclusive identity.
+///
+/// The agent's own `wg done`/`wg fail` call is a safe no-op (its PID is still
+/// alive, so the identity guard fails closed); the real cull fires from triage
+/// once the wrapper process is observed dead.
+pub fn cull_owned_caches_for_task(
+    dir: &Path,
+    cfg: &ResourceManagementConfig,
+    task_id: &str,
+) -> Result<CleanupReport> {
+    let _lock = RegistryLock::acquire(dir)?;
+    let mut ownership = load_ownership(dir)?;
+    let registry = AgentRegistry::load(dir).unwrap_or_default();
+    let graph = load_graph(dir.join("graph.jsonl")).context("load graph for owned-cache cull")?;
+    let project_root = dir.parent().unwrap_or(dir);
+    let mut report = CleanupReport::default();
+    let observed_now = Utc::now().to_rfc3339();
+    let mut high_water = load_high_water(dir);
+
+    let mut groups: BTreeMap<String, Vec<OwnedCache>> = BTreeMap::new();
+    let mut keep: Vec<OwnedCache> = Vec::new();
+    for cache in ownership.caches.drain(..) {
+        if cache.task_id == task_id {
+            groups.entry(cache.path.clone()).or_default().push(cache);
+        } else {
+            keep.push(cache);
+        }
+    }
+    for (path, owners) in groups {
+        report.considered += 1;
+        let all_stale = owners
+            .iter()
+            .all(|c| owner_is_stale(c, &registry, Some(&graph)));
+        if !all_stale {
+            report.preserved.push(PreservedPath {
+                path: path.clone(),
+                reason: "one or more recorded owners are active/inconclusive".into(),
+            });
+            keep.extend(owners);
+            continue;
+        }
+        let representative = &owners[0];
+        // Capture the last measured size before removal so the adaptive
+        // high-water survives even when the cull runs ahead of the next
+        // periodic snapshot.
+        if representative.kind == CacheKind::CargoTarget
+            && crate::target_cache::layer_key_from_path(Path::new(&path)).is_some()
+        {
+            let bytes = private_cache_bytes(representative, cfg.disk_scan_max_entries);
+            let class = graph
+                .get_task(&representative.task_id)
+                .map(classify_task)
+                .unwrap_or(BuildClass::BuildCapable);
+            if class.is_heavy() {
+                high_water.build_heavy_delta_bytes = high_water.build_heavy_delta_bytes.max(bytes);
+            } else {
+                high_water.build_capable_delta_bytes =
+                    high_water.build_capable_delta_bytes.max(bytes);
+            }
+            record_high_water_observation(&mut high_water, class, &observed_now);
+        }
+        reap_orphaned_owner_groups(&owners, &registry, &mut report);
+        if let Some(reason) = owners
+            .iter()
+            .find_map(|owner| guard_owned_path(owner, &registry, &graph, project_root).err())
+        {
+            report.preserved.push(PreservedPath {
+                path: path.clone(),
+                reason,
+            });
+            keep.extend(owners);
+            continue;
+        }
+        if representative.kind == CacheKind::CargoTarget
+            && crate::target_cache::layer_key_from_path(Path::new(&path)).is_some()
+        {
+            match crate::target_cache::promote_layer(Path::new(&path)) {
+                Ok(true) => report.ignored.push(PreservedPath {
+                    path: path.clone(),
+                    reason: "promoted clean completed layer to immutable shared baseline".into(),
+                }),
+                Ok(false) => {}
+                Err(error) => report.ignored.push(PreservedPath {
+                    path: path.clone(),
+                    reason: format!(
+                        "baseline promotion failed closed; private rebuildable layer remains eligible for cleanup: {error:#}"
+                    ),
+                }),
+            }
+        }
+        let existed = Path::new(&path).exists();
+        match safe_remove_owned_path(representative, &registry, &graph, project_root) {
+            Ok(bytes) => {
+                if existed {
+                    report.reaped += 1;
+                    report.bytes_freed = report.bytes_freed.saturating_add(bytes);
+                    report.reaped_paths.push(PreservedPath {
+                        path: path.clone(),
+                        reason: format!(
+                            "attempt-end cull removed terminal owned cache ({bytes} private physical bytes)"
+                        ),
+                    });
+                    if representative.kind == CacheKind::CargoTarget {
+                        crate::target_cache::prune_empty_layer_parents(
+                            &target_cache_root(dir, cfg),
+                            Path::new(&path),
+                        );
+                    }
+                } else {
+                    report.ignored.push(PreservedPath {
+                        path: path.clone(),
+                        reason: "owned path already absent; stale ownership retired".into(),
+                    });
+                }
+            }
+            Err(reason) => {
+                report.preserved.push(PreservedPath {
+                    path: path.clone(),
+                    reason,
+                });
+                keep.extend(owners);
+            }
+        }
+    }
+    ownership.schema = OWNERSHIP_SCHEMA;
+    ownership.caches = keep;
+    save_ownership(dir, &ownership)?;
+    let _ = save_high_water(dir, &high_water);
     Ok(report)
 }
 
@@ -2740,6 +2968,7 @@ mod tests {
                 schema: HIGH_WATER_SCHEMA,
                 build_capable_delta_bytes: u64::MAX,
                 build_heavy_delta_bytes: u64::MAX,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -3211,6 +3440,7 @@ mod tests {
             schema: HIGH_WATER_SCHEMA,
             build_capable_delta_bytes: 3 * GIB,
             build_heavy_delta_bytes: 12 * GIB,
+            ..Default::default()
         };
         assert_eq!(
             projection_for_class(&cfg, &high_water, BuildClass::BuildHeavy, true),
@@ -3228,6 +3458,128 @@ mod tests {
             projection_for_class(&cfg, &high_water, BuildClass::BuildCapable, false),
             8 * GIB
         );
+    }
+
+    #[test]
+    fn projection_decays_stale_high_water_but_never_below_floors() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let cfg = ResourceManagementConfig {
+            estimated_build_bytes: 4 * GIB,
+            estimated_build_heavy_bytes: 16 * GIB,
+            estimated_cargo_baseline_bytes: 64 * GIB,
+            build_link_test_safety_bytes: 4 * GIB,
+            disk_hard_refuse_bytes: 4 * GIB,
+            build_high_water_decay_days: 14,
+            ..Default::default()
+        };
+        let now = Utc::now();
+        // 200 GiB heavy peak observed 30 days ago: two 14-day windows => 200/4.
+        let decayed = BuildHighWater {
+            schema: HIGH_WATER_SCHEMA,
+            build_heavy_delta_bytes: 200 * GIB,
+            build_heavy_observed_at: Some((now - chrono::Duration::days(30)).to_rfc3339()),
+            ..Default::default()
+        };
+        assert_eq!(
+            projection_for_class_at(&cfg, &decayed, BuildClass::BuildHeavy, false, now),
+            50 * GIB + 4 * GIB
+        );
+        // A recent observation is not decayed.
+        let fresh = BuildHighWater {
+            schema: HIGH_WATER_SCHEMA,
+            build_heavy_delta_bytes: 200 * GIB,
+            build_heavy_observed_at: Some(now.to_rfc3339()),
+            ..Default::default()
+        };
+        assert_eq!(
+            projection_for_class_at(&cfg, &fresh, BuildClass::BuildHeavy, false, now),
+            200 * GIB + 4 * GIB
+        );
+        // An extreme age decays to the class floor, never below the hard-refuse
+        // floor, and keeps the final-link safety headroom.
+        let ancient = BuildHighWater {
+            schema: HIGH_WATER_SCHEMA,
+            build_heavy_delta_bytes: u64::MAX,
+            build_heavy_observed_at: Some((now - chrono::Duration::days(100_000)).to_rfc3339()),
+            ..Default::default()
+        };
+        assert_eq!(
+            projection_for_class_at(&cfg, &ancient, BuildClass::BuildHeavy, false, now),
+            16 * GIB + 4 * GIB
+        );
+        // Decay disabled keeps the historical sticky peak.
+        let sticky_cfg = ResourceManagementConfig {
+            build_high_water_decay_days: 0,
+            ..cfg.clone()
+        };
+        assert_eq!(
+            projection_for_class_at(&sticky_cfg, &decayed, BuildClass::BuildHeavy, false, now),
+            200 * GIB + 4 * GIB
+        );
+    }
+
+    #[test]
+    fn attempt_end_cull_reaps_terminal_task_layer_and_leaves_others() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("wg-target-cull");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("blob"), vec![3u8; 4096]).unwrap();
+        let (dir, cfg) = terminal_fixture(root.path(), &target, None);
+
+        // A different task's identical-shaped cache must be untouched by the
+        // task-scoped cull.
+        let other = root.path().join("wg-target-other");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("blob"), vec![4u8; 4096]).unwrap();
+        let mut other_cache = make_owned_cache(
+            &other,
+            CacheKind::CargoTarget,
+            "other",
+            "agent-other",
+            999_998,
+            None,
+            0,
+        );
+        other_cache.lease_expires_at = (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+        register_owned_cache(&dir, other_cache).unwrap();
+
+        let report = cull_owned_caches_for_task(&dir, &cfg, "build").unwrap();
+        assert_eq!(report.reaped, 1, "{report:?}");
+        assert!(!target.exists(), "terminal task layer must be culled");
+        assert!(
+            other.exists(),
+            "task-scoped cull must not touch another task's layer"
+        );
+    }
+
+    #[test]
+    fn attempt_end_cull_preserves_a_live_owner() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("wg-target-live");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("blob"), vec![3u8; 4096]).unwrap();
+        let dir = root.path().join(".wg");
+        fs::create_dir_all(&dir).unwrap();
+        save_graph(&WorkGraph::new(), dir.join("graph.jsonl")).unwrap();
+        // The owner is the current live process with a fresh lease, so the
+        // exact PID identity guard must refuse removal.
+        let cache = make_owned_cache(
+            &target,
+            CacheKind::CargoTarget,
+            "live",
+            "agent-live",
+            std::process::id(),
+            None,
+            3600,
+        );
+        register_owned_cache(&dir, cache).unwrap();
+        let cfg = ResourceManagementConfig {
+            compress_terminal_streams: false,
+            ..Default::default()
+        };
+        let report = cull_owned_caches_for_task(&dir, &cfg, "live").unwrap();
+        assert_eq!(report.reaped, 0, "{report:?}");
+        assert!(target.exists(), "a live owner layer must be preserved");
     }
 
     #[test]

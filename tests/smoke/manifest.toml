@@ -3441,3 +3441,12 @@ owners = [
 ]
 description = "let-the-tui: `wg tui` gains a startup lane/tab selection so it can open graph-focused with no chat surface. Pins `[tui] default_lane = \"chat\"|\"task\"|\"workspace\"` (default chat, so existing behaviour is unchanged), the `wg tui --lane <chat|task|workspace>` CLI override (wins over config), and the `--no-chat` alias for `--lane task`. Live wg tui/tmux human flow: the scenario launches the real TUI and reads the live inspector tab/focus through `wg --json tui-dump`, asserting the default opens on Chat, `default_lane = \"task\"` opens on Detail with the graph focused, `--lane workspace` overrides a task config, and `--no-chat` opens Detail. Credential-free (shell executor)."
 timeout_seconds = 120
+
+[[scenario]]
+name = "shared_sccache_warm_rebuild"
+script = "scenarios/shared_sccache_warm_rebuild.sh"
+owners = [
+    "implement-shared-sccache",
+]
+description = "Pins the A+E thinnest slice from .wg/survey/survey-cow-worktrees.md §5: a build-capable spawn is wired with a shared sccache compiler cache (RUSTC_WRAPPER via a WG-generated wrapper that unsets the per-attempt CARGO_TARGET_DIR so byte-identical rebuilds actually hit, SCCACHE_DIR, SCCACHE_CACHE_SIZE, SCCACHE_BASEDIRS=<project root>, and CC/CXX wrapped) while a PRIVATE per-attempt CARGO_TARGET_DIR is preserved. A real daemon dispatches two concurrent build-capable shell tasks; the scenario asserts the exact env wiring, that the shared sccache dir exists and is populated, that a second identical build in a FRESH layer is a warm cache hit (hits>=1), and that the two concurrent spawns received DISTINCT private target dirs (no shared mutable target / cargo target-lock serialization). Exit 77 = loud SKIP when sccache is not installed (set WG_SCCACHE_BIN to point at one). Credential-free, offline (path-only dependency)."
+timeout_seconds = 300
