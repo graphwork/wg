@@ -367,6 +367,36 @@ mod tests {
         s.parse().expect("valid TOML")
     }
 
+    /// Guard: the checked-in project document `worksgood.toml` must not
+    /// carry any key [`DEPRECATED_KEYS`] lists as deprecated/no-op. Those
+    /// keys are silently ignored at load and `wg migrate config` would drop
+    /// them, so allowing one back into the doc would make a clean checkout
+    /// report spurious removals. Fails on a doc that reintroduces one.
+    #[test]
+    fn checked_in_worksgood_toml_has_no_deprecated_keys() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("worksgood.toml");
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let doc: toml::Value = body
+            .parse()
+            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let table = doc.as_table().expect("worksgood.toml is a TOML table");
+        let mut present = Vec::new();
+        for (section, key) in DEPRECATED_KEYS {
+            if let Some(toml::Value::Table(sec)) = table.get(*section)
+                && sec.contains_key(*key)
+            {
+                present.push(format!("{section}.{key}"));
+            }
+        }
+        assert!(
+            present.is_empty(),
+            "checked-in worksgood.toml contains deprecated/no-op keys [{}] — remove them \
+             (wg migrate config would drop them)",
+            present.join(", "),
+        );
+    }
+
     #[test]
     fn canonicalize_drops_obsolete_graph_depth_guard() {
         let mut doc = parse(
