@@ -184,6 +184,24 @@ export type {
   FleetSnapshot,
 } from "./fleet-readmodel.js";
 export {
+  FALLBACK_STATUS_PALETTE,
+  colorModeOf,
+  fgAnsi,
+  normalizeStatusPalette,
+  paintRgb,
+  paintStatusText,
+  paletteNotice,
+  resolveStatusPalette,
+  rgbToAnsi256,
+  statusRgb,
+} from "./status-palette.js";
+export type {
+  PaintTheme,
+  StatusColorMode,
+  StatusPalette,
+  StatusRgb,
+} from "./status-palette.js";
+export {
   FleetPoller,
   fetchAgents,
   fetchFleetOverSocket,

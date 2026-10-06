@@ -136,10 +136,25 @@ const WG_TREE_NODE_LINES = {
   loner: 5,
 };
 
+/** WG's exported graph-view palette (mirror of `src/status_palette.rs`). */
+const WG_PALETTE: Record<string, [number, number, number]> = {
+  open: [200, 200, 80],
+  "in-progress": [60, 200, 220],
+  waiting: [60, 160, 220],
+  done: [80, 220, 100],
+  blocked: [180, 120, 60],
+  failed: [220, 60, 60],
+  abandoned: [140, 100, 160],
+  "pending-validation": [60, 160, 220],
+  "pending-eval": [140, 230, 80],
+  "failed-pending-eval": [210, 130, 70],
+  incomplete: [255, 165, 0],
+};
+
 function treeSnap() {
   return {
     ...snap(),
-    tree: { text: WG_TREE_TEXT, node_lines: WG_TREE_NODE_LINES },
+    tree: { text: WG_TREE_TEXT, node_lines: WG_TREE_NODE_LINES, palette: WG_PALETTE },
     tasks: [
       { id: "done-a", title: "Done A", status: "done", depends_on: [] },
       { id: "active-b", title: "Active B", status: "in-progress", depends_on: ["done-a"] },
@@ -521,20 +536,8 @@ describe("FleetPanelComponent", () => {
     expect(render().some((l) => l.includes("(+3)"))).toBe(false);
   });
 
-  it("paints every task line with WG's status palette (style reaches the line)", () => {
-    const codes: Record<string, string> = {
-      success: "\x1b[32m",
-      error: "\x1b[31m",
-      warning: "\x1b[33m",
-      borderAccent: "\x1b[36m",
-      border: "\x1b[94m",
-      customMessageLabel: "\x1b[35m",
-      accent: "\x1b[34m",
-      muted: "\x1b[90m",
-      dim: "\x1b[2m",
-      text: "\x1b[37m",
-    };
-    const theme = { fg: (color: string, text: string) => `${codes[color] ?? ""}${text}\x1b[0m` };
+  it("paints every task line with WG's exact RGB palette (no semantic indirection)", () => {
+    const theme = { fg: (_color: string, text: string) => `ROLE:${text}`, getColorMode: () => "truecolor" as const };
     const tui = { requestRender: vi.fn(), terminal: { rows: 30 } };
     const component = new FleetPanelComponent(
       treeSnap() as never,
@@ -545,14 +548,38 @@ describe("FleetPanelComponent", () => {
     );
     const lines = component.render(200);
     const lineFor = (task: string) => lines.find((l) => l.includes(`${task}  (`)) ?? "";
-    // The computed style is actually present in the rendered line, per status.
-    expect(lineFor("root-a")).toContain(codes.warning); // open → yellow
-    expect(lineFor("child-1")).toContain(codes.warning); // open sibling
-    expect(lineFor("child-2")).toContain(codes.error); // failed → red
-    // Every visible task row carries a colour escape (not computed-but-dropped).
+    const rgb = (status: string) => {
+      const [r, g, b] = WG_PALETTE[status]!;
+      return `38;2;${r};${g};${b}`;
+    };
+    // Per-status exact RGB — never a semantic role on the default path.
+    expect(lineFor("root-a")).toContain(rgb("open"));
+    expect(lineFor("child-1")).toContain(rgb("open"));
+    expect(lineFor("child-2")).toContain(rgb("failed"));
+    // No semantic role leaked into any task row (chrome rows may still use one).
+    const taskRows = ["root-a", "child-1", "grand-1", "child-2", "loner"].map(lineFor);
+    expect(taskRows.filter((l) => l.includes("ROLE:"))).toEqual([]);
+    // Every visible task row carries a truecolour escape.
     for (const task of ["root-a", "child-1", "grand-1", "child-2", "loner"]) {
-      expect(lineFor(task)).toContain("\x1b[");
+      expect(lineFor(task)).toContain("\x1b[38;2;");
     }
+    // With WG's palette present there is no fallback notice.
+    expect(lines[0]).not.toContain("fallback");
+  });
+
+  it("surfaces a visible theme fallback when WG exports no palette", () => {
+    const theme = { fg: (_color: string, text: string) => `ROLE:${text}`, getColorMode: () => "truecolor" as const };
+    const tui = { requestRender: vi.fn(), terminal: { rows: 30 } };
+    const noPalette = {
+      ...treeSnap(),
+      tree: { text: WG_TREE_TEXT, node_lines: WG_TREE_NODE_LINES },
+    };
+    const component = new FleetPanelComponent(noPalette as never, tui as never, vi.fn(), theme as never, {});
+    const lines = component.render(200);
+    // The notice is visible, never a silent mismatch.
+    expect(lines[0]).toContain("fallback");
+    // It still paints from the local mirror of WG's palette (exact RGB).
+    expect(lines.find((l) => l.includes("root-a  (")) ?? "").toContain("38;2;200;200;80");
   });
 
   it("closes on q and Esc", () => {

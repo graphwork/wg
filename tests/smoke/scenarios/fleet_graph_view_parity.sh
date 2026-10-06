@@ -10,8 +10,10 @@
 #   * the plugin renders WG's OWN `wg viz` text verbatim (`renderWgTree`);
 #     top-level rows are unindented and children use WG's `└→`/`├→` edges with
 #     WG's own 2-space-per-depth prefix, by construction;
-#   * every task line is painted with WG's TUI status palette and the style
-#     really reaches the rendered string (a stub theme's ANSI appears per line);
+#   * every task line is painted with **WG's exported RGB palette** (the
+#     `palette` object carried on `GetFleet.tree` / `wg viz --json`) as exact
+#     truecolour/256-colour ANSI — never a semantic pi theme role on the default
+#     path — and the local fallback (when no palette is exported) is *visible*;
 #   * Enter opens the selected task's DETAIL view (and a doubled Enter — some
 #     terminals send `\r\n` — does not immediately close it); `o`/space expand;
 #     q closes;
@@ -19,7 +21,9 @@
 #     renders (best-effort), but with one it is never consulted;
 #   * end-to-end: the daemon's `GetFleet` tree is byte-for-byte the same
 #     `wg viz --json` render for the same graph (structure + prefixes + indent),
-#     and the ambient below-editor widget strip is unaffected.
+#     and both carry the SAME status palette, which equals the checked-in
+#     cross-language fixture (`worksgood-pi/test/fixtures/status-palette.json`)
+#     that `src/status_palette.rs` also pins;
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -42,17 +46,23 @@ fi
 # ── 1. Build + focused unit tests (parity/colour/key regressions) ────────────
 ( cd "$plugin" && npm run build >/tmp/fleet-parity-build.log 2>&1 ) || \
     loud_fail "worksgood-pi build failed" "$(tail -40 /tmp/fleet-parity-build.log)"
-( cd "$plugin" && npx vitest run test/fleet-panel.test.ts test/fleet.test.ts test/wg-backend.test.ts \
+( cd "$plugin" && npx vitest run test/fleet-panel.test.ts test/fleet.test.ts test/wg-backend.test.ts test/status-palette.test.ts \
     >/tmp/fleet-parity-vitest.log 2>&1 ) || \
     loud_fail "fleet graph-view unit tests failed" "$(tail -80 /tmp/fleet-parity-vitest.log)"
 
 # ── 2. Embedded bundle carries the parity renderer ───────────────────────────
-for module in fleet-panel fleet-panel-model fleet-readmodel wg-backend; do
+for module in fleet-panel fleet-panel-model fleet-readmodel wg-backend status-palette; do
     [ -f "$plugin/embedded/pi-worksgood/$module.js" ] || \
         loud_fail "embed missing $module.js" "worksgood-pi/embedded/pi-worksgood/$module.js (run 'make embed-worksgood-pi')"
 done
 grep -q "renderWgTree" "$plugin/embedded/pi-worksgood/fleet-panel-model.js" || \
     loud_fail "embedded bundle lacks the WG-tree renderer" "renderWgTree missing from fleet-panel-model.js"
+grep -q "paintStatusText" "$plugin/embedded/pi-worksgood/status-palette.js" || \
+    loud_fail "embedded bundle lacks the RGB status palette" \
+        "worksgood-pi/embedded/pi-worksgood/status-palette.js (run 'make embed-worksgood-pi')"
+grep -q "status-palette" "$plugin/embedded/pi-worksgood/fleet-panel.js" || \
+    loud_fail "embedded fleet panel does not use the RGB status palette" \
+        "fleet-panel.js does not reference status-palette.js (run 'make embed-worksgood-pi')"
 
 # ── 3. Scripted human-flow probe against the EMBEDDED component ──────────────
 node --input-type=module - "$plugin" <<'NODE' >/tmp/fleet-parity-probe.log 2>&1 || \
@@ -97,7 +107,21 @@ if (byTask.get("grand-1").depth !== 2 || !byTask.get("grand-1").text.startsWith(
 const fallback = renderWgTree(undefined);
 if (fallback.fromWg || fallback.lines.length !== 0) throw new Error("missing tree must report fromWg=false");
 
-// (c) Real component: status colour reaches each task line; Enter → detail.
+// (c) Real component: each task line is painted WG's EXACT RGB palette (no
+// semantic-role indirection); Enter → detail.
+const WG_PALETTE = {
+  open: [200, 200, 80],
+  "in-progress": [60, 200, 220],
+  waiting: [60, 160, 220],
+  done: [80, 220, 100],
+  blocked: [180, 120, 60],
+  failed: [220, 60, 60],
+  abandoned: [140, 100, 160],
+  "pending-validation": [60, 160, 220],
+  "pending-eval": [140, 230, 80],
+  "failed-pending-eval": [210, 130, 70],
+  incomplete: [255, 165, 0],
+};
 const snapshot = {
   revision: "rev-parity",
   unchanged: false,
@@ -111,20 +135,35 @@ const snapshot = {
     { id: "loner", title: "Loner", status: "open", depends_on: [] },
   ],
   agents: [],
-  tree: { text: WG_TEXT, node_lines: NODE_LINES },
+  tree: { text: WG_TEXT, node_lines: NODE_LINES, palette: WG_PALETTE },
 };
-const CODES = { success: "\x1b[32m", error: "\x1b[31m", warning: "\x1b[33m", borderAccent: "\x1b[36m", border: "\x1b[94m", customMessageLabel: "\x1b[35m", accent: "\x1b[34m", muted: "\x1b[90m", dim: "\x1b[2m", text: "\x1b[37m" };
-const theme = { fg: (color, text) => `${CODES[color] ?? ""}${text}\x1b[0m` };
+const theme = { fg: (color, text) => `ROLE(${color}):${text}`, getColorMode: () => "truecolor" };
 const tui = { requestRender: () => {}, terminal: { rows: 20, columns: 100 } };
 let closed = 0;
 const component = new FleetPanelComponent(snapshot, tui, () => { closed++; }, theme, {}, undefined);
 const render = () => component.render(200);
 let lines = render();
 const lineFor = (task) => lines.find((l) => l.includes(`${task}  (`)) ?? "";
-if (!lineFor("child-2").includes(CODES.error)) throw new Error("failed line is not painted red");
-if (!lineFor("root-a").includes(CODES.warning)) throw new Error("open line is not painted yellow");
+const rgb = (r, g, b) => `\x1b[38;2;${r};${g};${b}m`;
+if (!lineFor("child-2").includes(rgb(220, 60, 60))) throw new Error("failed line is not painted WG's exact red RGB");
+if (!lineFor("root-a").includes(rgb(200, 200, 80))) throw new Error("open line is not painted WG's exact yellow RGB");
 for (const t of ["root-a", "child-1", "grand-1", "child-2", "loner"]) {
-  if (!lineFor(t).includes("\x1b[")) throw new Error(`task line ${t} has no colour escape`);
+  if (!lineFor(t).includes("\x1b[38;2;")) throw new Error(`task line ${t} has no truecolour escape`);
+  if (lineFor(t).includes("ROLE(")) throw new Error(`task line ${t} used a semantic theme role, not WG's RGB palette`);
+}
+if (lines[0].includes("fallback")) throw new Error("a fallback notice appeared despite WG exporting a palette");
+
+// (c2) No exported palette ⇒ the local mirror still paints exact RGB, and the
+// fallback is VISIBLE (never a silent semantic mismatch).
+const noPalette = { ...snapshot, tree: { text: WG_TEXT, node_lines: NODE_LINES } };
+const fallbackComponent = new FleetPanelComponent(noPalette, tui, () => {}, theme, {}, undefined);
+const fallbackLines = fallbackComponent.render(200);
+if (!fallbackLines[0].includes("fallback")) throw new Error("missing palette did not surface a visible fallback notice");
+if (!(fallbackLines.find((l) => l.includes("root-a  (")) ?? "").includes(rgb(200, 200, 80))) {
+  throw new Error("fallback path did not paint WG's mirrored RGB palette");
+}
+if (!(fallbackLines.find((l) => l.includes("child-2  (")) ?? "").includes(rgb(220, 60, 60))) {
+  throw new Error("fallback path did not paint WG's mirrored RGB palette");
 }
 
 component.handleInput("\r"); // Enter → DETAIL
@@ -145,7 +184,7 @@ if (render().some((l) => l.includes("(+3)"))) throw new Error("space did not exp
 component.handleInput("q");
 if (closed !== 1) throw new Error(`q did not close the panel (closed=${closed})`);
 
-console.log("probe ok: WG text verbatim, depth/prefix parity, per-line status colour, Enter->detail, o/space expand, fallback-only TS tree");
+console.log("probe ok: WG text verbatim, depth/prefix parity, exact-RGB status colour (visible fallback), Enter->detail, o/space expand, fallback-only TS tree");
 NODE
 
 # ── 4. Ambient below-editor widget strip is unaffected ──────────────────────
@@ -228,7 +267,7 @@ run_wg viz --json --columns 80 >"$scratch/viz.json" 2>/dev/null \
 
 read -r -d '' PY_PARITY <<'PY'
 import json, socket, sys
-socket_path, viz_path = sys.argv[1], sys.argv[2]
+socket_path, viz_path, fixture_path = sys.argv[1], sys.argv[2], sys.argv[3]
 
 def request(payload):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -301,9 +340,29 @@ if not grand.startswith("  └→ "):
 plain = request({"cmd": "get_fleet", "max_rows": 50})
 if plain.get("tree") is not None:
     raise SystemExit("get_fleet returned a tree without include_tree")
-print(f"tree parity ok: daemon == wg viz ({len(lines)} lines, {len(node_lines)} nodes)")
+
+# ── Palette parity: CLI export == daemon export == cross-language fixture ──
+cli_palette = cli.get("palette")
+tree_palette = tree.get("palette")
+if not isinstance(cli_palette, dict) or not cli_palette:
+    raise SystemExit("wg viz --json did not export a non-empty 'palette' object")
+if not isinstance(tree_palette, dict) or not tree_palette:
+    raise SystemExit("GetFleet.tree did not export a non-empty 'palette' object")
+if cli_palette != tree_palette:
+    raise SystemExit(f"daemon palette != CLI palette: {tree_palette} vs {cli_palette}")
+fixture = json.load(open(fixture_path))
+if cli_palette != fixture:
+    raise SystemExit(
+        f"exported palette drifted from worksgood-pi/test/fixtures/status-palette.json: "
+        f"{cli_palette} vs {fixture}"
+    )
+for status, rgb in (("done", [80, 220, 100]), ("in-progress", [60, 200, 220]),
+                    ("open", [200, 200, 80]), ("failed", [220, 60, 60])):
+    if cli_palette.get(status) != rgb:
+        raise SystemExit(f"palette[{status}] != {rgb}: {cli_palette.get(status)}")
+print(f"tree + palette parity ok: daemon == wg viz ({len(lines)} lines, {len(node_lines)} nodes), palette == fixture")
 PY
-python3 -c "$PY_PARITY" "$socket" "$scratch/viz.json"
+python3 -c "$PY_PARITY" "$socket" "$scratch/viz.json" "$plugin/test/fixtures/status-palette.json"
 parity_rc=$?
 case "$parity_rc" in
     0) : ;;
@@ -312,4 +371,4 @@ case "$parity_rc" in
     *) loud_fail "daemon/CLI tree parity failed" "python exit $parity_rc" ;;
 esac
 
-echo "PASS: /wg-fleet graph view — WG text verbatim (structure parity), TUI status colour reaches lines, Enter->detail, o/space expand, TS tree fallback-only"
+echo "PASS: /wg-fleet graph view — WG text verbatim (structure parity), exact-RGB status palette from WG's export (visible fallback), Enter->detail, o/space expand, TS tree fallback-only"

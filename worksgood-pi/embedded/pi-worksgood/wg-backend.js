@@ -9,6 +9,7 @@
  */
 import { connect } from "node:net";
 import { resolveSocketPath } from "./viz-snapshot.js";
+import { normalizeStatusPalette } from "./status-palette.js";
 function firstNonEmpty(...vals) {
     for (const v of vals) {
         if (v != null && v.trim() !== "")
@@ -435,7 +436,11 @@ function normalizeTree(raw) {
                 nodeLines[id] = line;
         }
     }
-    return { text: raw.text, node_lines: nodeLines };
+    const tree = { text: raw.text, node_lines: nodeLines };
+    const palette = normalizeStatusPalette(raw.palette);
+    if (Object.keys(palette).length > 0)
+        tree.palette = palette;
+    return tree;
 }
 /**
  * Parse the JSON emitted by `wg viz --json` into the panel's rendered-tree

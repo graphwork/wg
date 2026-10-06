@@ -35,6 +35,12 @@ import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import type { GetFleetSnapshot, WgBackend } from "./wg-backend.js";
 import { taskColor, type FleetColor } from "./fleet-readmodel.js";
 import {
+  paintStatusText,
+  paletteNotice,
+  resolveStatusPalette,
+  type StatusPalette,
+} from "./status-palette.js";
+import {
   DEFAULT_TRANSCRIPT_LINES,
   FLEET_PANEL_DEFAULT_HEIGHT,
   FLEET_PANEL_MIN_HEIGHT,
@@ -74,6 +80,8 @@ export interface FleetPanelOptions {
 interface PaintedLine {
   text: string;
   color: FleetColor;
+  /** Task status, when this line is a task row — painted from WG's RGB palette. */
+  status?: string;
 }
 
 /**
@@ -423,7 +431,7 @@ export class FleetPanelComponent {
       // dim (separators/arc rows); the caller re-applies this per line in
       // `render` so the computed style actually reaches the terminal.
       const status = line.taskId ? statusById.get(line.taskId) : undefined;
-      lines.push({ text, color: status ? taskColor(status) : "dim" });
+      lines.push({ text, color: status ? taskColor(status) : "dim", status });
       taskIds.push(line.taskId);
     }
     return { lines, taskIds };
@@ -436,6 +444,7 @@ export class FleetPanelComponent {
     }
     const body = Math.max(1, height - 2);
     const snapshot = this.snapshot;
+    const palette = resolveStatusPalette(snapshot?.tree?.palette);
     const lines: PaintedLine[] = [];
     let hitMap: Array<string | null> = [];
 
@@ -459,8 +468,9 @@ export class FleetPanelComponent {
         lines.push({ text: "  ↑/↓ scroll · ← back · q close", color: "dim" });
       }
     } else {
+      const notice = paletteNotice(palette, snapshot.tasks.map((t) => t.status));
       const header = fleetCountsHeader(snapshot.counts);
-      lines.push({ text: header, color: "accent" });
+      lines.push({ text: notice ? `${header} · ${notice}` : header, color: "accent" });
       const tree = this.treeContent();
       this.treeScroll = clampScroll(this.treeScroll, tree.lines.length, body);
       const windowed = tree.lines.slice(this.treeScroll, this.treeScroll + body);
@@ -475,7 +485,9 @@ export class FleetPanelComponent {
     }
 
     // Never render past the panel bounds; truncate ANSI-safely per line.
-    const bounded = lines.slice(0, height).map((line) => truncateToWidth(this.color(line.color, line.text), width));
+    const bounded = lines
+      .slice(0, height)
+      .map((line) => truncateToWidth(this.paintLine(line, palette), width));
     this.hitMap = hitMap;
     this.cachedLines = bounded;
     this.cachedWidth = width;
@@ -489,6 +501,17 @@ export class FleetPanelComponent {
     } catch {
       return text;
     }
+  }
+
+  /**
+   * Paint one panel line. A task row is painted from WG's exact RGB palette
+   * (`paintStatusText`); chrome/separator lines use the semantic theme role.
+   */
+  private paintLine(line: PaintedLine, palette: StatusPalette): string {
+    if (line.status) {
+      return paintStatusText(this.theme, line.text, line.status, palette, line.color);
+    }
+    return this.color(line.color, line.text);
   }
 
   // ── test-visible accessors ────────────────────────────────────────────────

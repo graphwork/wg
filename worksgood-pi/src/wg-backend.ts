@@ -11,6 +11,7 @@
 import type { ExecOptions, ExecResult } from "@earendil-works/pi-coding-agent";
 import { connect, type Socket } from "node:net";
 import { resolveSocketPath } from "./viz-snapshot.js";
+import { normalizeStatusPalette } from "./status-palette.js";
 
 /**
  * The slice of `ExtensionAPI` the backend needs. Declaring it structurally
@@ -392,6 +393,12 @@ export interface GetFleetAgentRow {
 export interface GetFleetTree {
   text: string;
   node_lines: Record<string, number>;
+  /**
+   * WG's canonical graph-view status palette (`status -> [r, g, b]`), exported
+   * so the panel paints exact RGB rather than a semantic theme role. Absent on
+   * older daemons/CLIs, in which case the panel visibly falls back.
+   */
+  palette?: Record<string, [number, number, number]>;
 }
 
 /** Aggregate counts rendered as the fleet header. */
@@ -625,7 +632,10 @@ function normalizeTree(raw: unknown): GetFleetTree | undefined {
       if (typeof line === "number" && Number.isFinite(line)) nodeLines[id] = line;
     }
   }
-  return { text: raw.text, node_lines: nodeLines };
+  const tree: GetFleetTree = { text: raw.text, node_lines: nodeLines };
+  const palette = normalizeStatusPalette(raw.palette);
+  if (Object.keys(palette).length > 0) tree.palette = palette;
+  return tree;
 }
 
 /**

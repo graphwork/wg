@@ -1784,8 +1784,9 @@ name = "fleet_graph_view_parity"
 script = "scenarios/fleet_graph_view_parity.sh"
 owners = [
     "fleet-graph-view",
+    "fleet-graph-view-2",
 ]
-description = "Pins the /wg-fleet graph/structure PARITY (fleet-graph-view): the panel renders WG's OWN `wg viz` text verbatim (`renderWgTree`) — top-level rows unindented and children using WG's `└→`/`├→` edges with WG's 2-space-per-depth prefix, by construction, never a TS re-derivation — and paints each task line with WG's TUI status palette (the style really reaches the rendered string). Enter opens the detail view (a doubled Enter does not close it), o/space expand, q closes, the TS tree is explicit fallback-only, and the ambient below-editor widget is unaffected. Credential-free: runs the focused plugin tests, drives the REAL embedded component in a node probe, and proves the live daemon `GetFleet.tree` is byte-for-byte the same `wg viz --json` render for the same graph."
+description = "Pins the /wg-fleet graph/structure + COLOUR PARITY (fleet-graph-view, fleet-graph-view-2): the panel renders WG's OWN `wg viz` text verbatim (`renderWgTree`) — top-level rows unindented and children using WG's `└→`/`├→` edges with WG's 2-space-per-depth prefix, by construction, never a TS re-derivation — and paints each task line with WG's EXPORTED RGB status palette (`GetFleet.tree.palette` / `wg viz --json` palette) as exact truecolour ANSI, never a semantic pi theme role on the default path; a missing palette falls back to the mirrored palette with a VISIBLE notice. Enter opens the detail view (a doubled Enter does not close it), o/space expand, q closes, the TS tree is explicit fallback-only, and the ambient below-editor widget is unaffected. Credential-free: runs the focused plugin tests, drives the REAL embedded component in a node probe, and proves the live daemon `GetFleet.tree` is byte-for-byte the same `wg viz --json` render for the same graph AND that both carry the same palette equal to the checked-in cross-language fixture pinned by `src/status_palette.rs`."
 timeout_seconds = 240
 
 [[scenario]]
