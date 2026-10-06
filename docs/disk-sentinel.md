@@ -35,6 +35,10 @@ sccache_cache_size = "20G"                 # bound for the shared sccache cache
 disk_scan_interval_seconds = 30
 disk_scan_max_entries = 200000
 owned_cache_lease_seconds = 300
+# Age floor (seconds) before an *unkeyed* build-scratch child (a
+# `build-tmp/<name>` never registered in the ownership registry) is reaped.
+# 7 days by default; 0 reaps any unkeyed scratch with no live open files.
+stale_build_scratch_min_age_seconds = 604800
 compress_terminal_streams = true
 stream_retention_days = 7
 terminal_stream_max_bytes = 67108864
@@ -58,6 +62,8 @@ Admission runs before workspace and lifecycle-attempt creation. A refusal is sch
 A build-capable spawn writes `.wg/service/disk/owned-caches.json` before it is allowed to continue untracked. Each lease records the exact path, cache kind, task, agent, PID and `/proc` start identity, mount device, creation time, expiry, and owning worktree. Absolute and `/tmp` targets are first-class; cleanup never searches by a `wg-target-*` filename. Every build-capable spawn receives an isolated `TMPDIR` at the selected graph's `.wg/build-tmp/<agent>` by default, so project selection (`--dir`/`WG_DIR`/discovery), rather than the daemon's launch cwd, determines its filesystem. This scratch is owned and reapable rather than orphaned. A configured relative `build_tmp_root` stays project-relative; a configured absolute root stays absolute and adds a project key before the agent ID to prevent cross-graph collisions.
 
 Upgrading does not relocate or forget an already-owned legacy `$TMPDIR/wg/build-tmp/<project-key>/<agent>` allocation. While that path exists in the ownership registry, disk admission reports its mount as `legacy-owned-build-scratch` and guarded cleanup preserves it while its owner is active or inconclusive. Once the existing stale-cache guards prove it safe, normal `wg disk cleanup --execute` removes the directory and retires the row. New default allocations never use that legacy root.
+
+An **unkeyed** build-scratch child — a `build-tmp/<name>` directory that was never written into `owned-caches.json` (an orphaned manual/legacy allocation such as `manual-service-merge`) — has no owner row, so the ownership-driven pass above cannot see it. `wg disk doctor` now lists every such unkeyed child as a target (owner `-`, `key=legacy/unkeyed`) and `wg disk cleanup --execute` reaps it under the conservative unkeyed rule: it must exceed `stale_build_scratch_min_age_seconds` **and** have no live process holding a cwd, root, or open file inside it. A keyed directory or the expected scratch path of a live agent process is excluded from the unkeyed leg entirely, and every inconclusive age/open-file check fails closed to preservation. This preserves the reaper's existing guarantee that a directory referenced by a live pid or lease is never removed.
 
 Automatic cache removal requires all recorded owners of a path to satisfy every guard:
 

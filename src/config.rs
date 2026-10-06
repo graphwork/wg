@@ -5266,6 +5266,15 @@ pub struct ResourceManagementConfig {
     pub disk_scan_max_entries: usize,
     #[serde(default = "default_owned_cache_lease_seconds")]
     pub owned_cache_lease_seconds: u64,
+    /// Minimum age in seconds before an *unkeyed* build-scratch directory
+    /// (a `build-tmp/<name>` child that was never registered in the ownership
+    /// registry, e.g. legacy/manual scratch) becomes eligible for conservative
+    /// reaping. Such directories have no owner/lease row, so age plus the
+    /// live-PID/open-file guard is the only staleness evidence. Set to 0 to
+    /// reap any unkeyed scratch immediately (tests use this).
+    /// Default: 7 days (604800 seconds).
+    #[serde(default = "default_stale_build_scratch_min_age_seconds")]
+    pub stale_build_scratch_min_age_seconds: u64,
     #[serde(default = "default_disk_agent_heartbeat_seconds")]
     pub disk_agent_heartbeat_seconds: u64,
     #[serde(default = "default_compress_terminal_streams")]
@@ -5558,6 +5567,9 @@ fn default_disk_scan_interval_seconds() -> u64 {
 fn default_disk_scan_max_entries() -> usize {
     200_000
 }
+fn default_stale_build_scratch_min_age_seconds() -> u64 {
+    7 * 24 * 60 * 60
+}
 fn default_owned_cache_lease_seconds() -> u64 {
     300
 }
@@ -5610,6 +5622,7 @@ impl Default for ResourceManagementConfig {
             disk_scan_interval_seconds: default_disk_scan_interval_seconds(),
             disk_scan_max_entries: default_disk_scan_max_entries(),
             owned_cache_lease_seconds: default_owned_cache_lease_seconds(),
+            stale_build_scratch_min_age_seconds: default_stale_build_scratch_min_age_seconds(),
             disk_agent_heartbeat_seconds: default_disk_agent_heartbeat_seconds(),
             compress_terminal_streams: default_compress_terminal_streams(),
             stream_retention_days: default_stream_retention_days(),
