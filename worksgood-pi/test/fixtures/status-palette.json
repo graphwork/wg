@@ -1,0 +1,13 @@
+{
+  "open": [200, 200, 80],
+  "in-progress": [60, 200, 220],
+  "waiting": [60, 160, 220],
+  "done": [80, 220, 100],
+  "blocked": [180, 120, 60],
+  "failed": [220, 60, 60],
+  "abandoned": [140, 100, 160],
+  "pending-validation": [60, 160, 220],
+  "pending-eval": [140, 230, 80],
+  "failed-pending-eval": [210, 130, 70],
+  "incomplete": [255, 165, 0]
+}
