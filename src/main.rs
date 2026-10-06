@@ -4150,6 +4150,19 @@ fn main() -> Result<()> {
         }
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::DevCheck => commands::dev_check::run(cli.json),
+        Commands::DevSync {
+            no_install,
+            no_restart,
+            dry_run,
+        } => commands::dev_sync::run(
+            &workgraph_dir,
+            commands::dev_sync::DevSyncOptions {
+                json: cli.json,
+                no_install,
+                no_restart,
+                dry_run,
+            },
+        ),
         Commands::AgentGuide => commands::agent_guide::run(),
         Commands::Status { all } => commands::status::run(&workgraph_dir, cli.json, all),
         Commands::Stats => commands::stats::run(&workgraph_dir, cli.json),

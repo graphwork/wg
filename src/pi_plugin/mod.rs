@@ -131,6 +131,19 @@ pub struct ResolvedPlugin {
     pub legacy_package_accepted: bool,
     /// Whether this Console call changed `settings.json` at all.
     pub console_settings_changed: bool,
+    /// True when this call validated the canonical cache dir against the
+    /// running binary's embed digest — either because the resolved source was
+    /// [`Source::Cache`], or because a `WG_PI_PLUGIN_DIR` override named the
+    /// cache dir itself (the way WG launches every spawned pi session).
+    ///
+    /// A bare Dev tree or a *foreign* `WG_PI_PLUGIN_DIR` directory leaves this
+    /// false: those are not the binary's cache and are never content-validated.
+    pub cache_validated: bool,
+    /// True when this call (re-)materialized the cache because it was absent or
+    /// its content digest did not match the running binary's embed. `false` for
+    /// a verified no-op (the cache was already an exact match). Only meaningful
+    /// when [`Self::cache_validated`] is true.
+    pub cache_refreshed: bool,
 }
 
 // --- cache location (§Decision 3) ---------------------------------------------
@@ -233,6 +246,22 @@ fn pick_source(plugin_dir: &Path) -> (Source, Option<PathBuf>) {
         .map(|v| !v.is_empty() && v != "0")
         .unwrap_or(false);
     pick_source_with(plugin_dir, force_cache, env_override)
+}
+
+/// True when an explicit `WG_PI_PLUGIN_DIR` override names the canonical
+/// per-version cache dir — `<cache>/worksgood-pi/<compat>` — or its parent
+/// `<cache>/worksgood-pi`. WG itself sets `WG_PI_PLUGIN_DIR` to exactly that
+/// version dir when it launches a spawned pi session, so this is the common
+/// case, not an exotic one.
+///
+/// Such an override is the binary's *own* cache, not a foreign tree: it must
+/// still be validated against the running binary's embed digest (and repaired
+/// on mismatch) rather than used verbatim. This is the silent-no-op bug: the
+/// override branch used to `return (Source::EnvOverride, Some(explicit))` and
+/// skip `materialize_cache()` entirely, so a stale cache was served forever.
+fn is_cache_dir_override(override_root: &Path, cache_dir: &Path) -> bool {
+    let parent = pi_plugin_cache_parent(cache_dir);
+    override_root == parent.join(WG_PI_PLUGIN_COMPAT_VERSION) || override_root == parent
 }
 
 /// Environment-free core of [`pick_source`] (unit-testable without env
@@ -425,13 +454,14 @@ fn gc_sibling_versions(parent: &Path, keep: &str) {
 }
 
 /// Make `<parent>/<compat>/` correct, extracting the embedded bundle atomically
-/// if it is absent / drifted / half-written. Returns the version dir. Idempotent:
-/// a second call on a correct cache is a pure no-op (a few `stat`s).
-fn materialize_cache(parent: &Path) -> Result<PathBuf> {
+/// if it is absent / drifted / half-written. Returns the version dir **and**
+/// whether it was actually re-materialized (`false` = verified no-op).
+/// Idempotent: a second call on a correct cache is a pure no-op (a few `stat`s).
+fn ensure_cache(parent: &Path) -> Result<(PathBuf, bool)> {
     let version_dir = parent.join(WG_PI_PLUGIN_COMPAT_VERSION);
     if cache_is_correct(&version_dir) {
         gc_sibling_versions(parent, WG_PI_PLUGIN_COMPAT_VERSION);
-        return Ok(version_dir);
+        return Ok((version_dir, false));
     }
 
     std::fs::create_dir_all(parent)
@@ -470,7 +500,15 @@ fn materialize_cache(parent: &Path) -> Result<PathBuf> {
         .with_context(|| format!("atomic rename {:?} -> {:?}", tmp, version_dir))?;
 
     gc_sibling_versions(parent, WG_PI_PLUGIN_COMPAT_VERSION);
-    Ok(version_dir)
+    Ok((version_dir, true))
+}
+
+/// Make `<parent>/<compat>/` correct, returning only the version dir. Test-only
+/// wrapper over [`ensure_cache`] for callers that do not need the refreshed
+/// flag.
+#[cfg(test)]
+fn materialize_cache(parent: &Path) -> Result<PathBuf> {
+    ensure_cache(parent).map(|(version_dir, _refreshed)| version_dir)
 }
 
 // --- Console settings upsert (§Decision 2) ------------------------------------
@@ -659,11 +697,35 @@ fn ensure_pi_plugin_at(
     home: &Path,
 ) -> Result<ResolvedPlugin> {
     let (source, override_root) = pick;
+    let cache_parent = pi_plugin_cache_parent(cache_dir);
+    let mut cache_validated = false;
+    let mut cache_refreshed = false;
     let root = match source {
-        Source::Cache => materialize_cache(&pi_plugin_cache_parent(cache_dir))?,
-        Source::Dev | Source::EnvOverride => override_root
+        Source::Cache => {
+            let (version_dir, refreshed) = ensure_cache(&cache_parent)?;
+            cache_validated = true;
+            cache_refreshed = refreshed;
+            version_dir
+        }
+        Source::EnvOverride => {
+            let explicit = override_root
+                .clone()
+                .context("env-override source requires a root path")?;
+            if is_cache_dir_override(&explicit, cache_dir) {
+                // The override names our own canonical cache dir (how WG launches
+                // every spawned pi session). Validate + repair it exactly like
+                // the direct Cache source — never silently return stale bytes.
+                let (version_dir, refreshed) = ensure_cache(&cache_parent)?;
+                cache_validated = true;
+                cache_refreshed = refreshed;
+                version_dir
+            } else {
+                explicit
+            }
+        }
+        Source::Dev => override_root
             .clone()
-            .context("dev/override source requires a root path")?,
+            .context("dev source requires a root path")?,
     };
 
     let dist_entry = root.join("pi-worksgood").join("index.js");
@@ -701,6 +763,8 @@ fn ensure_pi_plugin_at(
         legacy_settings_migrated: settings_update.legacy_migrated,
         legacy_package_accepted: settings_update.legacy_package_accepted,
         console_settings_changed: settings_update.changed,
+        cache_validated,
+        cache_refreshed,
     })
 }
 
@@ -712,7 +776,21 @@ fn ensure_pi_plugin_at(
 /// no-op the second time.
 pub fn ensure_pi_plugin(mode: EnsureMode) -> Result<ResolvedPlugin> {
     let pick = pick_source(&compile_time_plugin_dir());
-    ensure_pi_plugin_at(mode, pick, &wg_cache_dir(), &home_dir())
+    let resolved = ensure_pi_plugin_at(mode, pick, &wg_cache_dir(), &home_dir())?;
+    // Spawn-time integrity: a NEW binary (from `npm update` OR `cargo install`)
+    // whose embed digest does not match the on-disk cache must re-materialize
+    // it — and say so loudly, so a stale plugin can never silently outlive the
+    // binary that spawned it. A correct cache is a silent no-op.
+    if resolved.cache_refreshed {
+        eprintln!(
+            "WorksGood pi-plugin: refreshed stale/missing plugin cache at {} \
+             (embed digest {}); compat {}",
+            resolved.root.display(),
+            embedded_digest(),
+            WG_PI_PLUGIN_COMPAT_VERSION
+        );
+    }
+    Ok(resolved)
 }
 
 /// Like [`ensure_pi_plugin`] but FORCES the in-repo dev source
@@ -785,6 +863,13 @@ pub fn status() -> PluginStatus {
 fn status_at(pick: (Source, Option<PathBuf>), cache_dir: &Path, home: &Path) -> PluginStatus {
     let (source, override_root) = pick;
     let cache_version_dir = pi_plugin_cache_parent(cache_dir).join(WG_PI_PLUGIN_COMPAT_VERSION);
+    // A `WG_PI_PLUGIN_DIR` override that names the canonical cache dir is the
+    // binary's own cache in disguise (the spawned-pi-session case), so report
+    // its readiness by cache health, not by bare file existence.
+    let cache_override = source == Source::EnvOverride
+        && override_root
+            .as_deref()
+            .is_some_and(|r| is_cache_dir_override(r, cache_dir));
     let root = match source {
         Source::Cache => cache_version_dir.clone(),
         Source::Dev | Source::EnvOverride => {
@@ -795,6 +880,7 @@ fn status_at(pick: (Source, Option<PathBuf>), cache_dir: &Path, home: &Path) -> 
     let cache_state = cache_state(&cache_version_dir);
     let ready = match source {
         Source::Cache => cache_state == CacheState::Current,
+        Source::EnvOverride if cache_override => cache_state == CacheState::Current,
         Source::Dev | Source::EnvOverride => dist_entry.is_file(),
     };
     let settings_path = pi_settings_path(home);
@@ -1382,6 +1468,151 @@ mod tests {
             s.cache_state,
             CacheState::Drift,
             "dev source must not mask a stale embedded cache"
+        );
+    }
+
+    // --- install-update-integrity: the EnvOverride cache path ----------------
+
+    #[test]
+    fn test_is_cache_dir_override_matches_version_and_parent_only() {
+        let cache = TempDir::new().unwrap();
+        let parent = pi_plugin_cache_parent(cache.path());
+        let version = parent.join(WG_PI_PLUGIN_COMPAT_VERSION);
+        assert!(is_cache_dir_override(&version, cache.path()));
+        assert!(is_cache_dir_override(&parent, cache.path()));
+        assert!(!is_cache_dir_override(
+            &cache.path().join("some-other-plugin"),
+            cache.path()
+        ));
+        assert!(!is_cache_dir_override(
+            &parent.join("0.0.1-old"),
+            cache.path()
+        ));
+    }
+
+    #[test]
+    fn test_env_override_naming_cache_dir_refreshes_on_digest_mismatch() {
+        // The exact silent-no-op bug: WG launches every spawned pi session with
+        // WG_PI_PLUGIN_DIR=<cache>/worksgood-pi/<compat>. A stale/incompatible
+        // cache must still be content-validated and re-materialized, not used
+        // verbatim.
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let parent = pi_plugin_cache_parent(cache.path());
+        let version = materialize_cache(&parent).unwrap();
+
+        // Simulate an embed change that did NOT bump compat: the stamp is stale
+        // and a shipped runtime file is missing.
+        std::fs::write(version.join(EMBED_DIGEST_STAMP), b"b3:stale-embed\n").unwrap();
+        std::fs::remove_file(version.join("pi-worksgood").join("completion-watcher.js")).unwrap();
+        assert!(!cache_is_correct(&version));
+
+        let rp = ensure_pi_plugin_at(
+            EnsureMode::Hermetic,
+            (Source::EnvOverride, Some(version.clone())),
+            cache.path(),
+            home.path(),
+        )
+        .unwrap();
+        assert!(
+            rp.cache_validated,
+            "cache override must be content-validated"
+        );
+        assert!(rp.cache_refreshed, "a stale cache must be re-materialized");
+        assert_eq!(rp.root, version);
+        assert!(
+            cache_is_correct(&version),
+            "refresh must restore the embed truth"
+        );
+        assert!(
+            version
+                .join("pi-worksgood")
+                .join("completion-watcher.js")
+                .is_file(),
+            "refresh must restore missing shipped files"
+        );
+    }
+
+    #[test]
+    fn test_env_override_naming_cache_dir_match_is_explicit_noop() {
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let parent = pi_plugin_cache_parent(cache.path());
+        let version = materialize_cache(&parent).unwrap();
+        let stamp = version.join(OK_STAMP);
+        let mtime1 = std::fs::metadata(&stamp).unwrap().modified().unwrap();
+
+        let rp = ensure_pi_plugin_at(
+            EnsureMode::Hermetic,
+            (Source::EnvOverride, Some(version.clone())),
+            cache.path(),
+            home.path(),
+        )
+        .unwrap();
+        assert!(rp.cache_validated);
+        assert!(
+            !rp.cache_refreshed,
+            "a current cache must be an explicit no-op"
+        );
+        let mtime2 = std::fs::metadata(&stamp).unwrap().modified().unwrap();
+        assert_eq!(mtime1, mtime2, "no-op must not rewrite the cache");
+    }
+
+    #[test]
+    fn test_env_override_foreign_dir_is_left_verbatim() {
+        // A WG_PI_PLUGIN_DIR that does NOT name the canonical cache is a foreign
+        // tree: it is used verbatim and never content-validated against our embed.
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let foreign = TempDir::new().unwrap();
+        std::fs::create_dir_all(foreign.path().join("pi-worksgood")).unwrap();
+        std::fs::write(
+            foreign.path().join("pi-worksgood").join("index.js"),
+            b"// foreign",
+        )
+        .unwrap();
+
+        let rp = ensure_pi_plugin_at(
+            EnsureMode::Hermetic,
+            (Source::EnvOverride, Some(foreign.path().to_path_buf())),
+            cache.path(),
+            home.path(),
+        )
+        .unwrap();
+        assert!(
+            !rp.cache_validated,
+            "foreign override must not be content-validated"
+        );
+        assert!(!rp.cache_refreshed);
+        assert_eq!(rp.root, foreign.path());
+    }
+
+    #[test]
+    fn test_status_cache_override_reports_ready_by_cache_health() {
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let parent = pi_plugin_cache_parent(cache.path());
+        let version = materialize_cache(&parent).unwrap();
+
+        let s = status_at(
+            (Source::EnvOverride, Some(version.clone())),
+            cache.path(),
+            home.path(),
+        );
+        assert_eq!(s.source, Source::EnvOverride);
+        assert_eq!(s.cache_state, CacheState::Current);
+        assert!(s.ready);
+
+        std::fs::write(version.join(EMBED_DIGEST_STAMP), b"b3:stale\n").unwrap();
+        let s = status_at(
+            (Source::EnvOverride, Some(version.clone())),
+            cache.path(),
+            home.path(),
+        );
+        assert_eq!(s.cache_state, CacheState::Drift);
+        assert!(
+            !s.ready,
+            "a cache-naming EnvOverride must not report ready while drifted"
         );
     }
 }

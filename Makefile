@@ -3,7 +3,14 @@
 # The canonical build/install is `cargo install --path . --locked` (see
 # CLAUDE.md "Development"); these targets cover the few multi-step chores.
 
-.PHONY: embed-worksgood-pi embed-worksgood-pi-check embed-pi-plugin embed-pi-plugin-check install-patched-pi
+.PHONY: embed-worksgood-pi embed-worksgood-pi-check embed-pi-plugin embed-pi-plugin-check install-patched-pi dev
+
+# One-shot developer inner loop: install from the MAIN checkout, restart the
+# daemon, sync the pi-worksgood plugin cache, and print a verification block
+# (binary path/hash, embed+cache digests, daemon identity). Refuses to run from
+# a worktree. See docs/guides/install.md and `wg dev-sync --help`.
+dev:
+	wg dev-sync
 
 # Regenerate the committed, version-locked plugin bundle the wg binary embeds.
 # Run this after editing anything under worksgood-pi/src/** or bumping the

@@ -1903,6 +1903,15 @@ description = "Pins fix-plugin-cache: the wg-pi plugin cache silently served a s
 timeout_seconds = 60
 
 [[scenario]]
+name = "install_update_integrity"
+script = "scenarios/install_update_integrity.sh"
+owners = [
+    "install-update-integrity",
+]
+description = "Pins install-update-integrity: `wg pi-plugin install` must never be a SILENT no-op when WG_PI_PLUGIN_DIR points at the canonical cache dir (how WG launches every spawned pi session). Credential-free, pure `wg` binary, isolated HOME/XDG_CACHE_HOME/CARGO_HOME: on a stale cache named by WG_PI_PLUGIN_DIR, install content-validates against the running binary's embed and re-materializes it (restoring a missing shipped file + the matching .wg-embed-digest stamp, reported as 'refreshed'); on a matching cache the same invocation says EXPLICITLY 'already up to date — nothing changed' instead of a bare success; `wg pi-plugin status` with the same override reports the cache by health (current, build ready: yes); and `wg dev-sync --dry-run --no-install --no-restart` prints the verification contract (binary path, embed digest, cache digest, daemon identity, current cache state)."
+timeout_seconds = 60
+
+[[scenario]]
 name = "pi_install_e2e"
 script = "scenarios/pi_install_e2e.sh"
 owners = [

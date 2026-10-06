@@ -56,6 +56,7 @@ pub mod cycles;
 pub mod dead_agents;
 pub mod deliverables;
 pub mod dev_check;
+pub mod dev_sync;
 pub mod discover;
 pub mod disk;
 pub mod doctor;
