@@ -414,12 +414,29 @@ describe("fleet tree structure parity — renders WG's own `wg viz` text", () =>
 // ── component interactions ───────────────────────────────────────────────────
 
 describe("FleetPanelComponent", () => {
-  function makeComponent(snapshot: unknown = bigSnap(), height = 6, liveDir?: string) {
-    const tui = { requestRender: vi.fn(), terminal: { rows: height } };
+  function makeComponent(
+    snapshot: unknown = bigSnap(),
+    height = 6,
+    liveDir?: string,
+    detailFetcher?: (taskId: string, columns?: number) => Promise<unknown>,
+    enterGuardMs?: number,
+  ) {
+    const tui = { requestRender: vi.fn(), terminal: { rows: height, columns: 100 } };
     const closed = vi.fn();
-    const component = new FleetPanelComponent(snapshot as never, tui, closed, null, {}, liveDir);
+    const component = new FleetPanelComponent(
+      snapshot as never,
+      tui as never,
+      closed,
+      null,
+      enterGuardMs === undefined ? {} : { enterGuardMs },
+      liveDir,
+      detailFetcher as never,
+    );
     return { component, tui, closed, render: (w = 100) => component.render(w) };
   }
+
+  /** Flush the microtask queue so an async detail fetch settles. */
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   it("never renders past the panel bounds (fixed 6-row viewport)", () => {
     const { component, render } = makeComponent(bigSnap(), 6);
@@ -490,12 +507,26 @@ describe("FleetPanelComponent", () => {
     expect(component.treeScrollOffset).toBe(maxScroll(40, component.bodyViewport()));
   });
 
-  it("drills into the selected task's detail and back, showing live activity + tail", () => {
+  it("drills into the selected task's detail: WG's own text verbatim, then labelled pi additions", async () => {
     const root = mkdtempSync(join(tmpdir(), "wg-fleet-compose-"));
     const agentDir = join(root, "agents", "agent-7");
     mkdirSync(agentDir, { recursive: true });
     writeFileSync(join(agentDir, "raw_stream.jsonl"), '{"type":"tool_execution_start","toolName":"bash","args":{}}\n');
-    const { component, render } = makeComponent(snap(), 20, root);
+    // WG's OWN detail body for `active-b` — the exact `wg show active-b` text.
+    const WG_DETAIL = [
+      "Task: active-b",
+      "Title: Active B",
+      "Status: in-progress",
+      "Completion contract: land",
+      "Required deterministic completion checks (exact enforced order):",
+      "  [x] cargo test --lib — checked-in policy",
+    ].join("\n");
+    const detailFetcher = vi.fn().mockResolvedValue({
+      task_id: "active-b",
+      text: `${WG_DETAIL}\n`,
+      source: "daemon",
+    });
+    const { component, render } = makeComponent(snap(), 20, root, detailFetcher);
     render();
     // Select active-b (nested under done-a: done-a is already selected first).
     expect(component.selected).toBe("done-a");
@@ -503,11 +534,23 @@ describe("FleetPanelComponent", () => {
     expect(component.selected).toBe("active-b");
     component.handleInput("\r"); // Enter → detail
     expect(component.detailVisible).toBe(true);
+    await flush();
     const detail = render();
-    expect(detail.some((l) => l.includes("── active-b ──"))).toBe(true);
+    // WG's text is rendered verbatim, in order, starting at the first body row.
+    expect(detail[1]).toBe("Task: active-b");
+    expect(detail[2]).toBe("Title: Active B");
+    expect(detail[3]).toBe("Status: in-progress");
+    expect(detail[4]).toBe("Completion contract: land");
+    expect(detail[5]).toContain("Required deterministic completion checks");
+    expect(detail[6]).toContain("cargo test --lib");
+    // The pi-side additions are appended AFTER WG's text and labelled.
+    const addIdx = detail.findIndex((l) => l.includes("pi-side additions"));
+    expect(addIdx).toBeGreaterThan(6);
     expect(detail.some((l) => l.includes("running cargo test --lib"))).toBe(true);
     expect(detail.some((l) => l.includes("Transcript tail"))).toBe(true);
     expect(detail.length).toBeLessThanOrEqual(20);
+    // The fetcher was asked for this task (at the panel width).
+    expect(detailFetcher).toHaveBeenCalledWith("active-b", 100);
     component.handleInput("l"); // back to tree
     expect(component.detailVisible).toBe(false);
   });
@@ -520,7 +563,7 @@ describe("FleetPanelComponent", () => {
     expect(component.detailVisible).toBe(false);
     component.handleInput("\r"); // Enter → detail
     expect(component.detailVisible).toBe(true);
-    expect(render().some((l) => l.includes("── root-a ──"))).toBe(true);
+    expect(render().some((l) => l.includes("wg-fleet · root-a · detail"))).toBe(true);
     // Some terminals deliver Enter as `\r\n`; the second event must NOT close it.
     component.handleInput("\r");
     component.handleInput("\n");
@@ -534,6 +577,77 @@ describe("FleetPanelComponent", () => {
     expect(render().some((l) => l.includes("(+3)"))).toBe(true);
     component.handleInput(" ");
     expect(render().some((l) => l.includes("(+3)"))).toBe(false);
+  });
+
+  it("full-screen navigable detail: q/Esc/left/Enter return to the tree (never close), scroll keys clamp", async () => {
+    const WG = Array.from({ length: 60 }, (_, i) => `WG line ${i}`).join("\n");
+    const detailFetcher = vi.fn().mockResolvedValue({
+      task_id: "task-000",
+      text: `${WG}\n`,
+      source: "daemon",
+    });
+    const { component, render, closed } = makeComponent(bigSnap(), 10, undefined, detailFetcher, 0);
+    render();
+    component.handleInput("\r"); // open detail
+    await flush();
+    expect(component.detailVisible).toBe(true);
+    // Full-screen: the detail occupies the whole panel, footer carries a
+    // visible scroll/position indicator.
+    const rows = render();
+    expect(rows.length).toBe(10);
+    // The visible scroll/position indicator is in the always-visible header.
+    expect(rows[0]).toContain("%");
+    expect(rows[0]).toContain("lines");
+    // The footer carries the key hints.
+    expect(rows.at(-1)).toContain("PgUp/PgDn");
+    const view = component.bodyViewport();
+    // PgDn scrolls into the body.
+    component.handleInput("\x1b[6~"); // PageDown
+    expect(component.scrollOffset).toBeGreaterThan(0);
+    // End clamps to the maximum offset.
+    component.handleInput("\x1b[F"); // End
+    expect(component.scrollOffset).toBe(maxScroll(60, view));
+    // PgUp moves back up.
+    component.handleInput("\x1b[5~"); // PageUp
+    expect(component.scrollOffset).toBeLessThan(maxScroll(60, view));
+    // Home clamps to the top.
+    component.handleInput("\x1b[H"); // Home
+    expect(component.scrollOffset).toBe(0);
+
+    // q in the detail returns to the tree — it does NOT close the panel.
+    component.handleInput("q");
+    expect(component.detailVisible).toBe(false);
+    expect(closed).not.toHaveBeenCalled();
+    // ... and the same for Enter and ←.
+    component.handleInput("\r");
+    await flush();
+    expect(component.detailVisible).toBe(true);
+    component.handleInput("\r");
+    expect(component.detailVisible).toBe(false);
+    component.handleInput("\r");
+    await flush();
+    component.handleInput("\x1b"); // Esc
+    expect(component.detailVisible).toBe(false);
+    expect(closed).not.toHaveBeenCalled();
+    component.handleInput("\r");
+    await flush();
+    component.handleInput("\x1b[D"); // left arrow
+    expect(component.detailVisible).toBe(false);
+    expect(closed).not.toHaveBeenCalled();
+    // Back in the tree, q closes the panel as before.
+    component.handleInput("q");
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows only a labelled error when no WG detail source is available", async () => {
+    const { component, render } = makeComponent(snap(), 20);
+    render();
+    component.handleInput("\r"); // open detail (no fetcher)
+    expect(component.detailVisible).toBe(true);
+    const detail = render();
+    expect(detail.some((l) => l.includes("WG detail unavailable"))).toBe(true);
+    // No approximate WG body is fabricated.
+    expect(detail.some((l) => l.includes("Task: done-a"))).toBe(false);
   });
 
   it("paints every task line with WG's exact RGB palette (no semantic indirection)", () => {

@@ -178,7 +178,7 @@ function fakeVerbHost(map: Record<string, { stdout?: string; code?: number }>) {
   const host = {
     exec: vi.fn(async (command: string, args: string[]) => {
       calls.push({ command, args });
-      const verb = args.find((a) => ["list", "agents", "ready", "viz"].includes(a)) ?? "";
+      const verb = args.find((a) => ["list", "agents", "ready", "viz", "show"].includes(a)) ?? "";
       const entry = map[verb] ?? { stdout: "[]", code: 0 };
       return { stdout: entry.stdout ?? "", stderr: "", code: entry.code ?? 0, killed: false };
     }),
@@ -477,5 +477,72 @@ describe("WgBackend.getFleet", () => {
     });
     await new WgBackend(host2, { dir }).getFleet();
     expect(calls2.some((c) => c.args.includes("viz"))).toBe(false);
+  });
+});
+
+// ── GetTaskDetail daemon read surface ────────────────────────────────────────
+
+const CLI_SHOW_TEXT = ["Task: t1", "Title: T1", "Status: in-progress", "Completion contract: land"].join(
+  "\n",
+);
+
+describe("WgBackend.getTaskDetail", () => {
+  it("reads WG's own `wg show` text from the daemon over the IPC socket", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-detail-"));
+    const socket = join(dir, "daemon.sock");
+    const daemon = await fakeDaemon(socket, () => ({
+      body: JSON.stringify({ ok: true, task_id: "t1", text: CLI_SHOW_TEXT }),
+    }));
+    try {
+      const { host, calls } = fakeVerbHost({});
+      const backend = new WgBackend(host, { daemonSocket: socket });
+      const detail = await backend.getTaskDetail("t1", { columns: 80 });
+      expect(detail?.source).toBe("daemon");
+      expect(detail?.task_id).toBe("t1");
+      expect(detail?.text).toBe(CLI_SHOW_TEXT);
+      // The daemon answered, so the CLI must not be shelled at all.
+      expect(calls).toHaveLength(0);
+      // The request carries the read-only cmd + width.
+      expect(daemon.requests[0].cmd).toBe("get_task_detail");
+      expect(daemon.requests[0].task_id).toBe("t1");
+      expect(daemon.requests[0].columns).toBe(80);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it("falls back to `wg show <task>` when no daemon socket exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-detail-"));
+    const { host, calls } = fakeVerbHost({ show: { stdout: CLI_SHOW_TEXT } });
+    const backend = new WgBackend(host, { dir });
+    const detail = await backend.getTaskDetail("t1");
+    expect(detail?.source).toBe("cli");
+    expect(detail?.text).toBe(CLI_SHOW_TEXT);
+    const showCall = calls.find((c) => c.args.includes("show"));
+    expect(showCall?.args).toContain("t1");
+  });
+
+  it("falls back to the CLI on a daemon protocol mismatch (older daemon)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-detail-"));
+    const socket = join(dir, "daemon.sock");
+    const daemon = await fakeDaemon(socket, () => ({
+      // ok, but no `text` — an older daemon without get_task_detail.
+      body: JSON.stringify({ ok: true, task_id: "t1" }),
+    }));
+    try {
+      const { host } = fakeVerbHost({ show: { stdout: CLI_SHOW_TEXT } });
+      const backend = new WgBackend(host, { daemonSocket: socket });
+      const detail = await backend.getTaskDetail("t1");
+      expect(detail?.source).toBe("cli");
+      expect(detail?.text).toBe(CLI_SHOW_TEXT);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it("returns null when an empty id is given", async () => {
+    const { host } = fakeVerbHost({});
+    const backend = new WgBackend(host, { dir: mkdtempSync(join(tmpdir(), "wg-detail-")) });
+    expect(await backend.getTaskDetail("   ")).toBeNull();
   });
 });

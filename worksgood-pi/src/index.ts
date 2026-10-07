@@ -121,9 +121,11 @@ export {
   FleetPanelComponent,
   openFleetPanel,
   makeFleetFetcher,
+  makeFleetDetailFetcher,
   FLEET_PANEL_POLL_MS,
+  DETAIL_ENTER_GUARD_MS,
 } from "./fleet-panel.js";
-export type { FleetPanelOptions, FleetTui, OpenFleetPanelOptions, FleetSnapshotFetcher } from "./fleet-panel.js";
+export type { FleetPanelOptions, FleetTui, OpenFleetPanelOptions, FleetSnapshotFetcher, FleetDetailFetcher } from "./fleet-panel.js";
 export {
   DEFAULT_TRANSCRIPT_LINES,
   FLEET_PANEL_DEFAULT_HEIGHT,

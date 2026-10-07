@@ -161,6 +161,19 @@ pub enum IpcRequest {
         #[serde(default)]
         tree_columns: Option<u16>,
     },
+    /// Bounded, read-only **task detail** text for UI clients: WG's OWN
+    /// human-readable `wg show <task>` body, captured server-side so a panel
+    /// renders the same sections/ordering/wording the CLI and TUI inspector show
+    /// — never a client-side approximation. Strictly non-mutating.
+    GetTaskDetail {
+        /// The task id (exact or unambiguous prefix) to render detail for.
+        task_id: String,
+        /// Panel width in columns; when supplied the text is word-wrapped to it
+        /// (bounded 20..=400) so a narrow panel shows the whole body instead of
+        /// truncating its tail. Omit for the unwrapped CLI text.
+        #[serde(default)]
+        columns: Option<u16>,
+    },
     /// Send a message to a task's message queue
     SendMessage {
         task_id: String,
@@ -1667,6 +1680,10 @@ fn handle_request(
                 tree_columns,
             )
         }
+        IpcRequest::GetTaskDetail { task_id, columns } => {
+            logger.info(&format!("IPC GetTaskDetail (read-only): {}", task_id));
+            handle_get_task_detail(dir, &task_id, columns)
+        }
         IpcRequest::SendMessage {
             task_id,
             body,
@@ -2827,7 +2844,23 @@ fn handle_get_fleet(
     IpcResponse::success(body)
 }
 
-/// Render the `wg viz` ASCII tree for the `GetFleet` payload.
+/// Handle `GetTaskDetail` — WG's OWN human-readable `wg show <task>` text, the
+/// exact body the CLI prints, captured server-side (see
+/// `commands::show::render_task_text`). ANSI is stripped so a panel renders the
+/// plain text verbatim with its own styling. Never mutates graph state.
+fn handle_get_task_detail(dir: &Path, task_id: &str, columns: Option<u16>) -> IpcResponse {
+    let columns = columns.map(|c| c.clamp(20, 400) as usize);
+    match crate::commands::show::render_task_text(dir, task_id, columns) {
+        Ok(text) => {
+            let text = crate::commands::viz::ascii::strip_ansi_for_map(&text);
+            IpcResponse::success(serde_json::json!({
+                "task_id": task_id,
+                "text": text,
+            }))
+        }
+        Err(e) => IpcResponse::error(&format!("{}", e)),
+    }
+}
 ///
 /// Uses the exact same renderer as the CLI (`generate_viz_output_from_graph`
 /// with `OutputFormat::Ascii` and default filters), so the emitted `text` is

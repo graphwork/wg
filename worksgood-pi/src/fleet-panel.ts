@@ -24,21 +24,27 @@
  *     (or a double-click) opens its detail — mirroring the TUI's
  *     click-selects/inspector-shows model;
  *   - **↑/↓** move the selection and scroll it into view;
- *   - **Enter / → / l** drill into the selected task's detail (reusing
- *     `detailLines` from the viz read-model, plus the live agent activity and a
- *     bounded stream tail); **← / h / Backspace / l** return to the tree;
+ *   - **Enter / → / l** drill into the selected task's detail. The detail is
+ *     WG's OWN text — the exact `wg show <task>` body, fetched from the daemon
+ *     (`GetTaskDetail`) with a CLI fallback — rendered VERBATIM and full-height
+ *     in the panel, with a visible scroll/position indicator. The pi-side live
+ *     agent activity and a bounded stream tail are APPENDED after WG's text and
+ *     clearly labelled as additions, never mixed into it;
+ *   - in the detail, **← / h / Backspace / q / Esc / Enter** all return to the
+ *     tree (one consistent escape; only `q`/`Esc` from the TREE close the panel);
  *   - **o / space** expand/collapse the selected subtree;
- *   - **q / Esc** close.
+ *   - **q / Esc** close (from the tree).
  *
- * Strictly read-only: the only data source is the daemon's `GetFleet` read
- * (`WgBackend.getFleet`, with its CLI fallback) and a bounded tail read of the
- * agent's own stream file. It never mutates graph state, is TUI-only (guarded
- * on `ctx.mode`), and degrades silently elsewhere.
+ * Strictly read-only: the only data sources are the daemon's `GetFleet` and
+ * `GetTaskDetail` reads (`WgBackend.getFleet` / `getTaskDetail`, each with its
+ * CLI fallback) and a bounded tail read of the agent's own stream file. It never
+ * mutates graph state, is TUI-only (guarded on `ctx.mode`), and degrades silently
+ * elsewhere.
  */
 
 import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import type { GetFleetSnapshot, WgBackend } from "./wg-backend.js";
+import type { GetFleetSnapshot, GetTaskDetail, WgBackend } from "./wg-backend.js";
 import { taskColor, type FleetColor } from "./fleet-readmodel.js";
 import {
   paintStatusText,
@@ -56,18 +62,24 @@ import {
   buildFleetTree,
   clampScroll,
   fleetCountsHeader,
-  getFleetToVizSnapshot,
   maxScroll,
   pageScroll,
   readAgentStreamTail,
   renderWgTree,
   scrollToKeepVisible,
 } from "./fleet-panel-model.js";
-import { detailLines } from "./viz-readmodel.js";
 import type { PiMouseResult } from "./mouse.js";
 
 /** Default bounded poll cadence for the open panel. */
 export const FLEET_PANEL_POLL_MS = 5000;
+
+/**
+ * Enter is both "open detail" (tree) and "back to tree" (detail). Some
+ * terminals deliver Enter as two events (`\r` then `\n`); ignore a second
+ * Enter within this window so a single keypress cannot open-then-immediately
+ * close the view. A real second press lands well outside the window.
+ */
+export const DETAIL_ENTER_GUARD_MS = 150;
 
 /** The slice of pi-tui's `TUI` the panel needs. */
 export type FleetTui = {
@@ -80,6 +92,8 @@ export interface FleetPanelOptions {
   height?: () => number;
   /** Transcript lines requested for the detail tail. */
   transcriptLines?: number;
+  /** Enter debounce window in ms (detail open). Defaults to 150; tests set 0. */
+  enterGuardMs?: number;
 }
 
 /** A renderable panel line plus the semantic colour to paint it with. */
@@ -105,6 +119,16 @@ export class FleetPanelComponent {
   private detailScroll = 0;
   /** Cached, bounded transcript tail lines for the selected task (detail mode). */
   private detailTail: string[] = [];
+  /** WG's OWN detail text (`wg show`-equivalent), split into physical lines. */
+  private detailLines: string[] = [];
+  /** Set when the WG detail fetch failed (daemon + CLI both unavailable). */
+  private detailError: string | null = null;
+  /** True while a detail fetch is in flight. */
+  private detailLoading = false;
+  /** Monotonic guard so a late response for a stale selection is dropped. */
+  private detailRequestSeq = 0;
+  /** Timestamp of the last detail open (Enter double-delivery guard). */
+  private detailOpenedAt = 0;
   private hitMap: Array<string | null> = [];
   /**
    * An active press-and-drag pan gesture. Set on a content-area press and kept
@@ -128,6 +152,7 @@ export class FleetPanelComponent {
     private readonly theme: Theme | null = null,
     private readonly options: FleetPanelOptions = {},
     private readonly liveDir: string | undefined = undefined,
+    private readonly detailFetcher: FleetDetailFetcher | undefined = undefined,
   ) {
     this.snapshot = snapshot;
     this.selectedId = this.firstVisibleId();
@@ -143,6 +168,8 @@ export class FleetPanelComponent {
       this.selectedId = this.firstVisibleId();
     }
     this.refreshDetailTail();
+    // Keep WG's detail text live while the detail view is open.
+    if (this.mode === "detail" && this.selectedId) this.loadDetail();
     this.invalidate();
     this.tui.requestRender();
   }
@@ -379,9 +406,67 @@ export class FleetPanelComponent {
     if (!this.selectedId || !this.snapshot) return;
     this.mode = "detail";
     this.detailScroll = 0;
+    this.detailOpenedAt = Date.now();
     this.refreshDetailTail();
+    this.loadDetail();
     this.invalidate();
     this.tui.requestRender();
+  }
+
+  /**
+   * Fetch WG's OWN detail text for the selected task (the exact `wg show`
+   * body) and re-render. Best-effort: a failed fetch shows a labelled error and
+   * still renders the pi-side additions, never an approximation of WG's text.
+   */
+  private loadDetail(): void {
+    const taskId = this.selectedId;
+    if (!taskId) {
+      this.detailLines = [];
+      this.detailError = null;
+      return;
+    }
+    if (!this.detailFetcher) {
+      this.detailLines = [];
+      this.detailError = "no detail source (daemon/CLI unavailable)";
+      return;
+    }
+    const seq = ++this.detailRequestSeq;
+    this.detailLoading = true;
+    this.detailError = null;
+    const columns = this.detailWidth();
+    void this.detailFetcher(taskId, columns)
+      .then((detail) => {
+        if (seq !== this.detailRequestSeq || taskId !== this.selectedId) return;
+        if (detail && detail.text) {
+          // WG's text verbatim — only split into physical lines for the pane.
+          this.detailLines = detail.text.replace(/\n$/, "").split("\n");
+          this.detailError = null;
+        } else {
+          this.detailLines = [];
+          this.detailError = "WG detail unavailable (daemon + `wg show` both failed)";
+        }
+      })
+      .catch((err: unknown) => {
+        if (seq !== this.detailRequestSeq || taskId !== this.selectedId) return;
+        this.detailLines = [];
+        this.detailError = err instanceof Error ? err.message : String(err);
+      })
+      .finally(() => {
+        if (seq !== this.detailRequestSeq) return;
+        this.detailLoading = false;
+        this.invalidate();
+        this.tui.requestRender();
+      });
+  }
+
+  /** Panel width for the daemon-side word wrap; falls back to the raw column count. */
+  private detailWidth(): number | undefined {
+    try {
+      const c = this.tui.terminal?.columns;
+      return typeof c === "number" && c > 0 ? Math.trunc(c) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Return from the detail view to the tree. */
@@ -416,28 +501,38 @@ export class FleetPanelComponent {
 
   handleInput(data: string): void {
     if (this.disposed) return;
-    if (matchesKey(data, Key.escape) || data === "q") {
-      this.close();
-      return;
-    }
     if (this.mode === "detail") {
-      // NOTE: Enter deliberately does NOT close the detail view. Some terminals
-      // deliver Enter as `\r\n`, which `matchesKey` accepts twice; when Enter
-      // both opened and closed the view it appeared to "only open/close tasks".
-      // Go back with ←/h/Backspace, close the panel with q/Esc.
+      // In the detail view q/Esc (and ←/h/Backspace) go BACK to the tree — the
+      // same key that drilled in, so there is one consistent escape. Enter also
+      // returns, with a short debounce so a terminal that delivers Enter as
+      // `\r` then `\n` cannot open and immediately close the view.
       if (
-        matchesKey(data, Key.left) ||
-        matchesKey(data, Key.backspace) ||
+        matchesKey(data, Key.escape) ||
+        data === "q" ||
         data === "h" ||
-        data === "l"
+        data === "l" ||
+        matchesKey(data, Key.left) ||
+        matchesKey(data, Key.backspace)
       ) {
         this.closeDetail();
-      } else if (matchesKey(data, Key.up)) this.scrollBy(-1);
+        return;
+      }
+      if (matchesKey(data, Key.enter)) {
+        const guard = this.options.enterGuardMs ?? DETAIL_ENTER_GUARD_MS;
+        if (Date.now() - this.detailOpenedAt >= guard) this.closeDetail();
+        return;
+      }
+      if (matchesKey(data, Key.up)) this.scrollBy(-1);
       else if (matchesKey(data, Key.down)) this.scrollBy(1);
       else if (matchesKey(data, Key.pageUp)) this.pageBy(-1);
       else if (matchesKey(data, Key.pageDown)) this.pageBy(1);
       else if (matchesKey(data, Key.home)) this.scrollBy(-this.detailContent().length);
       else if (matchesKey(data, Key.end)) this.scrollBy(this.detailContent().length);
+      return;
+    }
+    // Tree view: q/Esc closes the whole panel.
+    if (matchesKey(data, Key.escape) || data === "q") {
+      this.close();
       return;
     }
     if (matchesKey(data, Key.up)) this.moveSelection(-1);
@@ -560,16 +655,28 @@ export class FleetPanelComponent {
   /** The full (unwindowed) detail view content for the selected task. */
   private detailContent(): PaintedLine[] {
     if (!this.snapshot || !this.selectedId) return [];
-    const viz = getFleetToVizSnapshot(this.snapshot);
-    const task = viz.tasks.find((t) => t.id === this.selectedId);
-    if (!task) return [];
     const out: PaintedLine[] = [];
-    for (const text of detailLines(task, viz.tasks).lines) out.push({ text, color: "text" });
-    const agent = agentForTask(this.snapshot.agents, task.id);
+    // (1) WG's OWN detail text (`wg show`-equivalent), rendered verbatim.
+    if (this.detailLines.length > 0) {
+      for (const text of this.detailLines) out.push({ text, color: "text" });
+    } else if (this.detailError) {
+      out.push({ text: "wg-fleet: WG detail unavailable", color: "warning" });
+      out.push({ text: `  ${this.detailError}`, color: "dim" });
+    } else if (this.detailLoading) {
+      out.push({ text: "loading WG detail (wg show)…", color: "dim" });
+    } else {
+      out.push({ text: "wg-fleet: no WG detail for this task", color: "dim" });
+    }
+    // (2) pi-side additions — clearly separated and labelled so they are never
+    // mistaken for WG's own output.
+    const agent = agentForTask(this.snapshot.agents, this.selectedId);
     const activity = agentActivityLabel(agent);
-    if (activity) {
+    if (activity || this.detailTail.length > 0) {
       out.push({ text: "", color: "dim" });
-      out.push({ text: `── Live activity ──`, color: "accent" });
+      out.push({ text: "── pi-side additions (not WG detail) ──", color: "accent" });
+    }
+    if (activity) {
+      out.push({ text: "── Live activity ──", color: "accent" });
       out.push({ text: `  ${agent?.id ?? "agent"} · ${activity}`, color: "warning" });
     }
     if (this.detailTail.length > 0) {
@@ -622,17 +729,27 @@ export class FleetPanelComponent {
       lines.push({ text: "  no tasks in the graph · q close", color: "dim" });
     } else if (this.mode === "detail") {
       const detail = this.detailContent();
+      // Position indicator lives in the HEADER (always visible even when a
+      // long body is clipped at the bottom of pi's overlay) as well as the
+      // footer (key hints).
+      const total = detail.length;
+      const maxOff = maxScroll(total, body);
+      const pct = maxOff > 0 ? Math.round((this.detailScroll / maxOff) * 100) : 100;
+      const top = total === 0 ? 0 : this.detailScroll + 1;
+      const bottom = Math.min(total, this.detailScroll + body);
       lines.push({
-        text: this.color("accent", `wg-fleet · ${this.selectedId ?? "?"} · detail`),
+        text: this.color(
+          "accent",
+          `wg-fleet · ${this.selectedId ?? "?"} · detail (wg show) · ${pct}% [lines ${top}-${bottom}/${total}]`,
+        ),
         color: "accent",
       });
       const windowed = detail.slice(this.detailScroll, this.detailScroll + body);
       lines.push(...windowed);
-      if (detail.length > this.detailScroll + body) {
-        lines.push({ text: `  … +${detail.length - this.detailScroll - body} more (↓/PgDn)`, color: "dim" });
-      } else {
-        lines.push({ text: "  ↑/↓ scroll · ← back · q close", color: "dim" });
-      }
+      lines.push({
+        text: `  PgUp/PgDn ↑/↓ Home/End scroll · ←/q/Esc back · activity/transcript tail below are pi-side`,
+        color: "dim",
+      });
     } else {
       const notice = paletteNotice(palette, snapshot.tasks.map((t) => t.status));
       const header = fleetCountsHeader(snapshot.counts);
@@ -719,6 +836,14 @@ export interface OpenFleetPanelOptions {
   pollMs?: number;
   /** Transcript lines requested for the detail tail. */
   transcriptLines?: number;
+  /**
+   * Fetches WG's OWN detail text for a task (the `wg show`-equivalent body) so
+   * the detail view renders WG's output verbatim. Absent ⇒ the detail view
+   * shows only the pi-side additions with a labelled error.
+   */
+  fetchDetail?: FleetDetailFetcher;
+  /** Enter debounce window in ms (detail open). Defaults to 150. */
+  enterGuardMs?: number;
 }
 
 /**
@@ -727,6 +852,16 @@ export interface OpenFleetPanelOptions {
  * text is still rendered verbatim.
  */
 export type FleetSnapshotFetcher = (columns?: number) => Promise<GetFleetSnapshot | null>;
+
+/**
+ * The panel's detail-text fetcher: WG's own `wg show`-equivalent body, fetched
+ * from the daemon (`GetTaskDetail`) with a CLI fallback. `columns` asks WG to
+ * word-wrap the body to the panel width.
+ */
+export type FleetDetailFetcher = (
+  taskId: string,
+  columns?: number,
+) => Promise<GetTaskDetail | null>;
 
 /**
  * Open the scrollable panel via `ctx.ui.custom()` (TUI mode only). `done()` is
@@ -761,8 +896,13 @@ export async function openFleetPanel(
       tui,
       () => done(),
       theme,
-      { height, transcriptLines: options.transcriptLines },
+      {
+        height,
+        transcriptLines: options.transcriptLines,
+        enterGuardMs: options.enterGuardMs,
+      },
       liveDir,
+      options.fetchDetail,
     );
     let inFlight = false;
     const timer = setInterval(() => {
@@ -820,6 +960,33 @@ export function makeFleetFetcher(
           timeoutMs: 2000,
           includeTree,
           treeColumns:
+            typeof columns === "number" && Number.isFinite(columns) && columns > 0
+              ? Math.trunc(columns)
+              : undefined,
+        });
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+}
+
+/**
+ * The `/wg-fleet` detail fetcher: prefer the daemon `GetTaskDetail` read and
+ * fall back to the read-only CLI (`wg show <task>`), which itself prints the
+ * same text. Returns `null` only when both sources fail, so the panel shows a
+ * labelled error rather than a client-side approximation of WG's detail.
+ */
+export function makeFleetDetailFetcher(
+  backend: Partial<Pick<WgBackend, "getTaskDetail">>,
+): FleetDetailFetcher {
+  return async (taskId: string, columns?: number) => {
+    if (typeof backend.getTaskDetail === "function") {
+      try {
+        return await backend.getTaskDetail(taskId, {
+          timeoutMs: 2000,
+          columns:
             typeof columns === "number" && Number.isFinite(columns) && columns > 0
               ? Math.trunc(columns)
               : undefined,

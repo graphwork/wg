@@ -23,7 +23,7 @@ import { DEFAULT_FLEET_VIEW_CONFIG, readFleetViewConfig, } from "./fleet-config.
 import { fleetSummaryLine, renderFleetLines, } from "./fleet-readmodel.js";
 import { fleetSnapshotWithFallback } from "./fleet-snapshot.js";
 import { DEFAULT_TRANSCRIPT_LINES } from "./fleet-panel-model.js";
-import { makeFleetFetcher, openFleetPanel } from "./fleet-panel.js";
+import { makeFleetDetailFetcher, makeFleetFetcher, openFleetPanel } from "./fleet-panel.js";
 /** Widget registration key (also the settings-visible surface id). */
 export const FLEET_WIDGET_KEY = "wg-fleet";
 /** Default bounded poll cadence for the panel. */
@@ -166,6 +166,7 @@ export function installFleetView(pi, backend, env, options = {}) {
                 await openFleetPanel(ctx, makeFleetFetcher(backend), env.dir, {
                     pollMs: config.pollMs,
                     transcriptLines: DEFAULT_TRANSCRIPT_LINES,
+                    fetchDetail: makeFleetDetailFetcher(backend),
                 });
                 void refresh(ctx);
             }
