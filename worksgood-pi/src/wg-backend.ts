@@ -436,7 +436,23 @@ export interface GetFleetTaskRow {
   failure_reason?: string | null;
 }
 
-/** One runtime worker row, with a current-activity step. */
+/**
+ * Live usage (tokens/turns/tools) derived from an agent's raw-stream tail.
+ * Every field is optional: an executor that does not expose a metric leaves it
+ * `null` rather than faking a zero. `totalTokens` is the value the UI shows.
+ */
+export interface AgentUsage {
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalTokens?: number | null;
+  costUsd?: number | null;
+  /** Turns observed in the bounded tail window (null when unavailable). */
+  turnCount?: number | null;
+  /** Tool executions observed in the bounded tail window (null when unavailable). */
+  toolUses?: number | null;
+}
+
+/** One runtime worker row, with a current-activity step and live usage. */
 export interface GetFleetAgentRow {
   id: string;
   task_id: string;
@@ -446,6 +462,8 @@ export interface GetFleetAgentRow {
   started_at?: string | null;
   elapsed_ms?: number | null;
   activity?: string | null;
+  /** Bounded live usage; `null` when nothing is derivable (no segment). */
+  usage?: AgentUsage | null;
 }
 
 /**
@@ -658,6 +676,27 @@ function normalizeTaskRow(raw: unknown): GetFleetTaskRow | null {
   };
 }
 
+/**
+ * Normalize a raw `usage` object (from the `agents` lane or `GetFleet`) into
+ * camelCase. Returns `null` when the payload carries no usable metric, so a
+ * caller can omit the usage segment entirely instead of printing zeros.
+ */
+export function normalizeAgentUsage(raw: unknown): AgentUsage | null {
+  if (!isRecord(raw)) return null;
+  const numOrNull = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+  const usage: AgentUsage = {
+    inputTokens: numOrNull(raw.input_tokens),
+    outputTokens: numOrNull(raw.output_tokens),
+    totalTokens: numOrNull(raw.total_tokens),
+    costUsd: numOrNull(raw.cost_usd),
+    turnCount: numOrNull(raw.turn_count),
+    toolUses: numOrNull(raw.tool_uses),
+  };
+  const hasAny = Object.values(usage).some((value) => value !== null);
+  return hasAny ? usage : null;
+}
+
 function normalizeAgentRow(raw: unknown): GetFleetAgentRow | null {
   if (!isRecord(raw) || typeof raw.id !== "string") return null;
   const status = typeof raw.status === "string" ? raw.status.split(" ")[0] ?? raw.status : "unknown";
@@ -670,6 +709,7 @@ function normalizeAgentRow(raw: unknown): GetFleetAgentRow | null {
     started_at: str(raw.started_at),
     elapsed_ms: typeof raw.elapsed_ms === "number" ? raw.elapsed_ms : null,
     activity: str(raw.activity),
+    usage: normalizeAgentUsage(raw.usage),
   };
 }
 

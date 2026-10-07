@@ -18,6 +18,9 @@
 
 import type { VizTask } from "./viz-snapshot.js";
 import { ageOf, statusGlyph, taskCounts } from "./viz-readmodel.js";
+import type { AgentUsage } from "./wg-backend.js";
+
+export type { AgentUsage };
 
 /**
  * Semantic colour names — a subset of pi's `ThemeColor`. The task palette uses
@@ -51,6 +54,12 @@ export interface FleetAgent {
   startedAt?: string | null;
   /** Human uptime from the registry (e.g. "5m", "2h"), preferred over `startedAt`. */
   uptime?: string | null;
+  /**
+   * Bounded live usage (tokens/turns/tools) derived from the agent's raw-stream
+   * tail. `null`/absent when nothing is derivable — the row then omits the
+   * usage segment and shows route + elapsed only (graceful degradation).
+   */
+  usage?: AgentUsage | null;
 }
 
 export interface FleetSnapshot {
@@ -230,13 +239,85 @@ export function agentModel(agent: FleetAgent): string {
   return executor && executor.length > 0 ? executor : "?";
 }
 
-/** One agent row: `● agent-7 · task-id · model · 12m`. */
+/**
+ * Abbreviate a count for a compact row: `950`, `12.3k`, `1.2M`. Returns `null`
+ * for a missing/zero/negative value so it can be omitted (never `0`).
+ */
+export function compactCount(n: number | null | undefined): string | null {
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return null;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(Math.round(n));
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${compactCount(n)} ${n === 1 ? one : many}`;
+}
+
+/**
+ * The compact usage segment for an agent row: `12.3k tok · 14 turns · 31 tools`.
+ * Omits any metric that is unavailable; returns `null` when the agent has no
+ * usable usage data at all (the row then shows route + elapsed only).
+ */
+export function agentUsageCompact(usage: AgentUsage | null | undefined): string | null {
+  if (!usage) return null;
+  const parts: string[] = [];
+  const tokens = compactCount(usage.totalTokens);
+  if (tokens) parts.push(`${tokens} tok`);
+  if (typeof usage.turnCount === "number" && usage.turnCount > 0) {
+    parts.push(plural(usage.turnCount, "turn", "turns"));
+  }
+  if (typeof usage.toolUses === "number" && usage.toolUses > 0) {
+    parts.push(plural(usage.toolUses, "tool", "tools"));
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/**
+ * The full (un-abbreviated) usage label for the detail/inspector view:
+ * `1234 tokens · 14 turns · 31 tools · $0.42`. Returns `null` when empty.
+ */
+export function agentUsageFull(usage: AgentUsage | null | undefined): string | null {
+  if (!usage) return null;
+  const parts: string[] = [];
+  if (typeof usage.totalTokens === "number" && usage.totalTokens > 0) {
+    parts.push(`${usage.totalTokens} tokens`);
+    if (typeof usage.inputTokens === "number" || typeof usage.outputTokens === "number") {
+      parts.push(`(${usage.inputTokens ?? 0} in / ${usage.outputTokens ?? 0} out)`);
+    }
+  }
+  if (typeof usage.turnCount === "number" && usage.turnCount > 0) {
+    parts.push(`${usage.turnCount} ${usage.turnCount === 1 ? "turn" : "turns"}`);
+  }
+  if (typeof usage.toolUses === "number" && usage.toolUses > 0) {
+    parts.push(`${usage.toolUses} ${usage.toolUses === 1 ? "tool use" : "tool uses"}`);
+  }
+  if (typeof usage.costUsd === "number" && usage.costUsd > 0) {
+    parts.push(formatCost(usage.costUsd));
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** Cost to at most 4 decimals with trailing zeros trimmed (`$0.42`, `$0.004`). */
+function formatCost(cost: number): string {
+  if (cost >= 1) return `$${cost.toFixed(2)}`;
+  const trimmed = cost.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  return `$${trimmed}`;
+}
+
+/** One agent row: `● agent-7 · task-id · model · 12m · 12.3k tok · 14 turns · 31 tools`. */
 export function agentLine(agent: FleetAgent, now: number = Date.now()): FleetLine {
   const alive = isAgentAlive(agent);
+  const segments = [
+    `${agentGlyph(agent.status, alive)} ${agent.id}`,
+    agent.taskId,
+    agentModel(agent),
+    agentElapsed(agent, now),
+  ];
+  const usage = agentUsageCompact(agent.usage);
+  if (usage) segments.push(usage);
   return {
-    text:
-      `${agentGlyph(agent.status, alive)} ${agent.id} · ${agent.taskId} · ` +
-      `${agentModel(agent)} · ${agentElapsed(agent, now)}`,
+    text: segments.join(" · "),
     color: agentColor(agent.status, alive),
   };
 }

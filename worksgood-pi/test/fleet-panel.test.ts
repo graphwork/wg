@@ -26,6 +26,8 @@ import {
   TRANSCRIPT_TAIL_BYTES,
   agentActivityLabel,
   agentForTask,
+  agentUsageDetailLabel,
+  agentUsageLabel,
   boundTranscriptBody,
   buildFleetTree,
   clampScroll,
@@ -108,6 +110,14 @@ function snap() {
         model: "pi:openrouter:anthropic/claude-opus-4-7",
         status: "working",
         activity: "running cargo test --lib",
+        usage: {
+          inputTokens: 12000,
+          outputTokens: 345,
+          totalTokens: 12345,
+          costUsd: 0.42,
+          turnCount: 14,
+          toolUses: 31,
+        },
       },
     ],
   };
@@ -336,6 +346,19 @@ describe("fleet panel read model", () => {
     expect(agentActivityLabel({ id: "a", task_id: "t", status: "idle" })).toBe("idle");
   });
 
+  it("shows a compact usage segment on the row and full counts in detail", () => {
+    const agent = agentForTask(snap().agents, "active-b");
+    // Row segment is abbreviated, matching the ambient agent rows.
+    expect(agentUsageLabel(agent)).toBe("12.3k tok · 14 turns · 31 tools");
+    // Detail label is full and un-abbreviated.
+    expect(agentUsageDetailLabel(agent)).toBe(
+      "12345 tokens · (12000 in / 345 out) · 14 turns · 31 tool uses · $0.42",
+    );
+    // No usage → no segment (graceful degradation).
+    expect(agentUsageLabel({ id: "a", task_id: "t", status: "idle" })).toBeNull();
+    expect(agentUsageDetailLabel(null)).toBeNull();
+  });
+
   it("renders the WG status glyphs in the tree (one vocabulary, no drift)", () => {
     const tree = buildFleetTree(snap());
     const byId = new Map(tree.lines.map((l) => [l.taskId, l.text]));
@@ -507,6 +530,14 @@ describe("FleetPanelComponent", () => {
     expect(component.treeScrollOffset).toBe(maxScroll(40, component.bodyViewport()));
   });
 
+  it("shows the compact usage segment on the live agent's tree row", () => {
+    const { render } = makeComponent(snap(), 20);
+    const lines = render();
+    const row = lines.find((l) => l.includes("active-b")) ?? "";
+    expect(row).toContain("running cargo test --lib");
+    expect(row).toContain("12.3k tok · 14 turns · 31 tools");
+  });
+
   it("drills into the selected task's detail: WG's own text verbatim, then labelled pi additions", async () => {
     const root = mkdtempSync(join(tmpdir(), "wg-fleet-compose-"));
     const agentDir = join(root, "agents", "agent-7");
@@ -547,6 +578,9 @@ describe("FleetPanelComponent", () => {
     const addIdx = detail.findIndex((l) => l.includes("pi-side additions"));
     expect(addIdx).toBeGreaterThan(6);
     expect(detail.some((l) => l.includes("running cargo test --lib"))).toBe(true);
+    // The detail view carries the full, un-abbreviated usage counts.
+    expect(detail.some((l) => l.includes("usage · 12345 tokens"))).toBe(true);
+    expect(detail.some((l) => l.includes("14 turns") && l.includes("31 tool uses"))).toBe(true);
     expect(detail.some((l) => l.includes("Transcript tail"))).toBe(true);
     expect(detail.length).toBeLessThanOrEqual(20);
     // The fetcher was asked for this task (at the panel width).

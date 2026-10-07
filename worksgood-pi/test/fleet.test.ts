@@ -28,6 +28,9 @@ import {
   agentGlyph,
   agentLine,
   agentModel,
+  agentUsageCompact,
+  agentUsageFull,
+  compactCount,
   fetchFleetOverSocket,
   fleetCounts,
   fleetHeaderLine,
@@ -63,6 +66,7 @@ const FIXTURE_AGENTS_RAW = [
     uptime: "12m",
     started_at: "2026-02-02T09:00:00Z",
     process_alive: true,
+    usage: { input_tokens: 12000, output_tokens: 300, total_tokens: 12300, cost_usd: 0.4, turn_count: 14, tool_uses: 31 },
   },
   {
     id: "agent-1",
@@ -193,6 +197,50 @@ describe("fleet read model — glyph + colour mapping", () => {
     expect(line.color).toBe("success");
   });
 
+  it("appends an abbreviated usage segment when usage is present", () => {
+    const line = agentLine({
+      id: "agent-7",
+      taskId: "opaque-exec",
+      model: "pi:openrouter:anthropic/claude-opus-4-7",
+      status: "working",
+      uptime: "12m",
+      usage: { totalTokens: 12345, turnCount: 14, toolUses: 31 },
+    });
+    expect(line.text).toBe(
+      "● agent-7 · opaque-exec · pi:openrouter:anthropic/claude-opus-4-7 · 12m · 12.3k tok · 14 turns · 31 tools",
+    );
+  });
+
+  it("degrades to route + elapsed when usage is missing or all-zero", () => {
+    const base = { id: "agent-7", taskId: "t", model: "m", status: "working", uptime: "12m" };
+    // No usage field.
+    expect(agentLine(base).text).toBe("● agent-7 · t · m · 12m");
+    // Explicit null.
+    expect(agentLine({ ...base, usage: null }).text).toBe("● agent-7 · t · m · 12m");
+    // A zero-ish usage object yields no segment (never a fake `0 tok`).
+    expect(agentLine({ ...base, usage: { totalTokens: 0, turnCount: 0, toolUses: 0 } }).text).toBe(
+      "● agent-7 · t · m · 12m",
+    );
+  });
+
+  it("abbreviates counts (k/M) and pluralizes turns/tools", () => {
+    expect(compactCount(950)).toBe("950");
+    expect(compactCount(12345)).toBe("12.3k");
+    expect(compactCount(1_250_000)).toBe("1.3M");
+    expect(compactCount(0)).toBeNull();
+    expect(compactCount(undefined)).toBeNull();
+    expect(agentUsageCompact({ totalTokens: 1, turnCount: 1, toolUses: 1 })).toBe("1 tok · 1 turn · 1 tool");
+    expect(agentUsageCompact(null)).toBeNull();
+  });
+
+  it("renders full, un-abbreviated counts for the detail view", () => {
+    expect(agentUsageFull({ totalTokens: 1234567, inputTokens: 1200000, outputTokens: 34567, turnCount: 14, toolUses: 31, costUsd: 0.42 })).toBe(
+      "1234567 tokens · (1200000 in / 34567 out) · 14 turns · 31 tool uses · $0.42",
+    );
+    expect(agentUsageFull(null)).toBeNull();
+    expect(agentUsageFull({ totalTokens: 0 })).toBeNull();
+  });
+
   it("falls back to executor, then '?', and ages from startedAt", () => {
     expect(agentModel({ id: "a", taskId: "t", status: "idle", executor: "codex" })).toBe("codex");
     expect(agentModel({ id: "a", taskId: "t", status: "idle" })).toBe("?");
@@ -277,15 +325,22 @@ describe("fleet snapshot — read-only daemon path", () => {
     const snap = await fetchFleetOverSocket(socketPath, { timeoutMs: 2000 });
     expect(snap.agents.map((a: { id: string }) => a.id).sort()).toEqual(["agent-1", "agent-7", "agent-9"]);
     expect(snap.tasks.length).toBe(FIXTURE_TASKS.length);
+    // Usage flows end-to-end from the `agents` lane into the rendered row.
+    const working = snap.agents.find((a) => a.id === "agent-7")!;
+    expect(working.usage?.totalTokens).toBe(12300);
+    expect(agentLine(working, Date.parse("2026-02-02T09:12:00Z")).text).toContain("12.3k tok · 14 turns · 31 tools");
     const cmds = receivedRequests.map((r) => r.cmd).sort();
     expect(cmds).toEqual(["agents", "viz_snapshot"]);
   });
 
-  it("normalizes a registry row, keeping model and liveness", () => {
+  it("normalizes a registry row, keeping model, liveness and usage", () => {
     const agent = normalizeAgent(FIXTURE_AGENTS_RAW[0])!;
     expect(agent.model).toBe("pi:openrouter:anthropic/claude-opus-4-7");
     expect(agent.status).toBe("working");
     expect(agent.alive).toBe(true);
+    expect(agent.usage).toEqual({ inputTokens: 12000, outputTokens: 300, totalTokens: 12300, costUsd: 0.4, turnCount: 14, toolUses: 31 });
+    // A row with no usage normalizes to null (no fake segment).
+    expect(normalizeAgent(FIXTURE_AGENTS_RAW[1])!.usage).toBeNull();
     expect(normalizeAgent({ nope: true })).toBeNull();
   });
 

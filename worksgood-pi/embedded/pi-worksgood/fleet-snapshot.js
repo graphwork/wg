@@ -19,6 +19,7 @@
  * snapshots never re-render.
  */
 import { connect } from "node:net";
+import { normalizeAgentUsage } from "./wg-backend.js";
 import { fetchVizSnapshot, resolveSocketPath } from "./viz-snapshot.js";
 /** One-shot daemon IPC round trip for an arbitrary read-only request. */
 function ipcRequest(socketPath, request, timeoutMs, signal) {
@@ -108,6 +109,8 @@ export function normalizeAgent(raw) {
         alive,
         startedAt: typeof a.started_at === "string" ? a.started_at : null,
         uptime: typeof a.uptime === "string" ? a.uptime : null,
+        // Bounded live usage from the `agents` lane; null when nothing derivable.
+        usage: normalizeAgentUsage(a.usage),
     };
 }
 /** Fetch the runtime worker registry over the read-only `agents` IPC request. */

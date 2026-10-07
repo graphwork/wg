@@ -44,7 +44,7 @@
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { taskColor } from "./fleet-readmodel.js";
 import { paintStatusText, paletteNotice, resolveStatusPalette, } from "./status-palette.js";
-import { DEFAULT_TRANSCRIPT_LINES, FLEET_PANEL_DEFAULT_HEIGHT, FLEET_PANEL_MIN_HEIGHT, agentActivityLabel, agentForTask, boundTranscriptBody, buildFleetTree, clampScroll, fleetCountsHeader, maxScroll, pageScroll, readAgentStreamTail, renderWgTree, scrollToKeepVisible, } from "./fleet-panel-model.js";
+import { DEFAULT_TRANSCRIPT_LINES, FLEET_PANEL_DEFAULT_HEIGHT, FLEET_PANEL_MIN_HEIGHT, agentActivityLabel, agentForTask, agentUsageDetailLabel, agentUsageLabel, boundTranscriptBody, buildFleetTree, clampScroll, fleetCountsHeader, maxScroll, pageScroll, readAgentStreamTail, renderWgTree, scrollToKeepVisible, } from "./fleet-panel-model.js";
 /** Default bounded poll cadence for the open panel. */
 export const FLEET_PANEL_POLL_MS = 5000;
 /**
@@ -628,13 +628,20 @@ export class FleetPanelComponent {
         // mistaken for WG's own output.
         const agent = agentForTask(this.snapshot.agents, this.selectedId);
         const activity = agentActivityLabel(agent);
-        if (activity || this.detailTail.length > 0) {
+        const usage = agentUsageDetailLabel(agent);
+        if (activity || usage || this.detailTail.length > 0) {
             out.push({ text: "", color: "dim" });
             out.push({ text: "── pi-side additions (not WG detail) ──", color: "accent" });
         }
-        if (activity) {
-            out.push({ text: "── Live activity ──", color: "accent" });
-            out.push({ text: `  ${agent?.id ?? "agent"} · ${activity}`, color: "warning" });
+        if (activity || usage) {
+            out.push({ text: `── Live activity ──`, color: "accent" });
+            if (activity) {
+                out.push({ text: `  ${agent?.id ?? "agent"} · ${activity}`, color: "warning" });
+            }
+            if (usage) {
+                // Full, un-abbreviated counts (the detail/inspector view).
+                out.push({ text: `  usage · ${usage}`, color: "accent" });
+            }
         }
         if (this.detailTail.length > 0) {
             out.push({ text: "", color: "dim" });
@@ -658,6 +665,11 @@ export class FleetPanelComponent {
                 const activity = agentActivityLabel(agent);
                 if (activity)
                     text += ` · ${activity}`;
+                // Compact live usage alongside the activity (same format as the
+                // ambient agent rows: `12.3k tok · 14 turns · 31 tools`).
+                const usage = agentUsageLabel(agent);
+                if (usage)
+                    text += ` · ${usage}`;
             }
             // Every rendered line is painted with WG's status palette (task lines) or
             // dim (separators/arc rows); the caller re-applies this per line in

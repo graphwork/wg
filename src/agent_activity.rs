@@ -65,7 +65,10 @@ fn read_stream_step(workgraph_dir: &Path, agent_id: &str) -> Option<String> {
 
 /// Read at most `cap` bytes from the end of `path`. Returns the bytes decoded
 /// with lossy UTF-8 so a partial multi-byte boundary cannot fail the read.
-fn read_tail(path: &Path, cap: u64) -> std::io::Result<String> {
+///
+/// Shared with [`crate::stream_event::live_usage_for_agent`] so every bounded
+/// tail read in the crate uses one implementation.
+pub(crate) fn read_tail(path: &Path, cap: u64) -> std::io::Result<String> {
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let start = len.saturating_sub(cap);

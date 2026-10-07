@@ -1984,6 +1984,11 @@ fn handle_agents(dir: &Path) -> IpcResponse {
                         "started_at": a.started_at,
                         "last_heartbeat": a.last_heartbeat,
                         "process_alive": crate::commands::is_process_alive(a.pid),
+                        // Bounded live usage (tokens/turns/tools) from the agent's
+                        // raw stream tail; `null` when nothing is derivable.
+                        "usage": worksgood::service::fleet_snapshot::fleet_agent_usage_json(
+                            dir, &a.id, &a.executor
+                        ),
                     })
                 })
                 .collect();
