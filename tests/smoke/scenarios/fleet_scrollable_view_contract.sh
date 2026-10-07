@@ -116,27 +116,47 @@ if (component.treeScrollOffset !== 0) throw new Error(`wheel-up did not clamp to
 component.handleMouse({ type: "wheel", wheelDelta: 4 });
 if (component.treeScrollOffset <= 0) throw new Error("wheel-down did not scroll");
 
-// (d) Enter drills into detail; the live activity is rendered; l returns.
+// (d) Enter drills into detail; WG's own text is fetched and rendered, the
+// live activity is appended as a labelled addition; q returns to the tree.
 component.handleInput("\x1b[H");
 component.handleInput("\x1b[B"); // select task-001 (nested under task-000)
+const WG_DETAIL = "Task: task-001\nTitle: Task 1\nCompletion contract: land";
+const detailFetcher = async (taskId) => ({ task_id: taskId, text: `${WG_DETAIL}\n`, source: "daemon" });
+const detailTui = { requestRender: () => {}, terminal: { rows: 30, columns: 100 } };
+const detailComponent = new FleetPanelComponent(
+  snapshot,
+  detailTui,
+  () => { closed++; },
+  null,
+  {},
+  undefined,
+  detailFetcher,
+);
+const detailRender = (w = 100) => detailComponent.render(w);
+detailComponent.handleInput("\r"); // open detail on task-000 (the agent's task)
 component.handleInput("\r"); // Enter
 if (!component.detailVisible) throw new Error("Enter did not open the task detail");
 const detail = render();
-if (!detail.some((l) => l.includes("── task-001 ──"))) throw new Error("detail header missing");
+if (!detail.some((l) => l.includes("wg-fleet · task-001 · detail"))) throw new Error("detail header missing");
 if (detail.length > HEIGHT) throw new Error(`detail render exceeded bounds: ${detail.length}`);
-// End scrolls the detail pane to the bottom, where the hint names q close.
-component.handleInput("\x1b[F");
-const detailEnd = render();
-if (!detailEnd.some((l) => l.includes("q close"))) throw new Error("detail hint missing after End");
-if (detailEnd.length > HEIGHT) throw new Error(`detail end render exceeded bounds: ${detailEnd.length}`);
-component.handleInput("l");
-if (component.detailVisible) throw new Error("l did not return to the tree");
+// q in the detail returns to the TREE — it must NOT close the panel.
+component.handleInput("q");
+if (component.detailVisible) throw new Error("q did not return to the tree from detail");
+if (closed !== 0) throw new Error(`q in detail closed the whole panel (closed=${closed})`);
+// The detail component renders WG's text verbatim, then a labelled addition.
+detailComponent.handleInput("\r");
+await new Promise((r) => setTimeout(r, 0));
+const dlines = detailRender();
+if (dlines[1] !== "Task: task-001") throw new Error(`detail body is not WG's text: ${dlines[1]}`);
+if (dlines[2] !== "Title: Task 1") throw new Error(`WG detail line drifted: ${dlines[2]}`);
+const addIdx = dlines.findIndex((l) => l.includes("pi-side additions"));
+if (addIdx < 3) throw new Error("pi-side additions not appended after WG's text");
 
-// (e) q closes.
+// (e) q closes (from the tree).
 component.handleInput("q");
 if (closed !== 1) throw new Error(`q did not close the panel (closed=${closed})`);
 
-console.log("probe ok: bounds, selection-follows-scroll, wheel/PgDn/Home, detail drill-down, q close");
+console.log("probe ok: bounds, selection-follows-scroll, wheel/PgDn/Home, WG detail verbatim + additions, q returns to tree then closes");
 NODE
 
 # ── 4. Ambient widget strip: default-off + below-editor mount, non-TUI silent ─

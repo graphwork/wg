@@ -279,8 +279,9 @@ export class WgBackend {
     const resolved = resolveSocketPath(this.env);
     if (resolved.socket) {
       try {
-        const raw = await ipcGetFleet(
+        const raw = await ipcRoundTrip(
           resolved.socket,
+          "get_fleet",
           {
             cmd: "get_fleet",
             since_revision: opts.sinceRevision,
@@ -334,6 +335,71 @@ export class WgBackend {
       if (!tasksRaw && !agentsRaw && !readyRaw) return null;
       const tree = vizRes ? parseVizJson(vizRes.stdout) : undefined;
       return buildCliFleet(tasksRaw ?? [], agentsRaw ?? [], readyRaw ?? [], tree);
+    } catch {
+      return null;
+    }
+  }
+
+  // ── daemon read surface (GetTaskDetail) ─────────────────────────────────
+
+  /**
+   * Read WG's OWN task-detail text — the exact body `wg show <task>` prints —
+   * so the fleet panel's detail view renders WG's sections/ordering/wording
+   * verbatim instead of a client-side approximation.
+   *
+   * The daemon path is tried first (the read-only `get_task_detail` IPC request
+   * over `WG_DAEMON_SOCKET` / `<wg-dir>/service/daemon.sock`). On ANY error —
+   * daemon down, connect/timeout, error response, unknown task, or a protocol
+   * mismatch (an older daemon without the request) — it falls back to running
+   * the read-only CLI `wg show <task>`, whose stdout IS the same text. Returns
+   * `null` only when neither source produced text.
+   *
+   * Strictly read-only in both paths: it never mutates graph state.
+   */
+  async getTaskDetail(
+    taskId: string,
+    opts: GetTaskDetailOptions = {},
+  ): Promise<GetTaskDetail | null> {
+    if (!taskId || taskId.trim() === "") return null;
+    const resolved = resolveSocketPath(this.env);
+    if (resolved.socket) {
+      try {
+        const raw = await ipcRoundTrip(
+          resolved.socket,
+          "get_task_detail",
+          {
+            cmd: "get_task_detail",
+            task_id: taskId,
+            columns: opts.columns,
+          },
+          opts.timeoutMs ?? 2000,
+          opts.signal,
+        );
+        if (!isRecord(raw) || typeof raw.text !== "string") {
+          throw new Error("get_task_detail protocol mismatch");
+        }
+        return {
+          task_id: typeof raw.task_id === "string" ? raw.task_id : taskId,
+          text: raw.text,
+          source: "daemon",
+        };
+      } catch {
+        // Any daemon failure degrades to the CLI path below.
+      }
+    }
+    return this.getTaskDetailViaCli(taskId, opts);
+  }
+
+  /** The safe default: `wg show <task>` prints WG's own detail text directly. */
+  private async getTaskDetailViaCli(
+    taskId: string,
+    opts: GetTaskDetailOptions,
+  ): Promise<GetTaskDetail | null> {
+    try {
+      const res = await this.run(["show", taskId], { signal: opts.signal });
+      const text = res.stdout ?? "";
+      if (!text.trim()) return null;
+      return { task_id: taskId, text, source: "cli" };
     } catch {
       return null;
     }
@@ -465,6 +531,25 @@ export interface GetFleetOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * WG's OWN task-detail text (the exact body `wg show <task>` prints), served by
+ * the daemon's read-only `get_task_detail` request (or the CLI `wg show`
+ * fallback). `text` is rendered verbatim by the fleet panel's detail view.
+ */
+export interface GetTaskDetail {
+  task_id: string;
+  text: string;
+  source: "daemon" | "cli";
+}
+
+export interface GetTaskDetailOptions {
+  /** Panel width in columns; the daemon word-wraps the body to it (20..=400). */
+  columns?: number;
+  /** Per-request deadline for the daemon path. Default 2000ms. */
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -487,13 +572,14 @@ function str(value: unknown): string | null {
 }
 
 /**
- * One-shot daemon IPC round trip for the read-only `get_fleet` request,
- * mirroring the Rust client's one-request-per-connection contract. Any
- * transport error (connect refused, timeout, error response, malformed JSON)
- * rejects so the caller can fall back to the CLI.
+ * One-shot daemon IPC round trip for a read-only request, mirroring the Rust
+ * client's one-request-per-connection contract. Any transport error (connect
+ * refused, timeout, error response, malformed JSON) rejects so the caller can
+ * fall back to the CLI.
  */
-function ipcGetFleet(
+function ipcRoundTrip(
   socketPath: string,
+  label: string,
   request: Record<string, unknown>,
   timeoutMs: number,
   signal?: AbortSignal,
@@ -517,12 +603,12 @@ function ipcGetFleet(
       else resolve(value as Record<string, unknown>);
     };
     const timer = setTimeout(
-      () => finish(new Error(`get_fleet timed out after ${timeoutMs}ms`)),
+      () => finish(new Error(`${label} timed out after ${timeoutMs}ms`)),
       timeoutMs,
     );
-    const onAbort = () => finish(new Error("get_fleet aborted"));
+    const onAbort = () => finish(new Error(`${label} aborted`));
     if (signal) {
-      if (signal.aborted) return finish(new Error("get_fleet aborted"));
+      if (signal.aborted) return finish(new Error(`${label} aborted`));
       signal.addEventListener("abort", onAbort, { once: true });
     }
 
@@ -542,7 +628,7 @@ function ipcGetFleet(
           error?: string;
         };
         if (response.ok === false) {
-          return finish(new Error(response.error ?? "get_fleet failed"));
+          return finish(new Error(response.error ?? `${label} failed`));
         }
         return finish(null, response);
       } catch (err) {

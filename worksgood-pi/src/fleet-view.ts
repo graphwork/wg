@@ -35,7 +35,7 @@ import {
 } from "./fleet-readmodel.js";
 import { fleetSnapshotWithFallback } from "./fleet-snapshot.js";
 import { DEFAULT_TRANSCRIPT_LINES } from "./fleet-panel-model.js";
-import { makeFleetFetcher, openFleetPanel } from "./fleet-panel.js";
+import { makeFleetDetailFetcher, makeFleetFetcher, openFleetPanel } from "./fleet-panel.js";
 
 /** Widget registration key (also the settings-visible surface id). */
 export const FLEET_WIDGET_KEY = "wg-fleet";
@@ -101,7 +101,7 @@ function themeOf(ctx: ExtensionContext): Theme | null {
  */
 export function installFleetView(
   pi: ExtensionAPI,
-  backend: Pick<WgBackend, "run"> & Partial<Pick<WgBackend, "getFleet">>,
+  backend: Pick<WgBackend, "run"> & Partial<Pick<WgBackend, "getFleet" | "getTaskDetail">>,
   env: Pick<WgEnv, "daemonSocket" | "dir">,
   options: InstallFleetOptions = {},
 ): FleetViewController {
@@ -203,6 +203,7 @@ export function installFleetView(
         await openFleetPanel(ctx, makeFleetFetcher(backend), env.dir, {
           pollMs: config.pollMs,
           transcriptLines: DEFAULT_TRANSCRIPT_LINES,
+          fetchDetail: makeFleetDetailFetcher(backend),
         });
         void refresh(ctx);
       } catch {

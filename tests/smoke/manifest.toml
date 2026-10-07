@@ -1780,6 +1780,15 @@ description = "Pins the scrollable /wg-fleet panel (scrollable-fleet-view): the 
 timeout_seconds = 240
 
 [[scenario]]
+name = "fleet_detail_view_parity"
+script = "scenarios/fleet_detail_view_parity.sh"
+owners = [
+    "fleet-detail-view",
+]
+description = "Pins the WG-OWN detail parity of /wg-fleet (fleet-detail-view): the panel's detail view renders WG's OWN `wg show <task>` body verbatim (served by the read-only daemon `GetTaskDetail` request, CLI fallback) instead of a client-side TS approximation, so the completion contract/required checks, lifecycle, runtime and log are WG's; it is full-screen and navigable (PgUp/PgDn/Home/End + arrows, visible position indicator) with the pi-side live-activity + bounded transcript tail APPENDED and LABELLED as additions, and q/Esc/left/Enter return to the tree (never close the panel). Credential-free: builds the worktree `wg` (the change is not in the installed binary), runs the focused plugin unit tests, drives the REAL embedded component (WG text verbatim, scroll clamping, back keys, no fabricated body), and proves end-to-end against a LIVE daemon that `GetTaskDetail` is byte-for-byte the `wg show <task>` output, that a width request word-wraps without dropping bytes, that the read is non-mutating, and that embed == cache."
+timeout_seconds = 600
+
+[[scenario]]
 name = "fleet_graph_view_parity"
 script = "scenarios/fleet_graph_view_parity.sh"
 owners = [

@@ -168,7 +168,7 @@ if (!(fallbackLines.find((l) => l.includes("child-2  (")) ?? "").includes(rgb(22
 
 component.handleInput("\r"); // Enter → DETAIL
 if (!component.detailVisible) throw new Error("Enter did not open the task detail");
-if (!render().some((l) => l.includes("── root-a ──"))) throw new Error("detail header missing");
+if (!render().some((l) => l.includes("wg-fleet · root-a · detail"))) throw new Error("detail header missing");
 component.handleInput("\r"); // doubled Enter (`\r\n`) must NOT close it
 component.handleInput("\n");
 if (!component.detailVisible) throw new Error("doubled Enter closed the detail view");

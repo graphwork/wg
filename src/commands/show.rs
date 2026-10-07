@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::Path;
 use worksgood::config::{Config, DispatchRole};
 use worksgood::graph::{
@@ -629,6 +630,92 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
     if super::adaptive_agency::show_virtual_if_present(dir, id, json)? {
         return Ok(());
     }
+    let (details, retry_history) = build_details(dir, id)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&details)?);
+    } else {
+        print_human_readable(&details);
+        if let Some((agent, status)) = retry_history {
+            print_retry_history(dir, &details.id, agent.as_deref(), status);
+        }
+    }
+    Ok(())
+}
+
+/// WG's OWN human-readable task-detail text — the exact body `wg show <id>`
+/// prints — captured to a `String` instead of stdout. This is what the daemon
+/// serves over `GetTaskDetail` so UI clients (the Pi fleet panel's detail view)
+/// render WG's own detail verbatim rather than a client-side approximation.
+///
+/// `columns` (when supplied) word-wraps long lines to the panel width so a
+/// narrow panel shows the whole text instead of truncating its tail; the text
+/// is otherwise byte-identical to the CLI form.
+///
+/// Virtual review aliases (`.review-…`) are not graph tasks and are handled by
+/// the caller; here they raise the normal "task not found" error.
+pub fn render_task_text(dir: &Path, id: &str, columns: Option<usize>) -> Result<String> {
+    let (details, retry_history) = build_details(dir, id)?;
+    let mut out = String::new();
+    write_human_readable(&mut out, &details);
+    if let Some((agent, status)) = retry_history {
+        write_retry_history(&mut out, dir, &details.id, agent.as_deref(), status);
+    }
+    Ok(if let Some(cols) = columns {
+        wrap_text(&out, cols.clamp(20, 400))
+    } else {
+        out
+    })
+}
+
+/// Word-wrap each physical line of `text` to at most `cols` columns, preserving
+/// the line's leading indentation on continuation lines. Only inserts line
+/// breaks — never drops bytes — so the wrapped text still carries everything the
+/// CLI prints (including a trailing newline).
+fn wrap_text(text: &str, cols: usize) -> String {
+    let cols = cols.max(1);
+    let trailing_newline = text.ends_with('\n');
+    let mut physical: Vec<&str> = text.split('\n').collect();
+    if trailing_newline {
+        physical.pop();
+    }
+    let mut out = String::with_capacity(text.len() + text.len() / 4);
+    for (i, line) in physical.iter().enumerate() {
+        if line.chars().count() <= cols {
+            out.push_str(line);
+        } else {
+            let indent_len = line.chars().take_while(|c| *c == ' ').count();
+            let indent: String = " ".repeat(indent_len);
+            let rest: String = line.chars().skip(indent_len).collect();
+            let mut current = String::new();
+            for word in rest.split(' ') {
+                let width = if current.is_empty() {
+                    indent_len + word.chars().count()
+                } else {
+                    current.chars().count() + 1 + word.chars().count()
+                };
+                if !current.is_empty() && width > cols {
+                    out.push_str(&current);
+                    out.push('\n');
+                    current.clear();
+                }
+                if current.is_empty() {
+                    current.push_str(&indent);
+                    current.push_str(word);
+                } else {
+                    current.push(' ');
+                    current.push_str(word);
+                }
+            }
+            out.push_str(&current);
+        }
+        if i + 1 < physical.len() || trailing_newline {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn build_details(dir: &Path, id: &str) -> Result<(TaskDetails, Option<(Option<String>, Status)>)> {
     let (graph, _path) = super::load_workgraph(dir)?;
 
     let task = graph.get_task_or_err(id)?;
@@ -974,59 +1061,75 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         worktree_state: gather_worktree_state(dir, id),
         cron: gather_cron_diagnostics(&task),
     };
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&details)?);
+    let retry_history = if task.retry_count > 0 {
+        Some((task.assigned.clone(), task.status))
     } else {
-        print_human_readable(&details);
-        if task.retry_count > 0 {
-            print_retry_history(dir, &task.id, task.assigned.as_deref(), task.status);
-        }
-    }
-
-    Ok(())
+        None
+    };
+    Ok((details, retry_history))
 }
 
 fn print_human_readable(details: &TaskDetails) {
-    println!("Task: {}", details.id);
-    println!("Title: {}", details.title);
-    println!("Presentation: {}", details.presentation);
-    println!("Origin actor: {:?}", details.origin.kind);
+    let mut out = String::new();
+    write_human_readable(&mut out, details);
+    print!("{}", out);
+}
+
+fn print_retry_history(dir: &Path, task_id: &str, current_agent: Option<&str>, status: Status) {
+    let mut out = String::new();
+    write_retry_history(&mut out, dir, task_id, current_agent, status);
+    print!("{}", out);
+}
+
+#[allow(unused_must_use)]
+fn write_human_readable(w: &mut String, details: &TaskDetails) {
+    writeln!(w, "Task: {}", details.id);
+    writeln!(w, "Title: {}", details.title);
+    writeln!(w, "Presentation: {}", details.presentation);
+    writeln!(w, "Origin actor: {:?}", details.origin.kind);
     if let Some(parent) = &details.origin.parent_task {
-        println!("Origin parent: {}", parent);
+        writeln!(w, "Origin parent: {}", parent);
     }
     if let Some(goal) = &details.origin.goal {
-        println!("Origin goal: {}", goal);
+        writeln!(w, "Origin goal: {}", goal);
     }
     if details.paused {
-        println!("Status: {} (PAUSED)", details.status);
+        writeln!(w, "Status: {} (PAUSED)", details.status);
     } else {
-        println!("Status: {}", details.status);
+        writeln!(w, "Status: {}", details.status);
     }
-    println!("Completion contract: {}", details.completion_contract);
-    println!("Required deterministic completion checks (exact enforced order):");
+    writeln!(w, "Completion contract: {}", details.completion_contract);
+    writeln!(
+        w,
+        "Required deterministic completion checks (exact enforced order):"
+    );
     for check in &details.completion_preflight.checks {
-        println!(
+        writeln!(
+            w,
             "  [{}] {} — {}",
             check.purpose, check.command, check.provenance
         );
     }
-    println!(
+    writeln!(
+        w,
         "  required evidence: {}",
         details.completion_preflight.evidence_capture
     );
-    println!(
+    writeln!(
+        w,
         "  optional evidence: {}",
         details.completion_preflight.optional_evidence_capture
     );
-    println!(
+    writeln!(
+        w,
         "  repair boundary: {} — {} (budget={})",
         details.completion_preflight.repair_boundary,
         details.completion_preflight.boundary_explanation,
         details.completion_preflight.deterministic_repair_budget
     );
     if let Some(repair) = details.completion_repair.as_ref() {
-        println!(
+        writeln!(
+            w,
             "Completion repair/{:?}: root={} request={} exit={} feedback={}",
             repair.disposition,
             repair
@@ -1037,7 +1140,8 @@ fn print_human_readable(details: &TaskDetails) {
             repair.exit_category,
             repair.feedback_id
         );
-        println!(
+        writeln!(
+            w,
             "  source binding: task={} generation={} attempt={} fence={} candidate={} validation={}",
             repair.task_id,
             repair.generation,
@@ -1046,21 +1150,28 @@ fn print_human_readable(details: &TaskDetails) {
             repair.candidate_identity,
             repair.validation_identity
         );
-        println!("  immutable evidence: {}", repair.evidence.content_digest);
+        writeln!(
+            w,
+            "  immutable evidence: {}",
+            repair.evidence.content_digest
+        );
         if let Some(saved_work) = repair.saved_work.as_deref() {
-            println!("  saved work: {saved_work}");
+            writeln!(w, "  saved work: {saved_work}");
         }
         if let Some(review) = repair.semantic_review.as_ref() {
-            println!(
+            writeln!(
+                w,
                 "  semantic rejection: reviewer={:?} receipt={} candidate-sequence={}",
                 review.reviewer_kind, review.review_receipt, review.candidate_sequence
             );
         }
-        println!(
+        writeln!(
+            w,
             "  diagnostic (untrusted, redacted): {}",
             repair.diagnostic_excerpt
         );
-        println!(
+        writeln!(
+            w,
             "  budget: {}/{}; actively repairing: {}",
             repair.opportunities_used,
             repair.opportunity_limit,
@@ -1068,14 +1179,16 @@ fn print_human_readable(details: &TaskDetails) {
                 && details.assigned.is_some()
                 && details.status == Status::InProgress
         );
-        println!("  next: {}", repair.safe_next);
+        writeln!(w, "  next: {}", repair.safe_next);
     }
     if let Some(chain) = details.stalled_chain.as_ref() {
-        println!(
+        writeln!(
+            w,
             "ROOT BLOCKER: {} — {} (active repair={})",
             chain.root_task_id, chain.root_blocker, chain.active_repair
         );
-        println!(
+        writeln!(
+            w,
             "  affected downstream: {}",
             if chain.affected_downstream.is_empty() {
                 "none".into()
@@ -1083,11 +1196,20 @@ fn print_human_readable(details: &TaskDetails) {
                 chain.affected_downstream.join(", ")
             }
         );
-        println!("  one safe operator action: {}", chain.safe_operator_action);
+        writeln!(
+            w,
+            "  one safe operator action: {}",
+            chain.safe_operator_action
+        );
     }
     if let Some(candidate) = details.completion_candidate.as_ref() {
-        println!("Completion manifest: {}", candidate.manifest.content_digest);
-        println!(
+        writeln!(
+            w,
+            "Completion manifest: {}",
+            candidate.manifest.content_digest
+        );
+        writeln!(
+            w,
             "Completion review: FLIP={} eval={}",
             candidate
                 .flip_receipt
@@ -1101,7 +1223,8 @@ fn print_human_readable(details: &TaskDetails) {
                 .unwrap_or("missing")
         );
         if let Some(binding) = candidate.review_binding.as_ref() {
-            println!(
+            writeln!(
+                w,
                 "Completion candidate binding: task={} generation={} attempt={} fence={} sequence={}",
                 binding.task_id,
                 binding.generation,
@@ -1112,8 +1235,13 @@ fn print_human_readable(details: &TaskDetails) {
         }
     }
     if let Some(blocker) = details.completion_blocker.as_ref() {
-        println!("Completion waiting/{:?}: {}", blocker.kind, blocker.reason);
-        println!(
+        writeln!(
+            w,
+            "Completion waiting/{:?}: {}",
+            blocker.kind, blocker.reason
+        );
+        writeln!(
+            w,
             "  binding: task={} generation={} attempt={} fence={} candidate={}",
             blocker.task_id,
             blocker.generation,
@@ -1121,13 +1249,15 @@ fn print_human_readable(details: &TaskDetails) {
             blocker.fence,
             blocker.candidate.manifest.content_digest
         );
-        println!(
+        writeln!(
+            w,
             "  landing reconciliation: {:?} commit={} receipt={}",
             blocker.reconciliation_state,
             blocker.reconciled_commit_oid.as_deref().unwrap_or("none"),
             blocker.reconciliation_receipt.as_deref().unwrap_or("none")
         );
-        println!(
+        writeln!(
+            w,
             "  session continuity: {}",
             blocker
                 .session_selector
@@ -1135,20 +1265,26 @@ fn print_human_readable(details: &TaskDetails) {
                 .unwrap_or("not required/attested")
         );
         if blocker.kind == worksgood::graph::CompletionBlockerKind::LandingPending {
-            println!(
+            writeln!(
+                w,
                 "  source worker: {}",
                 details.assigned.as_deref().unwrap_or("released")
             );
-            println!(
+            writeln!(
+                w,
                 "  recovery authority: finalizer (retained candidate; no source resubmission)"
             );
         }
-        println!("  next: {}", blocker.safe_next);
+        writeln!(w, "  next: {}", blocker.safe_next);
     }
     if !details.completion_review_activity.is_empty() {
-        println!("Completion review lane (immutable activity; not graph tasks):");
+        writeln!(
+            w,
+            "Completion review lane (immutable activity; not graph tasks):"
+        );
         for activity in &details.completion_review_activity {
-            println!(
+            writeln!(
+                w,
                 "  {} candidate={:?} receipt={} route={} executor={} failure={} duration={}",
                 activity.display_state(),
                 activity.candidate_state,
@@ -1165,7 +1301,8 @@ fn print_human_readable(details: &TaskDetails) {
                     .unwrap_or_else(|| "unavailable".to_string())
             );
             if let Some(binding) = activity.binding.as_ref() {
-                println!(
+                writeln!(
+                    w,
                     "    binding: task={} generation={} attempt={} fence={} candidate-sequence={}",
                     binding.task_id,
                     binding.generation,
@@ -1175,7 +1312,8 @@ fn print_human_readable(details: &TaskDetails) {
                 );
             }
             if let Some(usage) = activity.usage.as_ref() {
-                println!(
+                writeln!(
+                    w,
                     "    provider-reported usage: in={} out={} cache-read={} cache-write={} cost=${:.6}",
                     usage.input_tokens,
                     usage.output_tokens,
@@ -1185,7 +1323,8 @@ fn print_human_readable(details: &TaskDetails) {
                 );
             }
             if let Some(retry) = activity.retry.as_ref() {
-                println!(
+                writeln!(
+                    w,
                     "    provider retry: attempts={} retries={} classification={}{}{}",
                     retry.attempts,
                     retry.retries,
@@ -1202,7 +1341,8 @@ fn print_human_readable(details: &TaskDetails) {
                 );
             }
             for finding in &activity.findings {
-                println!(
+                writeln!(
+                    w,
                     "    finding [{}]: {}{}",
                     finding.code,
                     finding.message,
@@ -1216,7 +1356,8 @@ fn print_human_readable(details: &TaskDetails) {
         }
     }
     if let Some(disposition) = details.completion_disposition {
-        println!(
+        writeln!(
+            w,
             "Completed disposition: {:?} receipt={}",
             disposition,
             details.completion_receipt.as_deref().unwrap_or("missing")
@@ -1227,13 +1368,14 @@ fn print_human_readable(details: &TaskDetails) {
             "Cleaned" => "Completed",
             _ => "Finishing",
         };
-        println!("Finish: {} ({})", visible, phase);
+        writeln!(w, "Finish: {} ({})", visible, phase);
     } else if details.status == Status::InProgress {
-        println!("Finish: Working");
+        writeln!(w, "Finish: Working");
     }
 
     if details.lifecycle.revision > 0 {
-        println!(
+        writeln!(
+            w,
             "Lifecycle: generation={} revision={} fence={} attempt={} ledger_head={}",
             details.lifecycle.generation,
             details.lifecycle.revision,
@@ -1247,7 +1389,8 @@ fn print_human_readable(details: &TaskDetails) {
             details.lifecycle.ledger_head.as_deref().unwrap_or("none")
         );
         if let Some(event) = details.lifecycle.audit.last() {
-            println!(
+            writeln!(
+                w,
                 "  Last transition: {} {}→{} actor={:?}/{} reason={} event={}",
                 event.event_kind,
                 event.old_state,
@@ -1259,8 +1402,9 @@ fn print_human_readable(details: &TaskDetails) {
             );
         }
         if let Some(intent) = details.lifecycle.reopen_intent.as_ref() {
-            println!("  Hold: {}", super::reopen::hold_label(intent));
-            println!(
+            writeln!(w, "  Hold: {}", super::reopen::hold_label(intent));
+            writeln!(
+                w,
                 "  Next: exact old-owner exit/reap releases the fenced lease, then generation {} is enabled once",
                 intent.source_generation.saturating_add(1)
             );
@@ -1268,61 +1412,66 @@ fn print_human_readable(details: &TaskDetails) {
     }
 
     if details.priority != PRIORITY_DEFAULT {
-        println!("Priority: ⌁{}", details.priority);
+        writeln!(w, "Priority: ⌁{}", details.priority);
     }
 
     if details.visibility != "internal" {
-        println!("Visibility: {}", details.visibility);
+        writeln!(w, "Visibility: {}", details.visibility);
     }
 
     if let Some(ref scope) = details.context_scope {
-        println!("Context scope: {}", scope);
+        writeln!(w, "Context scope: {}", scope);
     }
 
     if let Some(ref mode) = details.exec_mode {
-        println!("Exec mode: {}", mode);
+        writeln!(w, "Exec mode: {}", mode);
     }
-    println!("Worker control: {}", details.worker_control_mode);
-    println!("  Restrictions: {}", details.worker_control_restrictions);
+    writeln!(w, "Worker control: {}", details.worker_control_mode);
+    writeln!(w, "  Restrictions: {}", details.worker_control_restrictions);
     if let Some(ref t) = details.timeout {
-        println!(
+        writeln!(
+            w,
             "Timeout: {} (worker hard timeout; edit with: wg edit {} --timeout <val|\"\">)",
             t, details.id
         );
     }
     if let Some(ref t) = details.verify_timeout {
-        println!(
+        writeln!(
+            w,
             "Validation timeout: {} (override for one-step deterministic validation)",
             t
         );
     }
     for command in &details.validation_commands {
-        println!("Deterministic validation: {command}");
+        writeln!(w, "Deterministic validation: {command}");
     }
 
     if let Some(ref assigned) = details.assigned {
-        println!("Assigned: {}", assigned);
+        writeln!(w, "Assigned: {}", assigned);
     }
     if let Some(ref agent) = details.agent {
-        println!("Agent: {}", agent);
+        writeln!(w, "Agent: {}", agent);
     }
     if let Some(ref profile) = details.profile {
-        println!("Profile: {} (pinned via wg publish --profile)", profile);
+        writeln!(w, "Profile: {} (pinned via wg publish --profile)", profile);
     }
     if details.route_pin.dynamic_at_dispatch {
         let inherited = &details.route_pin.current_inheritance;
-        println!(
+        writeln!(
+            w,
             "Route pin: inherited/unpinned ({}; dynamic at dispatch)",
             details.route_pin.applies_to
         );
-        println!(
+        writeln!(
+            w,
             "  Current inheritance preview: profile={} model={} reasoning={} (not pinned)",
             inherited.profile,
             inherited.route.as_deref().unwrap_or("unconfigured"),
             inherited.reasoning.as_deref().unwrap_or("unconfigured")
         );
     } else {
-        println!(
+        writeln!(
+            w,
             "Route pin: {} ({}; fields: {})",
             details.route_pin.state,
             details.route_pin.applies_to,
@@ -1334,43 +1483,44 @@ fn print_human_readable(details: &TaskDetails) {
         || details.actual_model.is_some()
         || details.resolved_reasoning.is_some()
     {
-        println!();
-        println!("Runtime:");
+        writeln!(w,);
+        writeln!(w, "Runtime:");
         if let Some(ref executor) = details.actual_executor {
-            println!("  Executor: {}", executor);
+            writeln!(w, "  Executor: {}", executor);
         }
         match (&details.model, &details.actual_model) {
             (Some(configured), Some(actual)) if configured != actual => {
-                println!("  Model: {} (configured: {})", actual, configured);
+                writeln!(w, "  Model: {} (configured: {})", actual, configured);
             }
             (_, Some(actual)) => {
-                println!("  Model: {}", actual);
+                writeln!(w, "  Model: {}", actual);
             }
             (Some(configured), None) => {
-                println!("  Model: {} (configured)", configured);
+                writeln!(w, "  Model: {} (configured)", configured);
             }
             (None, None) => {}
         }
         match (&details.reasoning, &details.resolved_reasoning) {
             (Some(configured), Some(resolved)) if configured != resolved => {
-                println!("  Reasoning: {} (configured: {})", resolved, configured);
+                writeln!(w, "  Reasoning: {} (configured: {})", resolved, configured);
             }
             (_, Some(resolved)) => {
-                println!("  Reasoning: {}", resolved);
+                writeln!(w, "  Reasoning: {}", resolved);
             }
             (Some(configured), None) => {
-                println!("  Reasoning: {} (configured)", configured);
+                writeln!(w, "  Reasoning: {} (configured)", configured);
             }
             (None, None) => {}
         }
         if let Some(ref session_id) = details.session_id {
-            println!("  Session: {}", session_id);
+            writeln!(w, "  Session: {}", session_id);
         }
     }
     if let Some(ref compact) = details.native_compaction {
-        println!();
-        println!("Compaction:");
-        println!(
+        writeln!(w,);
+        writeln!(w, "Compaction:");
+        writeln!(
+            w,
             "  Native journal: {}",
             if compact.journal_present {
                 "present"
@@ -1379,33 +1529,33 @@ fn print_human_readable(details: &TaskDetails) {
             }
         );
         if compact.journal_present {
-            println!("  Journal entries: {}", compact.journal_entries);
+            writeln!(w, "  Journal entries: {}", compact.journal_entries);
         }
         if compact.compaction_count > 0 {
-            println!("  Compactions: {}", compact.compaction_count);
+            writeln!(w, "  Compactions: {}", compact.compaction_count);
         } else if compact.journal_present {
-            println!("  Compactions: none (no 90%+ context pressure)");
+            writeln!(w, "  Compactions: none (no 90%+ context pressure)");
         }
         if let Some(ref ts) = compact.last_compaction {
-            println!("  Last compaction: {}", ts);
+            writeln!(w, "  Last compaction: {}", ts);
         }
         if compact.session_summary_present {
             if let Some(words) = compact.session_summary_words {
-                println!("  Session summary: present ({} words)", words);
+                writeln!(w, "  Session summary: present ({} words)", words);
             } else {
-                println!("  Session summary: present");
+                writeln!(w, "  Session summary: present");
             }
         } else if compact.journal_present || details.actual_executor.as_deref() == Some("native") {
-            println!("  Session summary: absent");
+            writeln!(w, "  Session summary: absent");
         }
     }
 
     // Verify status
     if details.verify.is_some() || details.verify_failures > 0 {
-        println!();
-        println!("Verify:");
+        writeln!(w,);
+        writeln!(w, "Verify:");
         if let Some(ref cmd) = details.verify {
-            println!("  Command: {}", cmd);
+            writeln!(w, "  Command: {}", cmd);
         }
         if details.verify_failures > 0 {
             let breaker_tripped = details.status == Status::Failed
@@ -1413,9 +1563,9 @@ fn print_human_readable(details: &TaskDetails) {
                     .log
                     .iter()
                     .any(|e| e.actor.as_deref() == Some("verify-circuit-breaker"));
-            println!("  Failures: {}", details.verify_failures);
+            writeln!(w, "  Failures: {}", details.verify_failures);
             if breaker_tripped {
-                println!("  Circuit breaker: \x1b[31mTRIPPED\x1b[0m");
+                writeln!(w, "  Circuit breaker: \x1b[31mTRIPPED\x1b[0m");
             }
             // Show last verify error from log
             if let Some(last_err) = details
@@ -1432,18 +1582,19 @@ fn print_human_readable(details: &TaskDetails) {
                         .find("\nstdout: ")
                         .map(|p| &stderr[..p])
                         .unwrap_or(stderr);
-                    println!("  Last error: {}", stderr.trim());
+                    writeln!(w, "  Last error: {}", stderr.trim());
                 }
             }
         }
     }
 
     if let Some(flip) = details.flip_gate.as_ref() {
-        println!();
-        println!("Required FLIP:");
-        println!("  State: {}", flip.state.replace('-', " "));
-        println!("  Candidate: {}", flip.candidate_id);
-        println!(
+        writeln!(w,);
+        writeln!(w, "Required FLIP:");
+        writeln!(w, "  State: {}", flip.state.replace('-', " "));
+        writeln!(w, "  Candidate: {}", flip.candidate_id);
+        writeln!(
+            w,
             "  Report: {}",
             flip.report_id.as_deref().unwrap_or("pending")
         );
@@ -1457,34 +1608,37 @@ fn print_human_readable(details: &TaskDetails) {
                 worksgood::format_duration(seconds, true)
             })
             .unwrap_or_else(|| "unknown".to_string());
-        println!("  Updated: {} ({} ago)", flip.updated_at, relative);
+        writeln!(w, "  Updated: {} ({} ago)", flip.updated_at, relative);
         if !flip.finding_codes.is_empty() {
-            println!("  Finding codes: {}", flip.finding_codes.join(", "));
+            writeln!(w, "  Finding codes: {}", flip.finding_codes.join(", "));
         }
         if flip.state == "flip-rejected-repair-needed"
             || flip.state == "flip-infrastructure-unavailable"
         {
-            println!("  Inspect: {}", flip.inspect_command);
-            println!("  Retry FLIP only: {}", flip.retry_flip_command);
-            println!("  Repair candidate: {}", flip.repair_command);
-            println!("  Audited waiver: {}", flip.waiver_command);
+            writeln!(w, "  Inspect: {}", flip.inspect_command);
+            writeln!(w, "  Retry FLIP only: {}", flip.retry_flip_command);
+            writeln!(w, "  Repair candidate: {}", flip.repair_command);
+            writeln!(w, "  Audited waiver: {}", flip.waiver_command);
         }
     }
 
     if !details.evaluation_records.is_empty() {
-        println!();
-        println!(
+        writeln!(w,);
+        writeln!(
+            w,
             "Completion Review Activity (internal lane; virtual in `wg list --all`, not graph tasks):"
         );
         for record in &details.evaluation_records {
-            println!(
+            writeln!(
+                w,
                 "  {} {:?} — {:?} ({})",
                 record.product.label(),
                 record.policy.applicability,
                 record.state,
                 record.evaluation_id
             );
-            println!(
+            writeln!(
+                w,
                 "    candidate: {} attempt={} generation={} fence={} round={}",
                 record.source.candidate_digest,
                 record.source.source_attempt_id,
@@ -1499,13 +1653,14 @@ fn print_human_readable(details: &TaskDetails) {
                     .map(|call| call.exact_route.as_str())
                     .collect::<Vec<_>>()
                     .join(" → ");
-                println!("    route: {} ({}, pinned)", routes, route.adapter);
+                writeln!(w, "    route: {} ({}, pinned)", routes, route.adapter);
             }
             if let Some(manifest) = record.evidence_manifest_id.as_ref() {
-                println!("    evidence manifest: {}", manifest);
+                writeln!(w, "    evidence manifest: {}", manifest);
             }
             for (index, attempt) in record.attempts.iter().enumerate() {
-                println!(
+                writeln!(
+                    w,
                     "    evaluator attempt {}: {} executor={} route={} reasoning={:?} renderer=v{} schema=v{}",
                     index + 1,
                     attempt.attempt_id,
@@ -1516,7 +1671,8 @@ fn print_human_readable(details: &TaskDetails) {
                     attempt.verdict_schema_version
                 );
                 if let Some(usage) = attempt.usage.as_ref() {
-                    println!(
+                    writeln!(
+                        w,
                         "    Pi-reported usage: in={} out={} cache-read={} cache-write={} cost=${:.6}",
                         usage.input_tokens,
                         usage.output_tokens,
@@ -1526,18 +1682,21 @@ fn print_human_readable(details: &TaskDetails) {
                     );
                 }
                 if let Some(failure) = attempt.failure.as_ref() {
-                    println!(
+                    writeln!(
+                        w,
                         "    evaluator failure: {:?} {} — {}",
                         failure.kind, failure.code, failure.message
                     );
                     if !failure.safe_evidence_categories.is_empty() {
-                        println!(
+                        writeln!(
+                            w,
                             "    bounded evidence categories: {}",
                             failure.safe_evidence_categories.join(", ")
                         );
                     }
                     if !failure.safe_evidence_ids.is_empty() {
-                        println!(
+                        writeln!(
+                            w,
                             "    bounded evidence IDs: {}",
                             failure.safe_evidence_ids.join(", ")
                         );
@@ -1545,29 +1704,33 @@ fn print_human_readable(details: &TaskDetails) {
                 }
             }
             if let Some(verdict) = record.verdict.as_ref() {
-                println!(
+                writeln!(
+                    w,
                     "    verdict: {} {:?} score={:.2} consumed={}",
                     verdict.verdict_id,
                     verdict.outcome,
                     verdict.score,
                     record.consumed_verdict_id.as_deref() == Some(verdict.verdict_id.as_str())
                 );
-                println!("    summary: {}", verdict.summary);
+                writeln!(w, "    summary: {}", verdict.summary);
             }
             if let Some(report) = record.deep_report.as_ref() {
-                println!(
+                writeln!(
+                    w,
                     "    deep report: {} {:?} score={:.2} consumed={}",
                     report.report_id,
                     report.outcome,
                     report.score,
                     record.consumed_verdict_id.as_deref() == Some(report.report_id.as_str())
                 );
-                println!(
+                writeln!(
+                    w,
                     "    probes: latent={} counterfactuals={}",
                     report.latent_intent_probe_code,
                     report.counterfactual_probe_codes.join(",")
                 );
-                println!(
+                writeln!(
+                    w,
                     "    observed evidence/tools: {} kinds / {} calls — {}",
                     report.observed_evidence_kinds.len(),
                     report.observations.len(),
@@ -1580,7 +1743,8 @@ fn print_human_readable(details: &TaskDetails) {
                         .map(|reference| format!("{}@{}", reference.evidence_id, reference.locator))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    println!(
+                    writeln!(
+                        w,
                         "    finding: {:?}/{:.0}% {} — {}",
                         finding.severity,
                         finding.confidence * 100.0,
@@ -1588,90 +1752,104 @@ fn print_human_readable(details: &TaskDetails) {
                         references
                     );
                     if let Some(counterfactual) = finding.counterfactual_code.as_deref() {
-                        println!("      counterfactual: {}", counterfactual);
+                        writeln!(w, "      counterfactual: {}", counterfactual);
                     }
                 }
-                println!("    capability manifest: {}", report.capability_manifest_id);
+                writeln!(
+                    w,
+                    "    capability manifest: {}",
+                    report.capability_manifest_id
+                );
             }
             for prior in &record.prior_deep_reports {
-                println!(
+                writeln!(
+                    w,
                     "    prior deep report (immutable evidence only): {} {:?} score={:.2}",
                     prior.report_id, prior.outcome, prior.score
                 );
             }
             if let Some(diagnostic) = record.diagnostic.as_ref() {
-                println!("    diagnostic: {}", diagnostic);
+                writeln!(w, "    diagnostic: {}", diagnostic);
             }
         }
     }
 
     if let Some(note) = details.evaluation_job_note.as_ref() {
-        println!();
-        println!("Evaluation Job:");
-        println!("  {}", note);
+        writeln!(w,);
+        writeln!(w, "Evaluation Job:");
+        writeln!(w, "  {}", note);
     }
     if let Some(gate) = details.evaluation_gate.as_ref() {
-        println!();
-        println!("Evaluation Gate:");
-        println!("  Applicability: {}", gate.applicability);
-        println!(
+        writeln!(w,);
+        writeln!(w, "Evaluation Gate:");
+        writeln!(w, "  Applicability: {}", gate.applicability);
+        writeln!(
+            w,
             "  Evaluator threshold: {}",
             gate.evaluator_threshold.map_or_else(
                 || "n/a (advisory)".to_string(),
                 |value| format!("{value:.2}")
             )
         );
-        println!("  FLIP policy: {}", gate.flip_policy);
-        println!(
+        writeln!(w, "  FLIP policy: {}", gate.flip_policy);
+        writeln!(
+            w,
             "  FLIP threshold: {}",
             gate.flip_threshold
                 .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}"))
         );
-        println!(
+        writeln!(
+            w,
             "  Pipeline: {} (source attempt {})",
             gate.pipeline_id, gate.source_attempt
         );
         if let Some(outcome) = gate.outcome_provenance.as_ref() {
-            println!("  Outcome: {:?}", outcome.outcome);
-            println!("  Provenance: {}", outcome.summary);
+            writeln!(w, "  Outcome: {:?}", outcome.outcome);
+            writeln!(w, "  Provenance: {}", outcome.summary);
         } else {
-            println!("  Outcome: historical-unclassified");
+            writeln!(w, "  Outcome: historical-unclassified");
         }
         if let Some(audit) = gate.audit.as_ref() {
-            println!(
+            writeln!(
+                w,
                 "  Audit: {}{}",
                 if gate.audit_alert { "\x1b[31m" } else { "" },
                 audit
             );
             if gate.audit_alert {
-                print!("\x1b[0m");
+                write!(w, "\x1b[0m");
             }
         }
     }
 
     // Rescue info (for tasks that were implicit-failed then eval-rescued)
     if details.rescued {
-        println!("rescued: true  (↻ agent exited without wg done; eval approved output)");
+        writeln!(
+            w,
+            "rescued: true  (↻ agent exited without wg done; eval approved output)"
+        );
     }
     if details.status == Status::FailedPendingEval {
-        println!(
+        writeln!(
+            w,
             "status: failed pending evaluation  (awaiting rescue eval from .evaluate-{} — score ≥ {:.2} required to rescue)",
             details.id,
             0.7_f64, // shown as human hint; actual threshold from config
         );
     }
     if let Some(health) = details.evaluation_health.as_ref() {
-        println!(
+        writeln!(
+            w,
             "evaluation_health: {}  (pipeline={}, source_attempt={})",
             health.state, health.pipeline_id, health.source_attempt
         );
-        println!("  {}", health.diagnostic);
+        writeln!(w, "  {}", health.diagnostic);
     }
     if let Some(condition) = details.legacy_evaluation_cutover.as_deref() {
-        println!("legacy_evaluation_cutover: {condition}");
+        writeln!(w, "legacy_evaluation_cutover: {condition}");
     }
     if details.meta_eval_attempts > 0 {
-        println!("meta_eval_attempts: {}", details.meta_eval_attempts);
+        writeln!(w, "meta_eval_attempts: {}", details.meta_eval_attempts);
     }
 
     // Failure info
@@ -1681,7 +1859,7 @@ fn print_human_readable(details: &TaskDetails) {
         || details.failure_class == Some(FailureClass::ResourceExhaustedDisk))
         && let Some(ref reason) = details.failure_reason
     {
-        println!("Failure reason: {}", reason);
+        writeln!(w, "Failure reason: {}", reason);
     }
     if details.spawn_failures > 0 {
         // Surface the per-task spawn circuit breaker so a tripped breaker is
@@ -1705,19 +1883,21 @@ fn print_human_readable(details: &TaskDetails) {
             None => String::new(),
         };
         if tripped {
-            println!(
+            writeln!(
+                w,
                 "\x1b[33m⚠ Spawn circuit breaker TRIPPED: {}/{} consecutive spawn failures{} — blocked; run `wg retry {}` or wait for cooldown decay\x1b[0m",
                 details.spawn_failures, max, cooldown_note, details.id
             );
         } else {
-            println!(
+            writeln!(
+                w,
                 "Spawn failures: {}/{}{} (breaker not yet tripped)",
                 details.spawn_failures, max, cooldown_note
             );
         }
     }
     if let Some(class) = details.failure_class {
-        println!("failure_class: {}", class);
+        writeln!(w, "failure_class: {}", class);
         use FailureClass::*;
         let hint = match class {
             ApiError400Document => {
@@ -1741,7 +1921,7 @@ fn print_human_readable(details: &TaskDetails) {
                 "agent talked but didn't act (no files/artifacts written, non-empty output.log) — re-run and perform the concrete operational work"
             }
         };
-        println!("  hint: {}", hint);
+        writeln!(w, "  hint: {}", hint);
     }
     if let Some(recovery) = &details.source_provider_recovery {
         let now = Utc::now();
@@ -1755,7 +1935,8 @@ fn print_human_readable(details: &TaskDetails) {
                 }
             })
             .unwrap_or_else(|| "none".to_string());
-        println!(
+        writeln!(
+            w,
             "source_provider_recovery: {:?} — retry {}/{}; window {}s; next {}; reason {}",
             recovery.state,
             recovery.automatic_retries_used,
@@ -1764,14 +1945,16 @@ fn print_human_readable(details: &TaskDetails) {
             next,
             recovery.reason_code
         );
-        println!("  next action: {}", recovery.next_action);
-        println!(
+        writeln!(w, "  next action: {}", recovery.next_action);
+        writeln!(
+            w,
             "  exact route: {} (route {}, plan {})",
             recovery.exact_route, recovery.route_id, recovery.plan_id
         );
     }
     if let Some(signal) = &details.failure_signal {
-        println!(
+        writeln!(
+            w,
             "failure_reason_signal: {} (confidence {:.1}, status {}, retry-after {})",
             signal.reason,
             signal.confidence,
@@ -1786,31 +1969,31 @@ fn print_human_readable(details: &TaskDetails) {
         );
     }
     if !details.superseded_by.is_empty() {
-        println!("Superseded by: {}", details.superseded_by.join(", "));
+        writeln!(w, "Superseded by: {}", details.superseded_by.join(", "));
     }
     if let Some(ref sup) = details.supersedes {
-        println!("Supersedes: {}", sup);
+        writeln!(w, "Supersedes: {}", sup);
     }
     if details.retry_count > 0 {
         let retry_info = match details.max_retries {
             Some(max) => format!("Retry count: {}/{}", details.retry_count, max),
             None => format!("Retry count: {}", details.retry_count),
         };
-        println!("{}", retry_info);
+        writeln!(w, "{}", retry_info);
     } else if let Some(max) = details.max_retries {
-        println!("Max retries: {}", max);
+        writeln!(w, "Max retries: {}", max);
     }
 
     // Description
     if let Some(ref description) = details.description {
-        println!();
-        println!("Description:");
+        writeln!(w,);
+        writeln!(w, "Description:");
         for line in description.lines() {
-            println!("  {}", line);
+            writeln!(w, "  {}", line);
         }
     }
 
-    println!();
+    writeln!(w,);
 
     // Estimate section
     let has_estimate = details.hours.is_some() || details.cost.is_some();
@@ -1822,47 +2005,49 @@ fn print_human_readable(details: &TaskDetails) {
         if let Some(cost) = details.cost {
             parts.push(format!("${}", cost));
         }
-        println!("Estimate: {}", parts.join(", "));
+        writeln!(w, "Estimate: {}", parts.join(", "));
     }
 
     // Tags
     if !details.tags.is_empty() {
-        println!("Tags: {}", details.tags.join(", "));
+        writeln!(w, "Tags: {}", details.tags.join(", "));
     }
 
     // Skills
     if !details.skills.is_empty() {
-        println!("Skills: {}", details.skills.join(", "));
+        writeln!(w, "Skills: {}", details.skills.join(", "));
     }
 
     // Inputs
     if !details.inputs.is_empty() {
-        println!("Inputs: {}", details.inputs.join(", "));
+        writeln!(w, "Inputs: {}", details.inputs.join(", "));
     }
 
     // Deliverables
     if !details.deliverables.is_empty() {
-        println!("Deliverables: {}", details.deliverables.join(", "));
+        writeln!(w, "Deliverables: {}", details.deliverables.join(", "));
     }
 
-    println!();
+    writeln!(w,);
 
     // After section
-    println!("After:");
+    writeln!(w, "After:");
     if details.after.is_empty() {
-        println!("  (none)");
+        writeln!(w, "  (none)");
     } else {
         for blocker in &details.after {
-            println!("  - {} ({})", blocker.id, blocker.status);
+            writeln!(w, "  - {} ({})", blocker.id, blocker.status);
             if let Some(reason) = blocker.blocked_reason.as_deref() {
-                println!("    blocked: {}", reason);
+                writeln!(w, "    blocked: {}", reason);
                 if !blocker.superseded_by.is_empty() {
-                    println!(
+                    writeln!(
+                        w,
                         "    superseded by {} (provenance only; edge still blocks)",
                         blocker.superseded_by.join(", ")
                     );
                 }
-                println!(
+                writeln!(
+                    w,
                     "    repair: `wg retry {0}`, relink to a completed replacement, or `wg rm-dep {1} {0}`",
                     blocker.id, details.id
                 );
@@ -1870,23 +2055,23 @@ fn print_human_readable(details: &TaskDetails) {
         }
     }
 
-    println!();
+    writeln!(w,);
 
     // Blocks section
-    println!("Before:");
+    writeln!(w, "Before:");
     if details.before.is_empty() {
-        println!("  (none)");
+        writeln!(w, "  (none)");
     } else {
         for blocked in &details.before {
-            println!("  - {} ({})", blocked.id, blocked.status);
+            writeln!(w, "  - {} ({})", blocked.id, blocked.status);
         }
     }
 
     // Cycle config
     if let Some(ref cc) = details.cycle_config {
-        println!();
-        println!("Cycle config (header):");
-        println!("  Max iterations: {}", cc.max_iterations);
+        writeln!(w,);
+        writeln!(w, "Cycle config (header):");
+        writeln!(w, "  Max iterations: {}", cc.max_iterations);
         if let Some(ref guard) = cc.guard {
             let guard_str = match guard {
                 LoopGuard::TaskStatus { task, status } => {
@@ -1895,16 +2080,17 @@ fn print_human_readable(details: &TaskDetails) {
                 LoopGuard::IterationLessThan(n) => format!("iteration<{}", n),
                 LoopGuard::Always => "always".to_string(),
             };
-            println!("  Guard: {}", guard_str);
+            writeln!(w, "  Guard: {}", guard_str);
         }
         if let Some(ref delay) = cc.delay {
-            println!("  Delay: {}", delay);
+            writeln!(w, "  Delay: {}", delay);
         }
         if cc.no_converge {
-            println!("  No-converge: true (all iterations forced)");
+            writeln!(w, "  No-converge: true (all iterations forced)");
         }
         // Display 1-based iteration: loop_iteration=0 is "iteration 1/max"
-        println!(
+        writeln!(
+            w,
             "  Current iteration: {}/{}",
             details.loop_iteration + 1,
             cc.max_iterations
@@ -1914,13 +2100,14 @@ fn print_human_readable(details: &TaskDetails) {
         if let Some(ref last_ts) = details.last_iteration_completed_at {
             if let Ok(parsed) = last_ts.parse::<DateTime<Utc>>() {
                 let ago = Utc::now().signed_duration_since(parsed).num_seconds();
-                println!(
+                writeln!(
+                    w,
                     "  Last iteration completed: {} ({} ago)",
                     last_ts,
                     worksgood::format_duration(ago, true)
                 );
             } else {
-                println!("  Last iteration completed: {}", last_ts);
+                writeln!(w, "  Last iteration completed: {}", last_ts);
             }
         }
 
@@ -1944,33 +2131,34 @@ fn print_human_readable(details: &TaskDetails) {
             let now = Utc::now();
             if parsed > now {
                 let secs = (parsed - now).num_seconds();
-                println!(
+                writeln!(
+                    w,
                     "  Next iteration due: in {}",
                     worksgood::format_duration(secs, true)
                 );
             } else {
-                println!("  Next iteration due: ready now");
+                writeln!(w, "  Next iteration due: ready now");
             }
         }
     }
 
-    println!();
+    writeln!(w,);
 
     // Timestamps
     if let Some(ref created) = details.created_at {
-        println!("Created: {}", created);
+        writeln!(w, "Created: {}", created);
     }
     if let Some(ref started) = details.started_at {
-        println!("Started: {}", started);
+        writeln!(w, "Started: {}", started);
     }
     if let Some(ref completed) = details.completed_at {
-        println!("Completed: {}", completed);
+        writeln!(w, "Completed: {}", completed);
     }
     if let Some(ref last_interaction) = details.last_interaction_at {
-        println!("Last interaction: {}", last_interaction);
+        writeln!(w, "Last interaction: {}", last_interaction);
     }
     if let Some(ref observer) = details.worktree_observer {
-        println!();
+        writeln!(w,);
         if let Some(ref activity) = observer.last_activity {
             let age = Utc::now()
                 .timestamp()
@@ -1986,14 +2174,16 @@ fn print_human_readable(details: &TaskDetails) {
                     )
                 },
             );
-            println!(
+            writeln!(
+                w,
                 "Worktree activity: observed/unproven seq={} {} ({} ago)",
                 observer.content_seq,
                 change_text,
                 worksgood::format_duration(age, true),
             );
         } else {
-            println!(
+            writeln!(
+                w,
                 "Worktree activity: observed/unproven seq={} none after baseline{}",
                 observer.content_seq,
                 if observer.baseline_time_unknown {
@@ -2006,22 +2196,26 @@ fn print_human_readable(details: &TaskDetails) {
         // Receipt-proven progress is intentionally not synthesized from the
         // filesystem channel. The Pi watchdog owns and fills this clock.
         if let Some(ref watchdog) = details.pi_watchdog {
-            println!(
+            writeln!(
+                w,
                 "Pi progress: proven seq={} {} at {}",
                 watchdog.progress_seq, watchdog.last_meaningful_kind, watchdog.last_meaningful_at
             );
         } else {
-            println!(
+            writeln!(
+                w,
                 "Pi progress: proven unavailable (watchdog receipt channel has not projected evidence)"
             );
         }
-        println!(
+        writeln!(
+            w,
             "Watchdog: proof default={}s; observed grace={}s / {}s hard cap (observations never reset proof)",
             worksgood::worktree_observer::DEFAULT_MEANINGFUL_SILENCE_SECS,
             worksgood::worktree_observer::DEFAULT_OBSERVED_ACTIVITY_GRACE_SECS,
             worksgood::worktree_observer::DEFAULT_MAX_OBSERVED_ONLY_EXTENSION_SECS,
         );
-        println!(
+        writeln!(
+            w,
             "Observer: {:?}; scan={}s ago; ignored churn={:?}; manifest={}; policy={}",
             observer.health,
             Utc::now()
@@ -2032,7 +2226,8 @@ fn print_human_readable(details: &TaskDetails) {
             observer.manifest_digest,
             observer.policy_digest,
         );
-        println!(
+        writeln!(
+            w,
             "  source: task={} gen={} attempt={} fence={} worktree={} lease={} process-epoch={} observer-epoch={}",
             observer.source.identity.task_id,
             observer.source.identity.generation,
@@ -2043,24 +2238,27 @@ fn print_human_readable(details: &TaskDetails) {
             observer.source.identity.process_epoch,
             observer.source.identity.observer_epoch,
         );
-        println!("  root: {}", observer.source.canonical_worktree_root);
+        writeln!(w, "  root: {}", observer.source.canonical_worktree_root);
         if observer.quarantine_required {
-            println!(
+            writeln!(
+                w,
                 "  quarantine: required; late mutations={}",
                 observer.late_mutations.len()
             );
         }
-        println!("  next: {}", observer.next_safe_action);
+        writeln!(w, "  next: {}", observer.next_safe_action);
     }
     if let Some(ref watchdog) = details.pi_watchdog {
         let silence = Utc::now()
             .timestamp()
             .saturating_sub(watchdog.last_meaningful_at);
-        println!(
+        writeln!(
+            w,
             "Pi watchdog: {:?}; phase={:?}; progress-seq={}; proof-silence={}s / soft=300s",
             watchdog.classification, watchdog.phase, watchdog.progress_seq, silence
         );
-        println!(
+        writeln!(
+            w,
             "  native: live/unproven seq={} at={:?} thinking-events={} output-events={} tool={}/{} child={} receipt={} usage-receipts={}",
             watchdog.native_activity.event_seq,
             watchdog.native_activity.last_activity_at,
@@ -2088,7 +2286,8 @@ fn print_human_readable(details: &TaskDetails) {
                 .unwrap_or("none"),
             watchdog.native_activity.usage_receipt_count,
         );
-        println!(
+        writeln!(
+            w,
             "  session={} leaf={} route=pi:{}:{} qos={:?} process-epoch={} continuation-epoch={}",
             watchdog.session.session_id,
             watchdog.session.branch_leaf,
@@ -2098,7 +2297,8 @@ fn print_human_readable(details: &TaskDetails) {
             watchdog.process_epoch,
             watchdog.continuation_epoch,
         );
-        println!(
+        writeln!(
+            w,
             "  hard={} grace-deadline={:?}; prompt={:?}; budget={}/{}s; reason={}",
             watchdog
                 .hard_resume_after_secs
@@ -2110,13 +2310,23 @@ fn print_human_readable(details: &TaskDetails) {
             watchdog.elapsed_reserved_secs,
             watchdog.reason_code.as_deref().unwrap_or("none"),
         );
-        println!("  next: wg pi-watchdog status {}", watchdog.source.task_id);
+        writeln!(
+            w,
+            "  next: wg pi-watchdog status {}",
+            watchdog.source.task_id
+        );
     }
     if let Some(ref not_before) = details.not_before {
-        println!("Not before: {}{}", not_before, format_countdown(not_before));
+        writeln!(
+            w,
+            "Not before: {}{}",
+            not_before,
+            format_countdown(not_before)
+        );
     }
     if let Some(ref ready_after) = details.ready_after {
-        println!(
+        writeln!(
+            w,
             "Ready after: {}{}",
             ready_after,
             format_countdown(ready_after)
@@ -2128,19 +2338,19 @@ fn print_human_readable(details: &TaskDetails) {
     // paused state, and missed-fire count so a user can debug why a recurring
     // job did or did not wake up.
     if let Some(ref cron) = details.cron {
-        println!();
-        println!("Recurring (cron):");
-        println!("  Schedule: {}", cron.cron_schedule);
-        println!("  Resolved: {}", cron.summary);
+        writeln!(w,);
+        writeln!(w, "Recurring (cron):");
+        writeln!(w, "  Schedule: {}", cron.cron_schedule);
+        writeln!(w, "  Resolved: {}", cron.summary);
         if let Some(ref nf) = cron.next_cron_fire {
-            println!("  Next fire: {}{}", nf, format_countdown(nf));
+            writeln!(w, "  Next fire: {}{}", nf, format_countdown(nf));
         } else {
-            println!("  Next fire: unknown (will be computed on next tick)");
+            writeln!(w, "  Next fire: unknown (will be computed on next tick)");
         }
         if let Some(ref lf) = cron.last_cron_fire {
-            println!("  Last fire: {}{}", lf, format_countdown(lf));
+            writeln!(w, "  Last fire: {}{}", lf, format_countdown(lf));
         } else {
-            println!("  Last fire: never");
+            writeln!(w, "  Last fire: never");
         }
         let state_tag: String = if cron.paused {
             "\x1b[33mpaused\x1b[0m (will not dispatch even when due)".to_string()
@@ -2157,17 +2367,19 @@ fn print_human_readable(details: &TaskDetails) {
         } else {
             "scheduled (not yet due)".to_string()
         };
-        println!("  State: {}", state_tag);
+        writeln!(w, "  State: {}", state_tag);
         if let Some(missed) = cron.missed_fires
             && missed > 0
         {
-            println!(
+            writeln!(
+                w,
                 "  \x1b[33mMissed fires: {}\x1b[0m (daemon was down or spawning paused across scheduled window(s))",
                 missed
             );
         }
         if cron.has_dow_field {
-            println!(
+            writeln!(
+                w,
                 "  \x1b[33mnote:\x1b[0m day-of-week uses the cron crate's non-standard mapping (1=Sun, 2=Mon, …, 7=Sat) — verify the resolved weekday above matches your intent."
             );
         }
@@ -2175,34 +2387,38 @@ fn print_human_readable(details: &TaskDetails) {
 
     // Token usage
     if let Some(ref usage) = details.token_usage {
-        println!();
+        writeln!(w,);
         let novel_in = usage
             .input_tokens
             .saturating_sub(usage.cache_read_input_tokens);
         if usage.cache_read_input_tokens > 0 {
-            println!(
+            writeln!(
+                w,
                 "Tokens: {}/{} (in/out) +{} cached",
                 format_tokens(novel_in),
                 format_tokens(usage.output_tokens),
                 format_tokens(usage.cache_read_input_tokens)
             );
         } else {
-            println!(
+            writeln!(
+                w,
                 "Tokens: {}/{} (in/out)",
                 format_tokens(novel_in),
                 format_tokens(usage.output_tokens)
             );
         }
         if usage.cost_usd > 0.0 {
-            println!("Cost: ${:.2}", usage.cost_usd);
+            writeln!(w, "Cost: ${:.2}", usage.cost_usd);
         }
         if details.source_attempt_usage.len() > 1 {
-            println!(
+            writeln!(
+                w,
                 "Source attempts: {} (episode cumulative; review lane excluded)",
                 details.source_attempt_usage.len()
             );
             for attempt in &details.source_attempt_usage {
-                println!(
+                writeln!(
+                    w,
                     "  {}: ${:.2}, {} tokens",
                     attempt.attempt_id,
                     attempt.usage.cost_usd,
@@ -2214,19 +2430,20 @@ fn print_human_readable(details: &TaskDetails) {
 
     // Evaluation data
     if let Some(wt) = &details.worktree_state {
-        println!();
-        println!("Worktree:");
-        println!("  Path:              {}", wt.path);
-        println!("  Branch:            {}", wt.branch);
-        println!("  Commits ahead:     {}", wt.commits_ahead);
-        println!("  Uncommitted files: {}", wt.uncommitted_files);
+        writeln!(w,);
+        writeln!(w, "Worktree:");
+        writeln!(w, "  Path:              {}", wt.path);
+        writeln!(w, "  Branch:            {}", wt.branch);
+        writeln!(w, "  Commits ahead:     {}", wt.commits_ahead);
+        writeln!(w, "  Uncommitted files: {}", wt.uncommitted_files);
         if let Some(ts) = &wt.last_modified {
-            println!("  Last modified:     {}", ts);
+            writeln!(w, "  Last modified:     {}", ts);
         }
-        println!("  Cleanup pending:   {}", wt.cleanup_pending);
-        println!("  Merged to main:    {}", wt.merged_to_main);
+        writeln!(w, "  Cleanup pending:   {}", wt.cleanup_pending);
+        writeln!(w, "  Merged to main:    {}", wt.merged_to_main);
         if details.retry_count > 0 {
-            println!(
+            writeln!(
+                w,
                 "  (Retried {} time{} — `wg retry` resumes in-place; `wg retry --fresh` starts over)",
                 details.retry_count,
                 if details.retry_count == 1 { "" } else { "s" }
@@ -2235,24 +2452,24 @@ fn print_human_readable(details: &TaskDetails) {
     }
 
     if !details.evaluations.is_empty() {
-        println!();
-        println!("Evaluations:");
+        writeln!(w,);
+        writeln!(w, "Evaluations:");
         for line in format_evaluations(&details.evaluations) {
-            println!("{}", line);
+            writeln!(w, "{}", line);
         }
     }
 
     // Log entries
     if !details.log.is_empty() {
-        println!();
-        println!("Log:");
+        writeln!(w,);
+        writeln!(w, "Log:");
         for entry in &details.log {
             let actor_str = entry
                 .actor
                 .as_ref()
                 .map(|a| format!(" [{}]", a))
                 .unwrap_or_default();
-            println!("  {} {}{}", entry.timestamp, entry.message, actor_str);
+            writeln!(w, "  {} {}{}", entry.timestamp, entry.message, actor_str);
         }
     }
 }
@@ -2309,7 +2526,14 @@ fn format_countdown(timestamp: &str) -> String {
     }
 }
 
-fn print_retry_history(dir: &Path, task_id: &str, current_agent: Option<&str>, status: Status) {
+#[allow(unused_must_use)]
+fn write_retry_history(
+    w: &mut String,
+    dir: &Path,
+    task_id: &str,
+    current_agent: Option<&str>,
+    status: Status,
+) {
     let archive_base = dir.join("log").join("agents").join(task_id);
 
     let mut archives: Vec<_> = match std::fs::read_dir(&archive_base) {
@@ -2340,15 +2564,16 @@ fn print_retry_history(dir: &Path, task_id: &str, current_agent: Option<&str>, s
 
     archives.sort_by_key(|e| e.file_name());
 
-    println!();
+    writeln!(w,);
     if live_line.is_some() && !archives.is_empty() {
         // Make the split between "what ran before" and "what's running now"
         // unambiguous in the header itself.
-        println!(
+        writeln!(
+            w,
             "Attempt History (prior attempts below; current attempt is live — see Status/Assigned above):"
         );
     } else {
-        println!("Attempt History:");
+        writeln!(w, "Attempt History:");
     }
 
     let evals_dir = dir.join("agency").join("evaluations");
@@ -2395,7 +2620,8 @@ fn print_retry_history(dir: &Path, task_id: &str, current_agent: Option<&str>, s
             })
             .unwrap_or_default();
 
-        println!(
+        writeln!(
+            w,
             "  Attempt {}: {}{}{}{}",
             idx + 1,
             ts,
@@ -2406,7 +2632,7 @@ fn print_retry_history(dir: &Path, task_id: &str, current_agent: Option<&str>, s
     }
 
     if let Some(line) = live_line {
-        println!("{}", line);
+        writeln!(w, "{}", line);
     }
 }
 
@@ -2527,6 +2753,48 @@ mod tests {
         assert_eq!(Status::InProgress.to_string(), "in-progress");
         assert_eq!(Status::Done.to_string(), "done");
         assert_eq!(Status::Blocked.to_string(), "blocked");
+    }
+
+    /// The daemon's `GetTaskDetail` word-wrap must never drop or reorder text:
+    /// it only inserts line breaks, so the panel still carries everything the
+    /// CLI prints. See task fleet-detail-view.
+    #[test]
+    fn test_wrap_text_preserves_every_byte() {
+        let text = "Task: t1\n\n  long   line   with   spaces\nshort\n";
+        let wrapped = wrap_text(text, 10);
+        let squash = |s: &str| -> String { s.chars().filter(|c| !c.is_whitespace()).collect() };
+        assert_eq!(
+            squash(&wrapped),
+            squash(text),
+            "wrap dropped/reordered bytes"
+        );
+        // It actually wrapped the long line.
+        assert!(wrapped.lines().count() > text.lines().count());
+        // No line exceeds the width unless a single word is longer than it.
+        for line in wrapped.lines() {
+            let longest_word = line
+                .split(' ')
+                .map(|w| w.chars().count())
+                .max()
+                .unwrap_or(0);
+            assert!(
+                line.chars().count() <= 10 || longest_word > 10,
+                "line exceeded width: {line:?}"
+            );
+        }
+        // Trailing newline is preserved.
+        assert!(wrapped.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_wrap_text_preserves_leading_indent() {
+        let wrapped = wrap_text("          indented continuation words here", 14);
+        for line in wrapped.lines().skip(1) {
+            assert!(
+                line.starts_with("          "),
+                "continuation lost indent: {line:?}"
+            );
+        }
     }
 
     /// Each evaluation line in `wg show` must include an iteration label so
