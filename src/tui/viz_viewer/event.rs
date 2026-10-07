@@ -9871,6 +9871,9 @@ mod drilldown_tests {
             elapsed_secs: Some(10),
             model: Some("sonnet".into()),
             latest_snippet: None,
+            total_tokens: None,
+            turn_count: None,
+            tool_uses: None,
         });
         app.dashboard.selected_row = 0;
         app.right_panel_tab = RightPanelTab::Dashboard;

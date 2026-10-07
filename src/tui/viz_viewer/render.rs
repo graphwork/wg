@@ -7572,6 +7572,67 @@ fn activity_event_style(kind: &ActivityEventKind, is_light: bool) -> (Color, Sty
     (color, Style::default().fg(color))
 }
 
+/// Abbreviate a positive token count for a compact dashboard cell (`950`,
+/// `12k`, `1.2M`). Returns `None` for zero so callers omit the metric instead
+/// of printing a fabricated zero.
+fn compact_usage_count(n: u64) -> Option<String> {
+    (n > 0).then(|| format_tokens(n))
+}
+
+/// Compact TOKENS/TURNS/TOOLS cell for one dashboard agent row: abbreviated
+/// total tokens, `<n>t` turns, and `<n>x` tool uses, each omitted when unknown.
+/// Returns `None` when the row carries no usage at all, so the column stays
+/// blank instead of showing zeros.
+fn dashboard_usage_cell(
+    total_tokens: Option<u64>,
+    turn_count: Option<u32>,
+    tool_uses: Option<u32>,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(tokens) = total_tokens.and_then(compact_usage_count) {
+        parts.push(tokens);
+    }
+    if let Some(turns) = turn_count.filter(|c| *c > 0) {
+        parts.push(format!("{}t", turns));
+    }
+    if let Some(tools) = tool_uses.filter(|c| *c > 0) {
+        parts.push(format!("{}x", tools));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+/// Full usage label for the agent detail header: `1234 tokens (500 in / 200
+/// out) · 14 turns · 31 tools · $0.42`. Omits metrics the executor's stream
+/// does not expose; returns `None` when nothing is available.
+fn agent_usage_full(usage: &worksgood::stream_event::LiveUsage) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let total = usage.total_tokens();
+    if total > 0 {
+        parts.push(format!(
+            "{} tokens ({} in / {} out)",
+            total, usage.input_tokens, usage.output_tokens
+        ));
+    }
+    if let Some(turns) = usage.turn_count.filter(|c| *c > 0) {
+        parts.push(format!(
+            "{} {}",
+            turns,
+            if turns == 1 { "turn" } else { "turns" }
+        ));
+    }
+    if let Some(tools) = usage.tool_uses.filter(|c| *c > 0) {
+        parts.push(format!(
+            "{} {}",
+            tools,
+            if tools == 1 { "tool use" } else { "tool uses" }
+        ));
+    }
+    if let Some(cost) = usage.cost_usd.filter(|c| *c > 0.0) {
+        parts.push(format!("${:.4}", cost));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     use super::state::DashboardAgentActivity;
     use ratatui::widgets::Sparkline;
@@ -7693,7 +7754,10 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(
-                format!("{:<12} {:<8} {:<8} ", "AGENT", "STATUS", "TIME"),
+                format!(
+                    "{:<12} {:<8} {:<8} {:<20} ",
+                    "AGENT", "STATUS", "TIME", "TOKENS TURNS TOOLS"
+                ),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD),
@@ -7730,6 +7794,10 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
             let selector = if is_selected { "▸ " } else { "  " };
 
+            // Blank (never a fabricated zero) when the agent exposes no usage.
+            let usage_cell = dashboard_usage_cell(row.total_tokens, row.turn_count, row.tool_uses)
+                .unwrap_or_default();
+
             lines.push(Line::from(vec![
                 Span::styled(selector, Style::default().fg(Color::Yellow)),
                 Span::styled(
@@ -7742,6 +7810,10 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 ),
                 Span::styled(
                     format!("{:<8} ", elapsed_str),
+                    row_style.fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{:<20} ", usage_cell),
                     row_style.fg(Color::DarkGray),
                 ),
                 Span::styled(task_display, row_style.fg(text_primary(app.is_light_theme))),
@@ -8529,6 +8601,16 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                         Style::default().fg(Color::DarkGray),
                     )));
                 }
+            }
+            // Full live usage (tokens/turns/tools) for this agent, derived from
+            // the bounded raw-stream tail already computed on the refresh path.
+            if let Some(usage) = agent.usage.as_ref()
+                && let Some(label) = agent_usage_full(usage)
+            {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", label),
+                    Style::default().fg(Color::DarkGray),
+                )));
             }
             // Show live stream snippet for working agents.
             if let Some(si) = stream_info
@@ -21704,6 +21786,8 @@ mod tests {
                 runtime_secs: None,
                 started_at: None,
                 completed_at: None,
+                executor: None,
+                usage: None,
             },
             AgentMonitorEntry {
                 agent_id: "agent-280".to_string(),
@@ -21713,6 +21797,8 @@ mod tests {
                 runtime_secs: None,
                 started_at: None,
                 completed_at: None,
+                executor: None,
+                usage: None,
             },
         ];
         app.log_pane = LogPaneState::default();
@@ -22417,5 +22503,130 @@ mod tests {
         assert!(layout.prev_zone.width >= 3);
         assert!(layout.next_zone.width >= 3);
         assert!(layout.prev_zone.x + layout.prev_zone.width <= layout.next_zone.x);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Dashboard agent usage columns (tui-fleet-usage-columns)
+    // ══════════════════════════════════════════════════════════════════
+
+    /// The compact cell abbreviates tokens and omits any metric the live stream
+    /// did not expose — never a fabricated `0`.
+    #[test]
+    fn dashboard_usage_cell_omits_unknown_metrics() {
+        assert_eq!(dashboard_usage_cell(None, None, None), None);
+        assert_eq!(dashboard_usage_cell(Some(0), Some(0), Some(0)), None);
+        assert_eq!(
+            dashboard_usage_cell(Some(1234), Some(14), Some(31)).as_deref(),
+            Some("1.2k 14t 31x")
+        );
+        // Partial metric availability keeps only the known parts.
+        assert_eq!(
+            dashboard_usage_cell(None, Some(3), None).as_deref(),
+            Some("3t")
+        );
+        assert_eq!(
+            dashboard_usage_cell(Some(950), None, None).as_deref(),
+            Some("950")
+        );
+    }
+
+    /// The full label mirrors the pi plugin's `agentUsageFull` shape.
+    #[test]
+    fn agent_usage_full_matches_plugin_label() {
+        let usage = worksgood::stream_event::LiveUsage {
+            input_tokens: 500,
+            output_tokens: 200,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cost_usd: Some(0.42),
+            turn_count: Some(1),
+            tool_uses: Some(2),
+        };
+        assert_eq!(
+            agent_usage_full(&usage).as_deref(),
+            Some("700 tokens (500 in / 200 out) · 1 turn · 2 tool uses · $0.4200")
+        );
+        assert_eq!(
+            agent_usage_full(&worksgood::stream_event::LiveUsage::default()),
+            None
+        );
+    }
+
+    /// End-to-end render of the dashboard agent table: a row with usage shows
+    /// the compact TOKENS/TURNS/TOOLS segment, a row without usage stays blank.
+    #[test]
+    fn dashboard_agent_table_renders_usage_segment_and_blank_when_absent() {
+        use crate::tui::viz_viewer::state::{DashboardAgentActivity, DashboardAgentRow};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (viz, _) = build_test_graph_chain_plus_isolated();
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.dashboard.agent_rows = vec![
+            DashboardAgentRow {
+                agent_id: "agent-1".into(),
+                task_id: "t1".into(),
+                task_title: Some("Live pi task".into()),
+                activity: DashboardAgentActivity::Active,
+                elapsed_secs: Some(12),
+                model: Some("pi:openrouter:test/x".into()),
+                latest_snippet: None,
+                total_tokens: Some(1234),
+                turn_count: Some(14),
+                tool_uses: Some(31),
+            },
+            DashboardAgentRow {
+                agent_id: "agent-2".into(),
+                task_id: "t2".into(),
+                task_title: Some("No stream".into()),
+                activity: DashboardAgentActivity::Active,
+                elapsed_secs: Some(3),
+                model: None,
+                latest_snippet: None,
+                total_tokens: None,
+                turn_count: None,
+                tool_uses: None,
+            },
+        ];
+        app.dashboard.selected_row = 0;
+
+        let backend = TestBackend::new(140, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_dashboard_tab(frame, &mut app, area);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        let mut rendered = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                rendered.push_str(buffer[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+
+        assert!(
+            rendered.contains("TOKENS TURNS TOOLS"),
+            "dashboard header omitted the usage column:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("1.2k 14t 31x"),
+            "dashboard row omitted the derived usage segment:\n{}",
+            rendered
+        );
+        // The usage-less row must stay blank — no fabricated zeros.
+        let agent2_line = rendered
+            .lines()
+            .find(|line| line.contains("agent-2"))
+            .expect("agent-2 row rendered");
+        assert!(
+            !agent2_line.contains("0t") && !agent2_line.contains("0x"),
+            "usage-less row fabricated a zero segment: {:?}",
+            agent2_line
+        );
     }
 }

@@ -3466,3 +3466,12 @@ owners = [
 ]
 description = "Pins the A+E thinnest slice from .wg/survey/survey-cow-worktrees.md §5: a build-capable spawn is wired with a shared sccache compiler cache (RUSTC_WRAPPER via a WG-generated wrapper that unsets the per-attempt CARGO_TARGET_DIR so byte-identical rebuilds actually hit, SCCACHE_DIR, SCCACHE_CACHE_SIZE, SCCACHE_BASEDIRS=<project root>, and CC/CXX wrapped) while a PRIVATE per-attempt CARGO_TARGET_DIR is preserved. A real daemon dispatches two concurrent build-capable shell tasks; the scenario asserts the exact env wiring, that the shared sccache dir exists and is populated, that a second identical build in a FRESH layer is a warm cache hit (hits>=1), and that the two concurrent spawns received DISTINCT private target dirs (no shared mutable target / cargo target-lock serialization). Exit 77 = loud SKIP when sccache is not installed (set WG_SCCACHE_BIN to point at one). Credential-free, offline (path-only dependency)."
 timeout_seconds = 300
+
+[[scenario]]
+name = "tui_dashboard_agent_usage_columns"
+script = "scenarios/tui_dashboard_agent_usage_columns.sh"
+owners = [
+    "tui-fleet-usage-columns",
+]
+description = "tui-fleet-usage-columns: the TUI dashboard agent table gains a compact TOKENS/TURNS/TOOLS column derived from each agent's bounded raw_stream.jsonl tail via the SAME `stream_event::live_usage_for_agent` derivation the pi plugin uses (no second parser), and the Agency tab's agent list shows the full tokens/turns/tools label; a row with no usable stream degrades to a blank segment (never fabricated zeros). Live wg tui/tmux human flow: the CANDIDATE worktree binary boots a synthetic .wg with one in-progress task assigned to a fake `pi` agent carrying 2 turns (1234 total tokens) + 31 tool events, the scenario sends '6' to the Dashboard and '2' to the Agency tab and asserts the rendered cell grid (via tui-dump) shows `1.2k 2t 31x` and `1234 tokens (1200 in / 34 out) · 2 turns · 31 tool uses`. Credential-free."
+timeout_seconds = 300

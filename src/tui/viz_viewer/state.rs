@@ -4951,6 +4951,14 @@ pub struct AgentMonitorEntry {
     pub started_at: Option<String>,
     /// ISO 8601 completion timestamp (for Done/Failed/Dead agents)
     pub completed_at: Option<String>,
+    /// Executor handler kind (e.g. `pi`, `claude`, `codex`) used to derive the
+    /// agent's live usage from the correct raw-stream dialect. `None` when the
+    /// registry entry is unavailable.
+    pub executor: Option<String>,
+    /// Live usage (tokens/turns/tools) derived from a bounded tail of the
+    /// agent's raw stream — the exact derivation the pi plugin uses. `None`
+    /// when the stream is absent or yields nothing usable.
+    pub usage: Option<worksgood::stream_event::LiveUsage>,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -5065,6 +5073,15 @@ pub struct DashboardAgentRow {
     pub elapsed_secs: Option<i64>,
     pub model: Option<String>,
     pub latest_snippet: Option<String>,
+    /// Total (input + output) tokens observed in the live stream tail. `None`
+    /// when unavailable, so the row omits the segment instead of faking `0`.
+    pub total_tokens: Option<u64>,
+    /// Turns observed in the live stream tail. `None` when the executor exposes
+    /// no turn boundary (never fabricated).
+    pub turn_count: Option<u32>,
+    /// Tool executions observed in the live stream tail. `None` when the
+    /// executor exposes no tool events (never fabricated).
+    pub tool_uses: Option<u32>,
 }
 
 /// Coordinator card data for the dashboard.
@@ -10349,6 +10366,13 @@ impl VizApp {
             self.compact_navigation_override = Some(SinglePanelView::Detail);
         }
         self.focused_panel = FocusedPanel::RightPanel;
+        // The cached agent dashboard (Firehose) renders the registry-derived
+        // agent table, so load it on activation (bounded/coalesced auxiliary
+        // read) instead of waiting for a graph.jsonl change that may never
+        // arrive during an idle session.
+        if tab == RightPanelTab::Firehose {
+            self.request_agent_monitor();
+        }
     }
 
     /// Activate one primary lane without opening its repeated-activation
@@ -13736,9 +13760,14 @@ impl VizApp {
                 content_updated = true;
             }
 
-            // Firehose: update if tab is active.
+            // Firehose: update if tab is active. The cached agent dashboard
+            // also reads the registry + per-agent raw-stream usage, so refresh
+            // the agent monitor here too (coalesced by the auxiliary lane) to
+            // keep the derived tokens/turns/tools columns live without any
+            // render-thread I/O.
             if self.right_panel_tab == RightPanelTab::Firehose {
                 self.request_firehose();
+                self.request_agent_monitor();
                 content_updated = true;
             }
 
@@ -18356,6 +18385,8 @@ impl VizApp {
                             runtime_secs,
                             started_at: Some(agent.started_at.clone()),
                             completed_at: agent.completed_at.clone(),
+                            executor: Some(agent.executor.clone()),
+                            usage: None,
                         }
                     })
                     .collect();
@@ -18365,6 +18396,25 @@ impl VizApp {
                     let b_working = matches!(b.status, AgentStatus::Working);
                     b_working.cmp(&a_working).then(a.agent_id.cmp(&b.agent_id))
                 });
+                // Derive live usage (tokens/turns/tools) from each agent's
+                // bounded `raw_stream.jsonl` tail — the exact derivation the pi
+                // plugin uses (`stream_event::live_usage_for_agent`), not a
+                // second parser. Capped so a large registry never turns one
+                // refresh cycle into unbounded file I/O on the refresh thread.
+                let workgraph_dir = self.workgraph_dir.clone();
+                for (idx, entry) in self.agent_monitor.agents.iter_mut().enumerate() {
+                    if idx >= worksgood::service::fleet_snapshot::MAX_USAGE_ROWS {
+                        break;
+                    }
+                    let Some(executor) = entry.executor.as_deref() else {
+                        continue;
+                    };
+                    entry.usage = worksgood::stream_event::live_usage_for_agent(
+                        &workgraph_dir,
+                        &entry.agent_id,
+                        executor,
+                    );
+                }
             }
             Err(_) => {
                 self.agent_monitor.agents.clear();
@@ -18439,6 +18489,23 @@ impl VizApp {
                     elapsed_secs: entry.runtime_secs,
                     model: None, // populated from registry below if available
                     latest_snippet: snippet,
+                    // Copy the usage already derived in `load_agent_monitor` from
+                    // the same bounded raw-stream tail (no second read/parse).
+                    total_tokens: entry
+                        .usage
+                        .as_ref()
+                        .map(|u| u.total_tokens())
+                        .filter(|t| *t > 0),
+                    turn_count: entry
+                        .usage
+                        .as_ref()
+                        .and_then(|u| u.turn_count)
+                        .filter(|c| *c > 0),
+                    tool_uses: entry
+                        .usage
+                        .as_ref()
+                        .and_then(|u| u.tool_uses)
+                        .filter(|c| *c > 0),
                 }
             })
             .collect();
@@ -27781,6 +27848,71 @@ mod hud_tests {
                 .iter()
                 .any(|l| l.contains("Agent: agent-001"))
         );
+    }
+
+    #[test]
+    fn dashboard_rows_carry_live_usage_from_raw_stream_fixture() {
+        let (viz, _, _tmp) = build_chain_plus_isolated();
+        let mut app = build_app(&viz, "a", _tmp.path());
+
+        // Two pi agents in the registry; only agent-1 has a raw_stream fixture.
+        let mut registry = AgentRegistry::new();
+        for id in ["agent-1", "agent-2"] {
+            registry.agents.insert(
+                id.to_string(),
+                worksgood::service::AgentEntry {
+                    id: id.to_string(),
+                    pid: 123,
+                    task_id: "a".to_string(),
+                    executor: "pi".to_string(),
+                    started_at: "2026-01-20T16:00:00Z".to_string(),
+                    last_heartbeat: "2026-01-20T16:05:00Z".to_string(),
+                    status: worksgood::service::AgentStatus::Working,
+                    output_file: "output.log".to_string(),
+                    model: Some("pi:openrouter:test/x".to_string()),
+                    completed_at: None,
+                    worktree_path: None,
+                    pgid: None,
+                },
+            );
+        }
+        registry.save(_tmp.path()).unwrap();
+
+        // Fixture pi NDJSON: one turn (7 in + 3 out) and one tool execution.
+        let agent_dir = _tmp.path().join("agents").join("agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("raw_stream.jsonl"),
+            concat!(
+                r#"{"type":"turn_end","message":{"usage":{"input":7,"output":3,"cost":{"total":0.01}}}}"#,
+                "\n",
+                r#"{"type":"tool_execution_start","toolName":"bash"}"#,
+            ),
+        )
+        .unwrap();
+
+        app.load_agent_monitor();
+
+        let row1 = app
+            .dashboard
+            .agent_rows
+            .iter()
+            .find(|r| r.agent_id == "agent-1")
+            .expect("agent-1 row");
+        assert_eq!(row1.total_tokens, Some(10));
+        assert_eq!(row1.turn_count, Some(1));
+        assert_eq!(row1.tool_uses, Some(1));
+
+        // Absent stream degrades to blank fields (never fabricated zeros).
+        let row2 = app
+            .dashboard
+            .agent_rows
+            .iter()
+            .find(|r| r.agent_id == "agent-2")
+            .expect("agent-2 row");
+        assert_eq!(row2.total_tokens, None);
+        assert_eq!(row2.turn_count, None);
+        assert_eq!(row2.tool_uses, None);
     }
 
     #[test]
@@ -40887,6 +41019,8 @@ mod retry_log_pane_tests {
                 runtime_secs: None,
                 started_at: None,
                 completed_at: None,
+                executor: None,
+                usage: None,
             },
             AgentMonitorEntry {
                 agent_id: "agent-280".to_string(),
@@ -40896,6 +41030,8 @@ mod retry_log_pane_tests {
                 runtime_secs: None,
                 started_at: None,
                 completed_at: None,
+                executor: None,
+                usage: None,
             },
         ];
 
