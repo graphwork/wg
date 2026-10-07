@@ -212,6 +212,74 @@ means the identity can only be *forked*, never continued.
 
 ---
 
+## 7. Reflink Cargo target layers (`cargo_target_root` on XFS/btrfs)
+
+WG clones each immutable Cargo *baseline* into a per-attempt private `CARGO_TARGET_DIR`
+layer with `FICLONE` when the filesystem supports reflink and byte-copies otherwise. On
+**ext4 (no reflink)** every layer is a full private copy, so the disk sentinel's
+per-layer `private_bytes` charge — and its sticky high-water — grows as if the baseline
+were duplicated per worker. Pointing `cargo_target_root` at an **XFS or btrfs**
+filesystem makes the clones true copy-on-write **and** lets `layer_bytes` charge only the
+private, copy-on-write bytes (`FIEMAP_EXTENT_SHARED`) instead of the whole cloned
+baseline (see [Disk sentinel](disk-sentinel.md) / [Bounded worktree build artifacts](build-artifact-storage.md)).
+
+Provisioning (operator; needs root). A dedicated filesystem is preferred; an
+operator-approved loopback image is acceptable for dev/test but still consumes real
+space — reflink, not the loop, is what buys the CoW:
+
+```sh
+# Option A: dedicated device
+sudo mkfs.btrfs -f /dev/nvme0n1pX          # or: sudo mkfs.xfs -f -m reflink=1 /dev/nvme0n1pX
+sudo mkdir -p /var/lib/wg/build-targets
+sudo mount /dev/nvme0n1pX /var/lib/wg/build-targets
+
+# Option B: loopback image (dev/test only)
+sudo truncate -s 400G /var/lib/wg/reflink.img
+sudo mkfs.btrfs -f /var/lib/wg/reflink.img
+sudo mkdir -p /var/lib/wg/build-targets
+sudo mount -o loop /var/lib/wg/reflink.img /var/lib/wg/build-targets
+
+sudo chown -R "$(id -un)" /var/lib/wg/build-targets
+```
+
+Make the mount persistent with an `/etc/fstab` entry (add `defaults,loop` for the image)
+rather than a one-off `mount`, then point WG at it:
+
+```toml
+[dispatcher.resource_management]
+cargo_target_root = "/var/lib/wg/build-targets"
+```
+
+(or `wg config set dispatcher.resource_management.cargo_target_root /var/lib/wg/build-targets`;
+the value is picked up on the next disk scan).
+
+Verify:
+
+- `stat -f -c '%T' /var/lib/wg/build-targets` → `btrfs` or `xfs`.
+- Reflink is live: `cp --reflink=always src dst` succeeds and `filefrag -v dst` shows
+  extents flagged `shared`.
+- WG accounting, with the scratch dir on the reflink filesystem:
+  `TMPDIR=/var/lib/wg/build-targets cargo test --lib target_cache::reflinked_layer_charges_shared_extents_once -- --nocapture`
+  (skips on a non-reflink filesystem). It prints the clone's `logical` vs `private`
+  bytes; `private` is a small metadata-only charge while `logical` includes the shared
+  baseline.
+- Sentinel effect: `wg disk doctor --json` and `wg status` report the layer's
+  `private_bytes`. With a shared baseline that charge drops to the private CoW bytes, so
+  the sticky `build_high_water_*_delta_bytes` stops rising at the duplicated size and the
+  admission projection falls with it.
+
+Caveats:
+
+- Interactive (`pi`) workers only *consume* a shared baseline once the dependency-only
+  interactive baseline ("Option B") lands; until then their layers are cold and there is
+  nothing to share. Attested shell-cargo workers already use this path.
+- If WG cannot determine sharing it keeps the full `st_blocks` charge: the accounting is
+  fail-closed (over-charge, never under-reserve).
+- Roll back by clearing `cargo_target_root` and unmounting; WG returns to the default
+  cache root on the root filesystem.
+
+---
+
 ## Quick triage
 
 | Symptom | First check |

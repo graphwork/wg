@@ -19,6 +19,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const CACHE_SCHEMA: u32 = 4;
+/// `FIEMAP_EXTENT_SHARED` from `<linux/fiemap.h>`: the extent is shared with at
+/// least one other file (a reflink clone).
+#[cfg(target_os = "linux")]
+const FIEMAP_EXTENT_SHARED: u32 = 0x0000_2000;
 const LAYER_MANIFEST: &str = ".wg-target-layer.json";
 const LAYER_OWNED: &str = ".wg-owned-layer";
 const BASELINE_MANIFEST: &str = ".wg-target-baseline.json";
@@ -1171,11 +1175,7 @@ pub fn prune_empty_layer_parents(cache_root: &Path, target: &Path) {
     }
 }
 
-/// Logical bytes in `path` and a conservative physical charge. Reflink extent
-/// sharing is not safely inferable from inode link counts, so cloned files are
-/// charged to each layer even though the filesystem stores shared extents once.
-/// Cargo-created hard links wholly inside one tree are charged once. Discover
-/// valid layer keys, including the short prepare→registry publication
+/// Discover valid layer keys, including the short prepare→registry publication
 /// window. This closes the race where baseline GC could unlink a lower after a
 /// clone completed but before its ownership row was committed.
 pub fn existing_layer_keys(cache_root: &Path, limit: usize) -> HashSet<String> {
@@ -1293,9 +1293,28 @@ pub fn baseline_key_containing(cache_root: &Path, artifact: &Path) -> Option<Str
     (key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| key.to_string())
 }
 
+/// Logical bytes in `path` and the private physical charge for this layer.
+///
+/// On a reflink filesystem (XFS/btrfs) a seeded clone shares physical extents
+/// with its immutable baseline. The kernel still reports those shared bytes in
+/// `st_blocks`, so charging every layer its full allocated block count
+/// over-charges a clone by the whole baseline and inflates the sentinel
+/// projection even though the filesystem stores the bytes once. Where the
+/// filesystem can share extents we ask `FIEMAP` for each charged inode and
+/// subtract the extents flagged `FIEMAP_EXTENT_SHARED`, so a reflinked layer is
+/// charged only its private copy-on-write bytes and the shared baseline extents
+/// are counted once (by the baseline, not by every clone). When `FIEMAP` is
+/// unavailable, unsupported, or reports nothing we keep the full `st_blocks`
+/// charge: the accounting is fail-closed and may over-charge, never
+/// under-charge. Cargo-created hard links wholly inside one tree are charged
+/// once by inode.
 pub fn layer_bytes(path: &Path) -> (u64, u64) {
     let mut logical = 0u64;
     let mut private = 0u64;
+    #[cfg(target_os = "linux")]
+    let reflink_capable = filesystem_shares_extents(path);
+    #[cfg(not(target_os = "linux"))]
+    let reflink_capable = false;
     #[cfg(unix)]
     let root_inode_counts = validated_layer_manifest(path)
         .is_none()
@@ -1322,7 +1341,12 @@ pub fn layer_bytes(path: &Path) -> (u64, u64) {
                 .as_ref()
                 .is_some_and(|counts| metadata.nlink() > counts.get(&inode).copied().unwrap_or(0));
             if !externally_linked && charged_inodes.insert(inode) {
-                private = private.saturating_add(metadata.blocks().saturating_mul(512));
+                let allocated = metadata.blocks().saturating_mul(512);
+                private = private.saturating_add(private_allocation_bytes(
+                    entry.path(),
+                    allocated,
+                    reflink_capable,
+                ));
             }
         }
         #[cfg(not(unix))]
@@ -1331,6 +1355,143 @@ pub fn layer_bytes(path: &Path) -> (u64, u64) {
         }
     }
     (logical, private)
+}
+
+/// Physical bytes to charge for one already-deduplicated inode. `allocated` is
+/// the authoritative `st_blocks` charge; on a reflink filesystem we subtract the
+/// shared extents `FIEMAP` confirms so clones are not charged the baseline.
+fn private_allocation_bytes(path: &Path, allocated: u64, reflink_capable: bool) -> u64 {
+    if allocated == 0 {
+        return 0;
+    }
+    #[cfg(target_os = "linux")]
+    if reflink_capable {
+        if let Ok(file) = File::open(path) {
+            if let Some((shared, _mapped)) = fiemap_shared_bytes(&file) {
+                return private_charge_from_shared(allocated, shared);
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (path, reflink_capable);
+    allocated
+}
+
+/// Private charge for an inode whose allocated size is `allocated` and whose
+/// shared (`FIEMAP_EXTENT_SHARED`) extents total `shared`. Saturating so a
+/// surprising extent report can never wrap into a negative charge.
+#[cfg(target_os = "linux")]
+fn private_charge_from_shared(allocated: u64, shared: u64) -> u64 {
+    allocated.saturating_sub(shared)
+}
+
+/// Sum the lengths of the extents a filesystem marks as shared with another
+/// file. Each shared extent is counted exactly once.
+#[cfg(target_os = "linux")]
+fn shared_bytes_from_extents(extents: &[(u64, u32)]) -> u64 {
+    extents
+        .iter()
+        .filter(|(_, flags)| flags & FIEMAP_EXTENT_SHARED != 0)
+        .fold(0u64, |total, (length, _)| total.saturating_add(*length))
+}
+
+/// True when `path` is on a filesystem that can share physical extents between
+/// files (XFS/btrfs/bcachefs). This cheap `statfs` gate keeps the per-file
+/// `FIEMAP` cost off ext4 and other filesystems that can never report sharing.
+#[cfg(target_os = "linux")]
+fn filesystem_shares_extents(path: &Path) -> bool {
+    const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
+    const BTRFS_SUPER_MAGIC: i64 = 0x9123_683E;
+    const BCACHEFS_SUPER_MAGIC: i64 = 0xCA45_1A4E;
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
+        return false;
+    };
+    let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c_path.as_ptr(), &mut stats) } != 0 {
+        return false;
+    }
+    matches!(
+        stats.f_type as i64,
+        XFS_SUPER_MAGIC | BTRFS_SUPER_MAGIC | BCACHEFS_SUPER_MAGIC
+    )
+}
+
+/// Query `FIEMAP` for one file. Returns the summed shared-extent bytes and the
+/// number of mapped extents, or `None` when the filesystem does not support the
+/// ioctl (in which case callers keep the full `st_blocks` charge).
+#[cfg(target_os = "linux")]
+fn fiemap_shared_bytes(file: &File) -> Option<(u64, u32)> {
+    use std::os::fd::AsRawFd;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct FiemapExtent {
+        fe_logical: u64,
+        fe_physical: u64,
+        fe_length: u64,
+        fe_reserved64: [u64; 2],
+        fe_flags: u32,
+        fe_reserved: [u32; 3],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct FiemapHeader {
+        fm_start: u64,
+        fm_length: u64,
+        fm_flags: u32,
+        fm_mapped_extents: u32,
+        fm_extent_count: u32,
+        fm_reserved: u32,
+    }
+
+    const FS_IOC_FIEMAP: libc::c_ulong = 0xC020_660B;
+    const EXTENT_CAP: usize = 32;
+
+    let header_size = std::mem::size_of::<FiemapHeader>();
+    let extent_size = std::mem::size_of::<FiemapExtent>();
+    let mut buffer = vec![0u8; header_size + EXTENT_CAP * extent_size];
+    let mut start = 0u64;
+    let mut extents: Vec<(u64, u32)> = Vec::new();
+    let mut total_mapped = 0u32;
+    let fd = file.as_raw_fd();
+    loop {
+        {
+            let header = buffer.as_mut_ptr() as *mut FiemapHeader;
+            unsafe {
+                (*header).fm_start = start;
+                (*header).fm_length = u64::MAX;
+                (*header).fm_flags = 0;
+                (*header).fm_mapped_extents = 0;
+                (*header).fm_extent_count = EXTENT_CAP as u32;
+                (*header).fm_reserved = 0;
+            }
+        }
+        if unsafe { libc::ioctl(fd, FS_IOC_FIEMAP, buffer.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let (mapped, capacity) = unsafe {
+            let header = buffer.as_ptr() as *const FiemapHeader;
+            ((*header).fm_mapped_extents, (*header).fm_extent_count)
+        };
+        total_mapped = total_mapped.saturating_add(mapped);
+        let mut next_start = start;
+        for index in 0..mapped as usize {
+            let extent =
+                unsafe { *(buffer.as_ptr().add(header_size) as *const FiemapExtent).add(index) };
+            extents.push((extent.fe_length, extent.fe_flags));
+            next_start = next_start.max(extent.fe_logical.saturating_add(extent.fe_length.max(1)));
+        }
+        // A short read means the kernel returned every remaining extent.
+        if mapped == 0 || mapped < capacity {
+            break;
+        }
+        if next_start <= start || next_start == u64::MAX {
+            break;
+        }
+        start = next_start;
+    }
+    Some((shared_bytes_from_extents(&extents), total_mapped))
 }
 
 #[cfg(unix)]
@@ -1501,6 +1662,116 @@ mod tests {
             fs::metadata(&destination).unwrap().ino()
         );
         assert!(files_are_identical(&source, &destination));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shared_extents_are_counted_once_and_excluded_from_the_private_charge() {
+        // Only FIEMAP_EXTENT_SHARED extents are removed, and each shared length
+        // is counted exactly once even if the flag is reported per extent.
+        let extents = [
+            (4096u64, 0u32),
+            (8192, FIEMAP_EXTENT_SHARED),
+            (16384, FIEMAP_EXTENT_SHARED),
+            (512, 0x0000_0001),
+        ];
+        assert_eq!(shared_bytes_from_extents(&extents), 8192 + 16384);
+        assert_eq!(
+            private_charge_from_shared(4096 + 8192 + 16384 + 512, 8192 + 16384),
+            4096 + 512
+        );
+        // A freshly reflinked (entirely shared) file is charged no private bytes.
+        assert_eq!(private_charge_from_shared(65536, 65536), 0);
+        // A filesystem that cannot report sharing keeps the full block charge.
+        assert_eq!(private_charge_from_shared(65536, 0), 65536);
+        // A surprising over-report can never wrap into a negative charge.
+        assert_eq!(private_charge_from_shared(4096, 8192), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fiemap_parses_mapped_extents_for_a_written_file() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("probe");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(&vec![0x11u8; 3 * 1024 * 1024]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let file = File::open(&path).unwrap();
+        match fiemap_shared_bytes(&file) {
+            Some((shared, mapped)) => {
+                // The struct layout must round-trip the kernel's extent report;
+                // a mis-sized header would not map any extent here.
+                assert!(mapped > 0, "FIEMAP parsed zero mapped extents");
+                if !try_reflink(&path, &temp.path().join("probe-clone")).unwrap() {
+                    // No extent sharing exists on a filesystem without reflink.
+                    assert_eq!(shared, 0);
+                }
+            }
+            None => {
+                // A filesystem without FIEMAP keeps the conservative block
+                // charge; there is nothing further to assert here.
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reflinked_layer_charges_shared_extents_once() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let builder =
+            prepare_layer_with_key(temp.path(), &source, "builder", key("reflink")).unwrap();
+        fs::create_dir_all(builder.path.join("debug/deps")).unwrap();
+        let artifact = vec![0x3cu8; 8 * 1024 * 1024];
+        let artifact_path = builder.path.join("debug/deps/liblarge.rlib");
+        fs::write(&artifact_path, &artifact).unwrap();
+        assert!(promote_layer_validated(&builder.path, &builder.key).unwrap());
+
+        // Capability probe: a reflink filesystem is required for shared extents.
+        let capability = temp.path().join("capability-probe");
+        if !try_reflink(&artifact_path, &capability).unwrap() {
+            // Byte-copy fallback is validated elsewhere; without a reflink
+            // filesystem there is no shared extent to account for.
+            return;
+        }
+        let _ = fs::remove_file(&capability);
+        assert!(
+            filesystem_shares_extents(&builder.path),
+            "a reflink-capable filesystem must pass the statfs gate"
+        );
+
+        let first =
+            prepare_layer_with_key(temp.path(), &source, "clone-a", key("reflink")).unwrap();
+        let second =
+            prepare_layer_with_key(temp.path(), &source, "clone-b", key("reflink")).unwrap();
+        assert!(layer_was_seeded_from_baseline(&first.path));
+        assert!(layer_was_seeded_from_baseline(&second.path));
+
+        let (first_logical, first_private) = layer_bytes(&first.path);
+        let (second_logical, second_private) = layer_bytes(&second.path);
+        eprintln!(
+            "[reflink-accounting] artifact={} clone_a logical={first_logical} private={first_private} \
+             clone_b logical={second_logical} private={second_private}",
+            artifact.len()
+        );
+        for (name, logical, private) in [
+            ("clone-a", first_logical, first_private),
+            ("clone-b", second_logical, second_private),
+        ] {
+            assert!(logical >= artifact.len() as u64, "{name} logical={logical}");
+            assert!(
+                private < logical / 2,
+                "{name} charged shared baseline: private={private} logical={logical}"
+            );
+        }
+        // The shared baseline extents are counted once (never re-charged to each
+        // clone): two full logical copies must not produce two full charges.
+        assert!(
+            first_private + second_private < first_logical,
+            "shared extent charged per clone: first_private={first_private} second_private={second_private} first_logical={first_logical}"
+        );
     }
 
     #[cfg(unix)]

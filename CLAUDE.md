@@ -117,18 +117,16 @@ resolves to); the CI `nightly` job opts out via `cargo +nightly`.
 
 ## Service Configuration
 
-Pick a **(model, endpoint)** pair — the `wg` command derives the handler from the model spec's provider prefix:
+Pick an explicit **worker route** — the `wg` command derives the handler from the model spec's handler prefix. `wg config -m` / `wg add --model` / `wg spawn --model` / `wg edit --model` admit only `pi:<provider>:<model>`, `claude:<native-model>`, and `codex:<native-model>` (`parse_supported_execution_route`, `src/config.rs`). The `nex:` handler and the legacy `--endpoint` / `--executor` / `--provider` flags are **rejected** (`src/commands/config_cmd.rs`); `nex` (the in-process native stack) is reachable only as an *attended* client via `wg nex`, never as a worker route.
 
 - `wg config -m claude:opus` → claude CLI handler (no endpoint needed; CLI auths itself)
 - `wg config -m claude:fable` → claude CLI handler, Fable 5 (expands to `--model claude-fable-5`; self-auths like opus, no key)
 - `wg config -m codex:gpt-5.5` → codex CLI handler (no endpoint needed)
-- `wg config -m nex:qwen3-coder -e http://127.0.0.1:8088` → in-process nex handler
-- `wg config -m nex:openrouter:anthropic/claude-opus-4-7` → in-process nex handler, OpenRouter wire
 - `wg config -m pi:openrouter:anthropic/claude-opus-4-7` → pi CLI handler, OpenRouter wire (pi auths itself)
 
-**Handler-first model specs.** The **leading token of a model spec is ALWAYS a handler** (`claude` / `codex` / `nex` / `pi` / `opencode` / …); wg parses only that leading token and passes everything after the first `:` to the handler verbatim as its native model dialect (so `/` and further `:` stay inside the model). A bare **provider** prefix is therefore NOT a valid leading token — `openrouter`, `openai`, `oai-compat`, `ollama`, `vllm`, `llamacpp`, `gemini`, and `local` name a *wire*, not a handler. To run such a model you name a handler and put the provider in the inner dialect: `nex:openrouter:z-ai/glm-5.2` (in-process native — needs the matching endpoint/key) or `pi:openrouter:z-ai/glm-5.2` (pi CLI — auths itself). Bare Anthropic aliases (`opus` / `sonnet` / `haiku` / `fable` → claude) are unchanged — claude is unambiguous. (`fable` is Fable 5, a frontier peer of opus; because the claude CLI has no bare `fable` shortcut, wg expands both `claude:fable` and bare `fable` to the full CLI id `claude-fable-5`.)
+**Handler-first model specs.** The **leading token of a model spec is ALWAYS a handler** (`claude` / `codex` / `nex` / `pi` / `opencode` / …); wg parses only that leading token and passes everything after the first `:` to the handler verbatim as its native model dialect (so `/` and further `:` stay inside the model). A bare **provider** prefix is therefore NOT a valid leading token — `openrouter`, `openai`, `oai-compat`, `ollama`, `vllm`, `llamacpp`, `gemini`, and `local` name a *wire*, not a handler. For a worker **route** you name a handler and put the provider in the inner dialect: `pi:openrouter:z-ai/glm-5.2` (pi CLI — auths itself) is the dispatchable form. A `nex:openrouter:…` spec still parses (native handler, OpenRouter wire) but is **not** an admissible worker route — `parse_supported_execution_route` rejects it; `nex` is attended-only (`wg nex`). Bare Anthropic aliases (`opus` / `sonnet` / `haiku` / `fable` → claude) are unchanged — claude is unambiguous. (`fable` is Fable 5, a frontier peer of opus; because the claude CLI has no bare `fable` shortcut, wg expands both `claude:fable` and bare `fable` to the full CLI id `claude-fable-5`.)
 
-A bare leading provider prefix is a **loud deprecation, never a silent route**. It WARNs at every strict-validation entry point — CLI `--model` (`wg add` / `wg config -m` / `wg spawn` / `wg edit`), config load, and the `wg service start` / `daemon` / `reload` `--model` launch arg (the exact path where a bare `openrouter:` silently routed a coordinator to the keyless `native` handler and 401'd every task for ~14h). During the deprecation window it then defaults to `nex:` so nothing breaks; a single release flag (`HANDLER_FIRST_HARD_ERROR` in `src/config.rs`) flips it to a hard error. `wg migrate config` rewrites bare specs to handler-first (`openrouter:X` → `nex:openrouter:X`; the wire-distinct `ollama`/`vllm`/`llamacpp`/`gemini` prepend likewise; the pure aliases `oai-compat:` / `openai:` / `local:` collapse to `nex:`), `wg config lint` flags them, and `wg status` / `wg config --models` render the canonical `nex:openrouter:…` form plus the resolved `handler=` so a mis-route is visible at a glance. See `docs/design-handler-first-model-spec.md`.
+A bare leading provider prefix is a **loud deprecation, never a silent route**. It WARNs at every strict-validation entry point — CLI `--model` (`wg add` / `wg config -m` / `wg spawn` / `wg edit`), config load, and the `wg service start` / `daemon` / `reload` `--model` launch arg (the exact path where a bare `openrouter:` silently routed a coordinator to the keyless `native` handler and 401'd every task for ~14h). During the deprecation window the strict model-spec parser then warn-defaults a bare provider to its `nex:`-qualified canonical form (`handler_first_rewrite`, `src/config.rs`) rather than rejecting the token; a single release flag (`HANDLER_FIRST_HARD_ERROR` in `src/config.rs`) flips it to a hard error. That parser fallback is **not** an admissible worker route — `parse_supported_execution_route` separately requires `pi:` / `claude:` / `codex:`. `wg migrate config` rewrites bare specs to handler-first (`openrouter:X` → `nex:openrouter:X`; the wire-distinct `ollama`/`vllm`/`llamacpp`/`gemini` prepend likewise; the pure aliases `oai-compat:` / `openai:` / `local:` collapse to `nex:`), `wg config lint` flags them, and `wg status` / `wg config --models` render the canonical `nex:openrouter:…` form plus the resolved `handler=` so a mis-route is visible at a glance. See `docs/design-handler-first-model-spec.md`.
 
 The legacy `--executor` / `-x` flag and `[agent].executor` / `[dispatcher].executor` config keys are deprecated; they still work for one release with a deprecation warning, but the model spec is the single source of truth for which handler runs. Spawned agents continue to receive `WG_EXECUTOR_TYPE` and `WG_MODEL` env vars (handler kind + resolved model). See `src/dispatch/handler_for_model.rs` for the full mapping.
 
@@ -335,28 +333,35 @@ the cheap tier) via `resolve_agency_dispatch` — they do **not** follow the
 project-level provider cascade from `coordinator.model` / `[models.default]`.
 For the default (and `claude`) profile the weak tier *is* `claude:haiku` on
 the claude CLI, so the historical pin is preserved and default behavior is
-unchanged. A two-tier Pi profile that sets `--weak openrouter:deepseek/<model>`
-now routes agency through DeepSeek automatically — no explicit per-role
-overrides required.
+unchanged. A two-tier Pi profile that sets
+`--weak pi:openrouter:deepseek/<model>` (the weak tier must be an admissible
+worker route, so the provider goes *inside* a `pi:` handler) now routes agency
+through DeepSeek automatically — no explicit per-role overrides required.
 
 Explicit `[models.evaluator]` / `[models.assigner]` / flip-role overrides in
 config still win and keep their declared route (e.g. a `codex:` spec runs on
 the codex CLI); the `coordinator.model` cascade is still ignored. This keeps
 agency cheap while letting power users pin a specific provider per role.
 
-Credential safety: agency verdicts are never *silently* dropped. When the
-weak tier resolves to a keyless native-HTTP provider that needs an API key
-(OpenRouter / OpenAI / anthropic-native, with no key in env or a matching
-endpoint), it falls back **loudly** to `claude:haiku` on the claude CLI and
-warns on stderr which key to set. An explicit per-role override is *not*
-pre-empted at resolve time (explicit wins, keeps its route) but is still
-protected at call time — `agency_native_lightweight_call` falls back to
-`claude:haiku` on any native failure (invalid key, timeout, 5xx). claude /
-codex CLI targets self-authenticate, so they are never downgraded.
+Credential safety: agency verdicts are never *silently* dropped and never
+cross execution systems. `call_dispatch_route` (`src/service/llm.rs`) dispatches
+**only** Pi, Codex, and Claude; any other resolved handler bails loudly with
+`error[WG-PI-ROUTE-REQUIRED]`. There is **no** native-HTTP agency path and no
+automatic downgrade to `claude:haiku` — the old
+`agency_native_lightweight_call` no longer exists. The only fallback is a
+same-handler/same-provider candidate declared in `[[execution.fallbacks]]`
+(`run_dispatch_with_same_system_fallback`, `src/service/llm.rs`); a cross-system
+candidate invalidates the policy instead of being used. Because
+`validate_execution_model_plane` (`src/config.rs`) admits only
+`pi:<provider>:<model>`, `claude:<model>`, and `codex:<model>`, a weak tier (or
+explicit per-role override) that resolves to any other handler fails closed at
+resolve time rather than falling back. In the current project config the weak
+tier is already a Pi route (`[tiers] fast = "pi:<provider>:<model>"` in
+`worksgood.toml`).
 
 The agent registry records each agency task under its resolved handler
-(`executor=claude` for the default weak tier, the native / codex handler when
-the weak tier or an override points there); the legacy `eval` / `assign`
+(`executor=pi` for the current Pi weak tier, or whatever `claude:` / `codex:`
+route the weak tier or an override selected); the legacy `eval` / `assign`
 labels are gone — they were always cosmetic. See the `resolve_agency_dispatch`
 doc comment and `Config::weak_tier_spec()` in `src/service/llm.rs` /
 `src/config.rs`.
