@@ -2592,6 +2592,22 @@ pub enum Commands {
     /// Check local development checkout and installed wg binary freshness
     DevCheck,
 
+    /// One-shot dev inner loop: install from the main checkout, restart the
+    /// daemon, sync the pi-worksgood plugin cache, and verify. Prints the
+    /// binary path/hash, embed+cache digests, and the live daemon identity.
+    #[command(name = "dev-sync")]
+    DevSync {
+        /// Skip `cargo install --path . --locked` (verify an already-installed binary).
+        #[arg(long)]
+        no_install: bool,
+        /// Skip the daemon restart.
+        #[arg(long)]
+        no_restart: bool,
+        /// Print the plan and current state without mutating anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Print the universal agent / chat-agent role contract bundled with this binary
     AgentGuide,
 
@@ -7479,6 +7495,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Setup { .. } => "setup",
         Commands::Quickstart => "quickstart",
         Commands::DevCheck => "dev-check",
+        Commands::DevSync { .. } => "dev-sync",
         Commands::AgentGuide => "agent-guide",
         Commands::Status { .. } => "status",
         Commands::Stats => "stats",
@@ -7607,6 +7624,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Viz { .. }
             | Commands::Quickstart
             | Commands::DevCheck
+            | Commands::DevSync { .. }
             | Commands::Status { .. }
             | Commands::Stats
             | Commands::Metrics { .. }

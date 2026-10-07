@@ -902,12 +902,19 @@ pub fn run(
     let plugin = pi_plugin::ensure_pi_plugin(EnsureMode::Hermetic)
         .context("ensure-pi-plugin (Hermetic) before spawning pi")?;
     logger.info(&format!(
-        "pi-handler: ensured plugin source={:?} compat={} entry={} has_node_modules={}",
+        "pi-handler: ensured plugin source={:?} compat={} entry={} has_node_modules={} cache_validated={} cache_refreshed={}",
         plugin.source,
         plugin.compat,
         plugin.dist_entry.display(),
-        plugin.has_node_modules
+        plugin.has_node_modules,
+        plugin.cache_validated,
+        plugin.cache_refreshed
     ));
+    if plugin.cache_refreshed {
+        logger.info(
+            "pi-handler: the plugin cache was stale/missing vs this binary's embed and was refreshed before spawn",
+        );
+    }
 
     let avail = executor_discovery::pi_route_availability();
     let topology = select_topology(

@@ -81,7 +81,10 @@ const DEPRECATED_KEYS: &[(&str, &str)] = &[
     ("guardrails", "max_task_depth"),
     // The daemon's model-registry background refresh was retired: no daemon
     // code requests provider API keys for catalog refresh anymore (Pi's
-    // models-store.json is the catalog source of truth).
+    // models-store.json is the catalog source of truth). Listed for both
+    // sections (like the compactor/verify keys above): older configs parked
+    // this knob under `[dispatcher]`.
+    ("dispatcher", "registry_refresh_interval"),
     ("coordinator", "registry_refresh_interval"),
 ];
 
@@ -367,6 +370,36 @@ mod tests {
         s.parse().expect("valid TOML")
     }
 
+    /// Guard: the checked-in project document `worksgood.toml` must not
+    /// carry any key [`DEPRECATED_KEYS`] lists as deprecated/no-op. Those
+    /// keys are silently ignored at load and `wg migrate config` would drop
+    /// them, so allowing one back into the doc would make a clean checkout
+    /// report spurious removals. Fails on a doc that reintroduces one.
+    #[test]
+    fn checked_in_worksgood_toml_has_no_deprecated_keys() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("worksgood.toml");
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let doc: toml::Value = body
+            .parse()
+            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let table = doc.as_table().expect("worksgood.toml is a TOML table");
+        let mut present = Vec::new();
+        for (section, key) in DEPRECATED_KEYS {
+            if let Some(toml::Value::Table(sec)) = table.get(*section)
+                && sec.contains_key(*key)
+            {
+                present.push(format!("{section}.{key}"));
+            }
+        }
+        assert!(
+            present.is_empty(),
+            "checked-in worksgood.toml contains deprecated/no-op keys [{}] — remove them \
+             (wg migrate config would drop them)",
+            present.join(", "),
+        );
+    }
+
     #[test]
     fn canonicalize_drops_obsolete_graph_depth_guard() {
         let mut doc = parse(
@@ -443,6 +476,37 @@ model = "claude:opus"
         );
         assert!(!report.removed.is_empty());
         assert!(!report.renamed.is_empty());
+    }
+
+    #[test]
+    fn canonicalize_drops_dispatcher_registry_refresh_interval() {
+        let mut doc = parse(
+            r#"
+[agent]
+model = "claude:opus"
+
+[dispatcher]
+registry_refresh_interval = 3600
+"#,
+        );
+        let report = canonicalize_in_place(&mut doc);
+        let body = toml::to_string_pretty(&doc).unwrap();
+        assert!(
+            !body.contains("registry_refresh_interval"),
+            "dispatcher.registry_refresh_interval must be dropped: {body}"
+        );
+        assert!(
+            report
+                .removed
+                .iter()
+                .any(|key| key == "dispatcher.registry_refresh_interval"),
+            "removal must be reported: {:?}",
+            report.removed
+        );
+        assert!(
+            body.contains("claude:opus"),
+            "agent.model must be preserved: {body}"
+        );
     }
 
     #[test]

@@ -360,6 +360,29 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         }
     }
 
+    // Attempt-end cull. Every dead wrapper (not just disk-exhausted ones) has a
+    // private `CARGO_TARGET_DIR` that is rebuildable and no longer has a live
+    // writer. Reclaim it now under the sentinel's full removal guards instead
+    // of letting finished attempts accumulate until the next periodic sweep.
+    // The cull is a no-op for any path whose exact PID identity is still live
+    // or inconclusive, so a racing live owner is never touched.
+    let mut culled_tasks: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (_agent_id, task_id, _pid, _output_file, _reason) in &dead {
+        if !culled_tasks.insert(task_id.as_str()) {
+            continue;
+        }
+        if let Err(error) = worksgood::disk_sentinel::cull_owned_caches_for_task(
+            dir,
+            &config.coordinator.resource_management,
+            task_id,
+        ) {
+            eprintln!(
+                "[triage] Warning: attempt-end cache cull failed for '{}': {error:#}",
+                task_id
+            );
+        }
+    }
+
     // Extract token usage and session_id from dead agents' stream files
     for (agent_id, task_id, _pid, output_file, _reason) in &dead {
         // Extract session_id from stream events

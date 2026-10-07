@@ -66,6 +66,28 @@ local `cargo install --path .` install target, with `--locked` so Cargo uses the
 checked-in lockfile during install. Forgetting this step is a common source of
 "why isn't this working" issues when testing changes.
 
+### One-shot dev inner loop: `wg dev-sync` (or `make dev`)
+
+Once the operator install is in place, the supported verb for the whole local
+loop is:
+
+```
+wg dev-sync     # cargo install (main checkout) → service start --force →
+                # pi-plugin install (WG_PI_PLUGIN_DIR cleared) → verification
+```
+
+It prints the resolved binary path + SHA-256, the binary's embed digest vs the
+plugin cache digest, and the live daemon identity, and warns on a worktree build,
+a daemon hash that differs from the installed binary, or a non-`current` plugin
+cache. `--dry-run`, `--no-install`, and `--no-restart` are available. It refuses
+to run from a worktree. `make dev` is an alias. `wg dev-check` remains the
+read-only freshness check. See `docs/guides/install.md`.
+
+An `npm update -g @worksgood/cli` (or any binary replacement) needs no manual
+plugin re-install: the next ensure re-materializes the cache from the new
+binary's embed digest and reports the refresh loudly. `wg pi-plugin status`
+verifies (`embed digest` == `cache digest`, `cache state: current`).
+
 ### Formatting & lint MUST match CI (run `cargo fmt` before pushing)
 
 CI's "Check & Lint" job (`.github/workflows/ci.yml`) fails fast on

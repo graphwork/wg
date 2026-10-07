@@ -62,12 +62,14 @@ one immutable baseline + sum(private changed CoW blocks per attempt) + metadata
 ```
 
 not `N * complete target` on a reflink-capable filesystem. `wg disk doctor
---json` reports `bytes` (logical tree bytes), `private_bytes` (a conservative
-per-inode physical charge), and `cache_key` for each registered target layer.
-Because portable inode metadata cannot reveal shared CoW extents,
-`private_bytes` intentionally overcharges reflinked blocks rather than
-under-reserving disk. On fallback filesystems the model is safe but less
-deduplicated.
+--json` reports `bytes` (logical tree bytes), `private_bytes` (the physical charge for
+this layer), and `cache_key` for each registered target layer. On a reflink filesystem
+(XFS/btrfs/bcachefs) WG asks the kernel (`FIEMAP_EXTENT_SHARED`) which extents a cloned
+layer shares with its immutable baseline and charges only the private, copy-on-write
+bytes, so the shared baseline is counted once rather than once per clone. Where sharing
+cannot be reported WG keeps the full `st_blocks` allocation: `private_bytes` then
+deliberately overcharges reflinked blocks rather than under-reserving disk. On fallback
+filesystems the model is safe but less deduplicated.
 
 ## Candidate-smoke provenance
 
