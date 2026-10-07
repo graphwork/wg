@@ -79,7 +79,7 @@ pub fn run(dir: &Path, filter: Option<AgentFilter>, json: bool) -> Result<()> {
     };
 
     if json {
-        output_json(&filtered)
+        output_json(dir, &filtered)
     } else {
         output_table(&filtered);
         Ok(())
@@ -95,7 +95,7 @@ pub enum AgentFilter {
     Idle,
 }
 
-fn output_json(agents: &[&AgentEntry]) -> Result<()> {
+fn output_json(dir: &Path, agents: &[&AgentEntry]) -> Result<()> {
     let output: Vec<_> = agents
         .iter()
         .map(|a| {
@@ -114,6 +114,11 @@ fn output_json(agents: &[&AgentEntry]) -> Result<()> {
                 "status": eff_status,
                 "process_alive": process_alive,
                 "output_file": a.output_file,
+                // Bounded live usage (tokens/turns/tools) from the agent's raw
+                // stream tail; `null` when nothing is derivable.
+                "usage": worksgood::service::fleet_snapshot::fleet_agent_usage_json(
+                    dir, &a.id, &a.executor
+                ),
             })
         })
         .collect();

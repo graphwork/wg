@@ -52,6 +52,8 @@ import {
   FLEET_PANEL_MIN_HEIGHT,
   agentActivityLabel,
   agentForTask,
+  agentUsageDetailLabel,
+  agentUsageLabel,
   boundTranscriptBody,
   buildFleetTree,
   clampScroll,
@@ -567,10 +569,17 @@ export class FleetPanelComponent {
     for (const text of detailLines(task, viz.tasks).lines) out.push({ text, color: "text" });
     const agent = agentForTask(this.snapshot.agents, task.id);
     const activity = agentActivityLabel(agent);
-    if (activity) {
+    const usage = agentUsageDetailLabel(agent);
+    if (activity || usage) {
       out.push({ text: "", color: "dim" });
       out.push({ text: `── Live activity ──`, color: "accent" });
-      out.push({ text: `  ${agent?.id ?? "agent"} · ${activity}`, color: "warning" });
+      if (activity) {
+        out.push({ text: `  ${agent?.id ?? "agent"} · ${activity}`, color: "warning" });
+      }
+      if (usage) {
+        // Full, un-abbreviated counts (the detail/inspector view).
+        out.push({ text: `  usage · ${usage}`, color: "accent" });
+      }
     }
     if (this.detailTail.length > 0) {
       out.push({ text: "", color: "dim" });
@@ -592,6 +601,10 @@ export class FleetPanelComponent {
         const agent = agentForTask(this.snapshot.agents, line.taskId);
         const activity = agentActivityLabel(agent);
         if (activity) text += ` · ${activity}`;
+        // Compact live usage alongside the activity (same format as the
+        // ambient agent rows: `12.3k tok · 14 turns · 31 tools`).
+        const usage = agentUsageLabel(agent);
+        if (usage) text += ` · ${usage}`;
       }
       // Every rendered line is painted with WG's status palette (task lines) or
       // dim (separators/arc rows); the caller re-applies this per line in

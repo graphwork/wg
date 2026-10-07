@@ -96,8 +96,9 @@ export default function worksgoodPi(pi: ExtensionAPI): void {
 }
 
 // Re-export the building blocks so the SDK host and tests can use them directly.
-export { WgBackend, readWgEnv, canonicalChatId, normalizeGetFleet, buildCliFleet, parseVizJson } from "./wg-backend.js";
+export { WgBackend, readWgEnv, canonicalChatId, normalizeGetFleet, buildCliFleet, parseVizJson, normalizeAgentUsage } from "./wg-backend.js";
 export type {
+  AgentUsage,
   GetFleetAgentRow,
   GetFleetCounts,
   GetFleetOptions,
@@ -135,6 +136,8 @@ export {
   agentActivityLabel,
   agentForTask,
   agentStreamCandidates,
+  agentUsageDetailLabel,
+  agentUsageLabel,
   boundTranscriptBody,
   buildFleetTree,
   clampScroll,
@@ -167,6 +170,9 @@ export {
   agentGlyph,
   agentLine,
   agentModel,
+  agentUsageCompact,
+  agentUsageFull,
+  compactCount,
   fleetCounts,
   fleetHeaderLine,
   fleetSummaryLine,
@@ -176,6 +182,7 @@ export {
   taskGlyph,
 } from "./fleet-readmodel.js";
 export type {
+  AgentUsage as FleetAgentUsage,
   FleetAgent,
   FleetColor,
   FleetCounts,

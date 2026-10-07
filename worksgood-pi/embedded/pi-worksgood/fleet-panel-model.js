@@ -25,6 +25,7 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { buildTree } from "./viz-readmodel.js";
+import { agentUsageCompact, agentUsageFull } from "./fleet-readmodel.js";
 // ── pi-subagents' transcript bounds (kept identical on purpose) ──────────────
 /** Read at most this many bytes from the tail of a stream file. */
 export const TRANSCRIPT_TAIL_BYTES = 256 * 1024;
@@ -257,6 +258,20 @@ export function agentActivityLabel(agent) {
         return activity;
     const status = agent.status?.trim();
     return status ? status : null;
+}
+/**
+ * Compact usage segment for a task's live agent (`12.3k tok · 14 turns · 31 tools`).
+ * `null` when the agent has no usable usage data, so a row simply omits it.
+ */
+export function agentUsageLabel(agent) {
+    return agent ? agentUsageCompact(agent.usage) : null;
+}
+/**
+ * Full, un-abbreviated usage label for the detail/inspector view:
+ * `1234 tokens · (1000 in / 234 out) · 14 turns · 31 tool uses`.
+ */
+export function agentUsageDetailLabel(agent) {
+    return agent ? agentUsageFull(agent.usage) : null;
 }
 /**
  * Read at most `maxLines` lines from the **end** of a text file, reading at

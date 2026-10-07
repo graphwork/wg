@@ -34,6 +34,7 @@ import type {
 } from "./wg-backend.js";
 import type { VizSnapshot, VizTask } from "./viz-snapshot.js";
 import { buildTree, type TreeRender } from "./viz-readmodel.js";
+import { agentUsageCompact, agentUsageFull } from "./fleet-readmodel.js";
 
 // ── pi-subagents' transcript bounds (kept identical on purpose) ──────────────
 
@@ -306,6 +307,22 @@ export function agentActivityLabel(agent: GetFleetAgentRow | null): string | nul
   if (activity) return activity;
   const status = agent.status?.trim();
   return status ? status : null;
+}
+
+/**
+ * Compact usage segment for a task's live agent (`12.3k tok · 14 turns · 31 tools`).
+ * `null` when the agent has no usable usage data, so a row simply omits it.
+ */
+export function agentUsageLabel(agent: GetFleetAgentRow | null): string | null {
+  return agent ? agentUsageCompact(agent.usage) : null;
+}
+
+/**
+ * Full, un-abbreviated usage label for the detail/inspector view:
+ * `1234 tokens · (1000 in / 234 out) · 14 turns · 31 tool uses`.
+ */
+export function agentUsageDetailLabel(agent: GetFleetAgentRow | null): string | null {
+  return agent ? agentUsageFull(agent.usage) : null;
 }
 
 // ── bounded tail read (pi-subagents' readTextTail, WG-flavoured) ─────────────

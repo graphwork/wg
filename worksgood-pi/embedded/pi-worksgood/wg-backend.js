@@ -375,6 +375,26 @@ function normalizeTaskRow(raw) {
         failure_reason: str(raw.failure_reason),
     };
 }
+/**
+ * Normalize a raw `usage` object (from the `agents` lane or `GetFleet`) into
+ * camelCase. Returns `null` when the payload carries no usable metric, so a
+ * caller can omit the usage segment entirely instead of printing zeros.
+ */
+export function normalizeAgentUsage(raw) {
+    if (!isRecord(raw))
+        return null;
+    const numOrNull = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
+    const usage = {
+        inputTokens: numOrNull(raw.input_tokens),
+        outputTokens: numOrNull(raw.output_tokens),
+        totalTokens: numOrNull(raw.total_tokens),
+        costUsd: numOrNull(raw.cost_usd),
+        turnCount: numOrNull(raw.turn_count),
+        toolUses: numOrNull(raw.tool_uses),
+    };
+    const hasAny = Object.values(usage).some((value) => value !== null);
+    return hasAny ? usage : null;
+}
 function normalizeAgentRow(raw) {
     if (!isRecord(raw) || typeof raw.id !== "string")
         return null;
@@ -388,6 +408,7 @@ function normalizeAgentRow(raw) {
         started_at: str(raw.started_at),
         elapsed_ms: typeof raw.elapsed_ms === "number" ? raw.elapsed_ms : null,
         activity: str(raw.activity),
+        usage: normalizeAgentUsage(raw.usage),
     };
 }
 /** Normalize a decoded `get_fleet` body into the backend's snapshot shape. */

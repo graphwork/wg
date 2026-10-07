@@ -44,6 +44,10 @@ pub const MAX_DEPS_ECHOED: usize = 8;
 /// Max agent rows echoed with activity (activity reads are bounded tail reads;
 /// a runaway registry should never turn one poll into O(N) file I/O).
 pub const MAX_ACTIVITY_ROWS: usize = 200;
+/// Max agent rows for which live usage is derived. Same bound as [`MAX_ACTIVITY_ROWS`]
+/// (both are bounded tail reads of the agent's raw stream), kept as a named
+/// constant so the two concerns can diverge without a silent coupling.
+pub const MAX_USAGE_ROWS: usize = 200;
 
 /// Row/string bounds applied to one snapshot.
 #[derive(Debug, Clone, Copy)]
@@ -159,8 +163,13 @@ fn task_age_secs(task: &Task) -> Option<i64> {
     Some(secs.max(0))
 }
 
-/// Project one runtime agent into a bounded row, with its current activity.
-pub fn fleet_agent_row(entry: &AgentEntry, activity: Option<String>) -> Value {
+/// Project one runtime agent into a bounded row, with its current activity and
+/// live usage (both derived from the same bounded raw-stream tail read).
+pub fn fleet_agent_row(
+    entry: &AgentEntry,
+    activity: Option<String>,
+    usage: Option<crate::stream_event::LiveUsage>,
+) -> Value {
     json!({
         "id": truncate(&entry.id, MAX_ID_CHARS),
         "task_id": truncate(&entry.task_id, MAX_ID_CHARS),
@@ -170,7 +179,29 @@ pub fn fleet_agent_row(entry: &AgentEntry, activity: Option<String>) -> Value {
         "started_at": entry.started_at,
         "elapsed_ms": entry.uptime_secs().map(|s| s.max(0) * 1000),
         "activity": activity,
+        "usage": usage.as_ref().map(usage_to_json),
     })
+}
+
+/// Bounded JSON projection of an agent's live usage (`null` when nothing was
+/// derivable). Shared by the `GetFleet` agent rows and the `agents` lane
+/// (`wg agents --json` / the daemon `agents` IPC request) so every surface
+/// speaks the exact same shape.
+pub fn usage_to_json(usage: &crate::stream_event::LiveUsage) -> Value {
+    json!({
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens(),
+        "cost_usd": usage.cost_usd,
+        "turn_count": usage.turn_count,
+        "tool_uses": usage.tool_uses,
+    })
+}
+
+/// Derive the live-usage JSON for one agent directly from the workgraph dir
+/// (used by the `agents` lane, which has no `GetFleet` context).
+pub fn fleet_agent_usage_json(dir: &Path, agent_id: &str, executor: &str) -> Option<Value> {
+    crate::stream_event::live_usage_for_agent(dir, agent_id, executor).map(|u| usage_to_json(&u))
 }
 
 /// Derive a per-agent activity step using the shared
@@ -243,7 +274,15 @@ pub fn build_fleet_snapshot(
             } else {
                 None
             };
-            fleet_agent_row(entry, activity)
+            // Live usage derives from the SAME bounded tail read; both are
+            // omitted past their row cap so a large registry never turns one
+            // poll into unbounded file I/O.
+            let usage = if idx < MAX_USAGE_ROWS {
+                crate::stream_event::live_usage_for_agent(dir, &entry.id, &entry.executor)
+            } else {
+                None
+            };
+            fleet_agent_row(entry, activity, usage)
         })
         .collect();
 
@@ -323,11 +362,17 @@ mod tests {
         write_graph(dir, &graph);
 
         // Live stream tail so activity is derived (not just the log fallback).
+        // pi fixture with one turn + one tool execution so live usage is derived
+        // from the SAME bounded tail read.
         let stream = dir.join("agents").join("agent-7").join("raw_stream.jsonl");
         std::fs::create_dir_all(stream.parent().unwrap()).unwrap();
         std::fs::write(
             &stream,
-            r#"{"type":"tool_execution_start","toolName":"bash","args":{"command":"cargo test --lib"}}"#,
+            concat!(
+                r#"{"type":"tool_execution_start","toolName":"bash","args":{"command":"cargo test --lib"}}"#,
+                "\n",
+                r#"{"type":"turn_end","message":{"usage":{"input":1200,"output":300,"cost":{"total":0.04}}}}"#,
+            ),
         )
         .unwrap();
 
@@ -359,6 +404,29 @@ mod tests {
         assert_eq!(agents[0]["task_id"], "active-b");
         assert_eq!(agents[0]["activity"], "running cargo test --lib");
         assert!(agents[0]["elapsed_ms"].is_number());
+        assert_eq!(agents[0]["usage"]["total_tokens"], 1500);
+        assert_eq!(agents[0]["usage"]["turn_count"], 1);
+        assert_eq!(agents[0]["usage"]["tool_uses"], 1);
+    }
+
+    #[test]
+    fn agent_row_usage_is_null_when_no_stream_is_available() {
+        // A registry agent with no raw stream (or an executor we cannot derive
+        // from) must render `usage: null` — never a faked zero segment.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task_with_status(
+            "t",
+            "T",
+            Status::InProgress,
+        )));
+        write_graph(dir, &graph);
+
+        let registry = registry_with("agent-7", "t");
+        let body = build_fleet_snapshot(dir, &graph, &registry, FleetLimits::clamp(None), None);
+        let agents = body["agents"].as_array().unwrap();
+        assert_eq!(agents[0]["usage"], json!(null));
     }
 
     #[test]

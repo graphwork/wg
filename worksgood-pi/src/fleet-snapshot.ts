@@ -21,6 +21,7 @@
 
 import { connect, type Socket } from "node:net";
 import type { WgBackend, WgEnv } from "./wg-backend.js";
+import { normalizeAgentUsage } from "./wg-backend.js";
 import { fetchVizSnapshot, resolveSocketPath, type VizTask } from "./viz-snapshot.js";
 import type { FleetAgent, FleetSnapshot } from "./fleet-readmodel.js";
 
@@ -113,6 +114,8 @@ export function normalizeAgent(raw: unknown): FleetAgent | null {
     alive,
     startedAt: typeof a.started_at === "string" ? a.started_at : null,
     uptime: typeof a.uptime === "string" ? a.uptime : null,
+    // Bounded live usage from the `agents` lane; null when nothing derivable.
+    usage: normalizeAgentUsage(a.usage),
   };
 }
 

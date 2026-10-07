@@ -872,6 +872,173 @@ pub const STREAM_FILE_NAME: &str = "stream.jsonl";
 /// The raw Claude CLI output file (before translation).
 pub const RAW_STREAM_FILE_NAME: &str = "raw_stream.jsonl";
 
+// ── Live (bounded) usage for a running agent ────────────────────────────
+
+/// Maximum bytes read from the tail of an agent's raw stream when deriving
+/// live usage for the fleet view / `wg agents`. Bounded so one poll never
+/// turns into an unbounded read on a long-running agent's log.
+pub const LIVE_USAGE_TAIL_BYTES: u64 = 256 * 1024;
+
+/// Live, bounded usage derived from a running agent's raw stream tail.
+///
+/// Counts are windowed to the tail (see [`LIVE_USAGE_TAIL_BYTES`]): they are the
+/// best available approximation for an *in-progress* run, and the authoritative
+/// per-task `token_usage` (written on completion) supersedes them. Never
+/// fabricated — a metric the executor's stream does not expose is `None`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LiveUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cost_usd: Option<f64>,
+    /// Turns observed in the tail. `None` when the stream has no turn boundary.
+    pub turn_count: Option<u32>,
+    /// Tool executions observed in the tail. `None` when the stream exposes
+    /// no tool events for this executor.
+    pub tool_uses: Option<u32>,
+}
+
+impl LiveUsage {
+    /// Input + output tokens (cache read/write are already included by the
+    /// executors' own accounting, so they are not added again).
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
+
+    /// True when the tail yielded neither usage nor any counter, so a caller
+    /// can omit the usage segment entirely instead of printing zeros.
+    pub fn is_empty(&self) -> bool {
+        self.total_tokens() == 0
+            && self.cache_read_input_tokens == 0
+            && self.turn_count.unwrap_or(0) == 0
+            && self.tool_uses.unwrap_or(0) == 0
+    }
+
+    /// Add one per-turn usage snapshot (shared by every executor branch).
+    fn accumulate(&mut self, turn: &TurnUsage, cost: f64) {
+        self.input_tokens = self.input_tokens.saturating_add(turn.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(turn.output_tokens);
+        if let Some(cr) = turn.cache_read_input_tokens {
+            self.cache_read_input_tokens = self.cache_read_input_tokens.saturating_add(cr);
+        }
+        if let Some(cc) = turn.cache_creation_input_tokens {
+            self.cache_creation_input_tokens = self.cache_creation_input_tokens.saturating_add(cc);
+        }
+        if cost > 0.0 {
+            *self.cost_usd.get_or_insert(0.0) += cost;
+        }
+    }
+}
+
+/// Derive live usage from a raw stream tail for `executor`.
+///
+/// Pure over `content` so it is unit-testable without a filesystem. Supports the
+/// two live NDJSON shapes the wrapper captures today:
+///
+/// - **pi** (`turn_end` usage + `tool_execution_start`) — the SAME dedup point
+///   [`translate_pi_stream`] uses (usage harvested from `turn_end` only, once
+///   per turn), so a value here matches `stream.jsonl` after the bridge runs;
+/// - **claude / codex CLI** (`assistant` messages, translated with the
+///   existing [`translate_claude_event`] helper).
+///
+/// Any other executor returns an empty result (the caller omits the segment).
+pub fn live_usage_from_tail(content: &str, executor: &str) -> LiveUsage {
+    match executor {
+        "pi" => live_usage_pi(content),
+        "claude" | "codex" => live_usage_cli(content),
+        _ => LiveUsage::default(),
+    }
+}
+
+/// pi branch: sum `turn_end.message.usage` once per turn; count turns and
+/// `tool_execution_start` tool executions.
+fn live_usage_pi(content: &str) -> LiveUsage {
+    let mut usage = LiveUsage {
+        turn_count: Some(0),
+        tool_uses: Some(0),
+        ..Default::default()
+    };
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match val.get("type").and_then(|v| v.as_str()) {
+            Some("turn_end") => {
+                *usage.turn_count.as_mut().unwrap() += 1;
+                if let Some(u) = val.get("message").and_then(|m| m.get("usage")) {
+                    usage.accumulate(&pi_usage_to_turn(u), pi_usage_cost(u));
+                }
+            }
+            Some("tool_execution_start") => {
+                *usage.tool_uses.as_mut().unwrap() += 1;
+            }
+            _ => {}
+        }
+    }
+    usage
+}
+
+/// claude/codex branch: translate each raw line with the existing helper and
+/// aggregate its `Turn` events. A terminal `result` record is the authoritative
+/// cumulative total and supersedes the summed assistant turns (no double count).
+fn live_usage_cli(content: &str) -> LiveUsage {
+    let mut usage = LiveUsage {
+        turn_count: Some(0),
+        tool_uses: Some(0),
+        ..Default::default()
+    };
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        match translate_claude_event(line) {
+            Some(StreamEvent::Turn {
+                tools_used,
+                usage: turn_usage,
+                ..
+            }) => {
+                *usage.turn_count.as_mut().unwrap() += 1;
+                *usage.tool_uses.as_mut().unwrap() += tools_used.len() as u32;
+                if let Some(t) = turn_usage {
+                    usage.accumulate(&t, 0.0);
+                }
+            }
+            Some(StreamEvent::Result { usage: total, .. }) => {
+                usage.input_tokens = total.input_tokens;
+                usage.output_tokens = total.output_tokens;
+                usage.cache_read_input_tokens = total.cache_read_input_tokens.unwrap_or(0);
+                usage.cache_creation_input_tokens = total.cache_creation_input_tokens.unwrap_or(0);
+                if let Some(c) = total.cost_usd
+                    && c > 0.0
+                {
+                    usage.cost_usd = Some(c);
+                }
+            }
+            _ => {}
+        }
+    }
+    usage
+}
+
+/// Locate and derive live usage for a registered agent.
+///
+/// Reads a bounded tail of `<dir>/agents/<agent_id>/raw_stream.jsonl` — the file
+/// the executor wrapper streams while the agent runs (the same source
+/// `agent_activity::current_step` reads). Returns `None` when the file is absent
+/// or yields nothing usable, so callers omit the usage segment.
+pub fn live_usage_for_agent(dir: &Path, agent_id: &str, executor: &str) -> Option<LiveUsage> {
+    let path = dir.join("agents").join(agent_id).join(RAW_STREAM_FILE_NAME);
+    let tail = crate::agent_activity::read_tail(&path, LIVE_USAGE_TAIL_BYTES).ok()?;
+    let usage = live_usage_from_tail(&tail, executor);
+    (!usage.is_empty()).then_some(usage)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1339,5 +1506,103 @@ not json
         ));
         // model_override is honored when the stream carries no model.
         assert_eq!(tr.total.model.as_deref(), Some("openrouter:z-ai/glm-5.2"));
+    }
+
+    // ── live (bounded) usage derivation ─────────────────────────────────
+
+    #[test]
+    fn live_usage_pi_sums_tokens_counts_turns_and_tools() {
+        // Fixture: the SAME dual-reporting shape pi emits (usage repeated on
+        // message_update/message_end) — the deriver must harvest `turn_end`
+        // ONCE per turn, exactly as the stream bridge does.
+        let tail = concat!(
+            r#"{"type":"session","id":"sess-1"}"#,
+            "\n",
+            r#"{"type":"tool_execution_start","toolName":"bash","args":{"command":"ls"}}"#,
+            "\n",
+            r#"{"type":"tool_execution_start","toolName":"read","args":{"file_path":"a"}}"#,
+            "\n",
+            r#"{"type":"message_end","message":{"usage":{"input":999,"output":999,"cost":{"total":9.99}}}}"#,
+            "\n",
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash"}],"usage":{"input":200,"output":10,"cacheRead":50,"cacheWrite":0,"totalTokens":260,"cost":{"total":0.02}}}}"#,
+            "\n",
+            r#"{"type":"tool_execution_start","toolName":"edit","args":{"file_path":"b"}}"#,
+            "\n",
+            r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":5,"output":7,"cacheRead":260,"cacheWrite":0,"totalTokens":272,"cost":{"total":0.03}}}}"#,
+        );
+        let usage = live_usage_from_tail(tail, "pi");
+        assert_eq!(usage.turn_count, Some(2));
+        assert_eq!(usage.tool_uses, Some(3));
+        assert_eq!(usage.input_tokens, 205);
+        assert_eq!(usage.output_tokens, 17);
+        assert_eq!(usage.total_tokens(), 222);
+        assert_eq!(usage.cache_read_input_tokens, 310);
+        assert!((usage.cost_usd.unwrap() - 0.05).abs() < 1e-9);
+        assert!(!usage.is_empty());
+    }
+
+    #[test]
+    fn live_usage_claude_sums_assistant_turns_and_tools() {
+        // Two assistant turns, each carrying usage + a tool_use content block.
+        let tail = concat!(
+            r#"{"type":"system","session_id":"s1","model":"claude-opus-4-6"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":20},"content":[{"type":"tool_use","name":"Read"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":30,"output_tokens":50},"content":[{"type":"text","text":"hi"},{"type":"tool_use","name":"Bash"}]}}"#,
+        );
+        let usage = live_usage_from_tail(tail, "claude");
+        assert_eq!(usage.turn_count, Some(2));
+        assert_eq!(usage.tool_uses, Some(2));
+        assert_eq!(usage.input_tokens, 130);
+        assert_eq!(usage.output_tokens, 70);
+        assert_eq!(usage.total_tokens(), 200);
+
+        // A terminal `result` record is authoritative and supersedes the sum.
+        let finished = format!(
+            "{tail}\n{}",
+            r#"{"type":"result","usage":{"input_tokens":500,"output_tokens":80},"total_cost_usd":0.5}"#
+        );
+        let usage = live_usage_from_tail(&finished, "claude");
+        assert_eq!(usage.input_tokens, 500);
+        assert_eq!(usage.output_tokens, 80);
+        assert_eq!(usage.cost_usd, Some(0.5));
+    }
+
+    #[test]
+    fn live_usage_unknown_executor_is_empty() {
+        let usage = live_usage_from_tail(
+            r#"{"type":"turn_end","message":{"usage":{"input":10,"output":5}}}"#,
+            "shell",
+        );
+        assert!(usage.is_empty());
+        assert_eq!(usage.turn_count, None);
+        assert_eq!(usage.tool_uses, None);
+    }
+
+    #[test]
+    fn live_usage_for_agent_reads_bounded_raw_stream_tail() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = temp.path();
+        let agent_dir = dir.join("agents").join("agent-3");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join(RAW_STREAM_FILE_NAME),
+            concat!(
+                r#"{"type":"turn_end","message":{"usage":{"input":7,"output":3,"cost":{"total":0.01}}}}"#,
+                "\n",
+                r#"{"type":"tool_execution_start","toolName":"bash"}"#,
+            ),
+        )
+        .unwrap();
+
+        let usage = live_usage_for_agent(dir, "agent-3", "pi").expect("usage derived");
+        assert_eq!(usage.turn_count, Some(1));
+        assert_eq!(usage.tool_uses, Some(1));
+        assert_eq!(usage.total_tokens(), 10);
+
+        // Absent stream / unknown executor degrade to `None` (no segment).
+        assert!(live_usage_for_agent(dir, "agent-missing", "pi").is_none());
+        assert!(live_usage_for_agent(dir, "agent-3", "shell").is_none());
     }
 }
