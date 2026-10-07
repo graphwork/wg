@@ -3696,6 +3696,68 @@ mod tests {
     }
 
     #[test]
+    fn decayed_high_water_admits_a_second_build_heavy_task_after_the_window() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let now = Utc::now();
+        let cfg = ResourceManagementConfig {
+            disk_warning_bytes: 0,
+            disk_pause_build_bytes: 0,
+            disk_hard_refuse_bytes: 0,
+            disk_warning_percent: 0.0,
+            disk_pause_build_percent: 0.0,
+            disk_hard_refuse_percent: 0.0,
+            estimated_build_bytes: 4 * GIB,
+            estimated_build_heavy_bytes: 16 * GIB,
+            estimated_cargo_baseline_bytes: 96 * GIB,
+            build_link_test_safety_bytes: 4 * GIB,
+            build_high_water_decay_days: 14,
+            ..Default::default()
+        };
+        // The surveyed host reported ~117 GiB free while a one-off cold build
+        // had pinned the heavy high-water. Model the same healthy-balance
+        // volume and a 60 GiB heavy peak recorded 60 days ago.
+        let mounts = [mount("graph", 100 * GIB, 85.0)];
+        let stale = BuildHighWater {
+            schema: HIGH_WATER_SCHEMA,
+            build_heavy_delta_bytes: 60 * GIB,
+            build_heavy_observed_at: Some((now - chrono::Duration::days(60)).to_rfc3339()),
+            ..Default::default()
+        };
+
+        // Sticky (undecayed) peak: the historical 60 GiB ceilings each of two
+        // concurrent heavy reservations, so the second build-heavy task is
+        // admitted only by crossing the warning floor. This is the deferral
+        // the survey observed; assert it so a future change cannot silently
+        // reintroduce the permanent cap.
+        let sticky_cfg = ResourceManagementConfig {
+            build_high_water_decay_days: 0,
+            ..cfg.clone()
+        };
+        let sticky_candidate =
+            projection_for_class_at(&sticky_cfg, &stale, BuildClass::BuildHeavy, false, now);
+        assert_eq!(sticky_candidate, 60 * GIB + 4 * GIB);
+        let refused =
+            assess_projected_build(&mounts, &sticky_cfg, sticky_candidate, sticky_candidate);
+        assert!(!refused.allowed, "{}", refused.reason);
+
+        // After the decay window the peak falls to the class floor (16 GiB),
+        // the final-link safety headroom is retained, and the same volume
+        // admits a second build-heavy task alongside one live reservation.
+        let decayed_candidate =
+            projection_for_class_at(&cfg, &stale, BuildClass::BuildHeavy, false, now);
+        assert_eq!(decayed_candidate, 16 * GIB + 4 * GIB);
+        let allowed = assess_projected_build(&mounts, &cfg, decayed_candidate, decayed_candidate);
+        assert!(allowed.allowed, "{}", allowed.reason);
+
+        // The single cold-builder baseline reserve is preserved regardless of
+        // decay: a cold baseline still reserves the full cargo baseline.
+        assert_eq!(
+            projection_for_class_at(&cfg, &stale, BuildClass::BuildHeavy, true, now),
+            96 * GIB + 4 * GIB
+        );
+    }
+
+    #[test]
     fn attempt_end_cull_reaps_terminal_task_layer_and_leaves_others() {
         let root = TempDir::new().unwrap();
         let target = root.path().join("wg-target-cull");
