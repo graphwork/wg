@@ -171,37 +171,49 @@ verification details.
 
 ### First-Time Setup
 
-Before initializing a project, configure your global defaults:
+In a project directory, run the interactive setup wizard:
 
 ```bash
 wg setup
 ```
 
-The interactive wizard walks you through:
+The wizard is **project-scoped only** — it never changes machine-global
+config or any active profile. It walks you through:
 
-- **Executor backend**: `claude` (default), `amplifier`, or custom
-- **Default model**: `opus`, `sonnet`, or `haiku`
-- **Agency**: Source-bound completion review and explicit agent-assignment defaults (synthetic assignment/evaluation tasks are retired)
-- **Max agents**: Number of parallel agents the coordinator can spawn
+- **Route**: `pi` is the only smooth setup route (`SetupRoute::all()`,
+  `src/config_defaults.rs`). The wizard also offers "Not now — keep this WG
+  graph-only", which exits without writing anything.
+- **Pi models**: a strong worker route (`pi:<provider>:<model>`) and an
+  optional weak route for recoverable one-shots (`.flip` / `.assign` / eval).
+  Pi owns its own login/providers/models; WG only detects readiness and never
+  handles Pi credentials.
+- **Agency**: whether to enable WG's automatic agent matching and completion
+  review (off by default).
+- **Max agents**: number of parallel agents the coordinator can spawn.
 
-This creates `~/.wg/config.toml`:
+It writes the checked-in **project** document `<project-root>/worksgood.toml`,
+for example:
 
 ```toml
-[coordinator]
-executor = "claude"
-model = "opus"
+[agent]
+model = "pi:<provider>:<model>"
+
+[dispatcher]
 max_agents = 4
 
-[agent]
-executor = "claude"
-model = "opus"
-
 [agency]
-auto_assign = true
+auto_assign = false
 auto_evaluate = true
 ```
 
-Project-local `.wg/config.toml` overrides global settings. Use `wg config --global` or `wg config --local` to adjust individual values, and `wg config --list` to see the merged configuration with source indicators.
+Worker routes are explicit `pi:<provider>:<model>`, `claude:<model>`, or
+`codex:<model>` specs (`parse_supported_execution_route`, `src/config.rs`);
+the legacy `executor` key is deprecated. `worksgood.toml` is the single
+authoritative project configuration document — `~/.wg/config.toml` is legacy
+machine-global state and is not merged into project behavior. Re-change the
+route any time with `wg config -m <route>`, `wg config --set-model <role>
+<route>`, or `wg profile select <name>`, and inspect the effective
+configuration with `wg config --list`.
 
 ### Initialize a New Project
 
@@ -287,12 +299,11 @@ Example content:
 {"kind":"task","id":"impl-api","title":"Implement API","status":"open","after":["design-api"]}
 ```
 
-Configuration is stored in `.wg/config.toml`:
+Configuration is stored in `<project-root>/worksgood.toml`:
 
 ```toml
 [agent]
-executor = "claude"
-model = "opus"
+model = "pi:<provider>:<model>"
 interval = 10
 
 [project]
