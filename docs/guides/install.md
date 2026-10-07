@@ -215,8 +215,66 @@ Contributor checkouts can also keep using:
 cargo install --path . --locked
 ```
 
-Use `wg dev-check` after a source install to detect branch or binary freshness
-drift.
+## Developer inner loop: `wg dev-sync`
+
+On a development system, use the one supported command instead of running the
+four manual steps by hand:
+
+```bash
+wg dev-sync            # install → daemon restart → plugin sync → verify
+wg dev-sync --dry-run  # print the plan + current state, mutate nothing
+wg dev-sync --no-install --no-restart   # verify an already-installed binary
+make dev               # alias for `wg dev-sync`
+```
+
+It performs, in order: `cargo install --path . --locked` **from the main
+checkout**, `wg service start --force` (so the new binary is live),
+`wg pi-plugin install` with `WG_PI_PLUGIN_DIR` cleared, and a verification
+block that prints:
+
+- the resolved `wg` binary path and its SHA-256,
+- the running binary's **embed digest** vs the on-disk **plugin cache digest**,
+- the live **daemon identity** (health, pid, build id, executable hash),
+- warnings (worktree-built binary, daemon hash ≠ installed hash, plugin cache
+  not `current`).
+
+`wg dev-sync` **refuses to run from a WG worktree**: `cargo install` from a
+prunable `.wg-worktrees/` tree bakes that path into the shared global binary
+(see `AGENTS.md` / `CLAUDE.md` “Development”). Only the operator runs it, from
+the main checkout. `wg dev-check` remains the read-only freshness check.
+
+## npm updates and the plugin cache
+
+The `pi:` route does not load the plugin from npm at runtime. The `wg` binary
+**embeds** the exact plugin build it is compatible with, materializes it into
+`${XDG_CACHE_HOME:-~/.cache}/wg/worksgood-pi/<compat>/`, and points `pi -e` at
+that cache. The bytes always come from the running binary's embed.
+
+When you upgrade with `npm update -g @worksgood/cli` (or any installer that
+replaces the `wg` binary), the *next* action that resolves the plugin — a
+`wg pi-handler` pre-spawn ensure, `wg setup`, `wg profile use pi`, a chat
+reload, or an explicit `wg pi-plugin install` — recomputes the embed digest and,
+on a mismatch, **re-materializes the cache automatically and reports the
+refresh loudly** on stderr:
+
+```text
+WorksGood pi-plugin: refreshed stale/missing plugin cache at ~/.cache/wg/worksgood-pi/0.3.0 (embed digest b3:…); compat 0.3.0
+```
+
+This works even when `WG_PI_PLUGIN_DIR` points at the cache (how WG launches
+every spawned pi session), and even when an npm update ships a new binary +
+plugin *without* bumping `WG_PI_PLUGIN_COMPAT_VERSION` — the content digest, not
+the compat string, decides.
+
+Verify after an upgrade:
+
+```bash
+wg pi-plugin status   # embed digest == cache digest, cache state: current
+wg dev-sync           # or run the full install + verify loop
+```
+
+A matching cache is an explicit no-op: `wg pi-plugin install` prints
+“already up to date — nothing changed” rather than a bare success message.
 
 ## Verification
 

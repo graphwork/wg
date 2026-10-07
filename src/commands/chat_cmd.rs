@@ -2928,6 +2928,8 @@ mod tests {
             legacy_settings_migrated: false,
             legacy_package_accepted: false,
             console_settings_changed: false,
+            cache_validated: true,
+            cache_refreshed: false,
         }
     }
 
