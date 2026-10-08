@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it, expect, vi, afterEach } from "vitest";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
-import { assertConsolePluginCurrent, readEmbedDigestAt } from "../pi-worksgood/index.js";
+import { assertConsolePluginCurrent, isWorkerSession, readEmbedDigestAt } from "../pi-worksgood/index.js";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
 import { WgBackend } from "../pi-worksgood/wg-backend.js";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
@@ -30,6 +30,8 @@ function scratch(): string {
 afterEach(() => {
   while (tmpDirs.length) rmSync(tmpDirs.pop()!, { recursive: true, force: true });
   delete process.env.WG_PI_PLUGIN_COMPAT_VERSION;
+  delete process.env.WG_AGENT_ID;
+  delete process.env.WG_WORKER_CAPABILITY;
 });
 
 interface FakeBackend {
@@ -70,7 +72,51 @@ describe("readEmbedDigestAt", () => {
   });
 });
 
+describe("isWorkerSession", () => {
+  it("is true when WG_AGENT_ID identifies a spawned agent", () => {
+    expect(isWorkerSession({ WG_AGENT_ID: "agent-231" })).toBe(true);
+  });
+
+  it("is true for an attempt-scoped sandbox holding WG_WORKER_CAPABILITY", () => {
+    expect(isWorkerSession({ WG_WORKER_CAPABILITY: "tok" })).toBe(true);
+  });
+
+  it("is false for a human console (no worker env)", () => {
+    expect(isWorkerSession({})).toBe(false);
+    expect(isWorkerSession({ WG_AGENT_ID: "   " })).toBe(false);
+  });
+});
+
 describe("assertConsolePluginCurrent", () => {
+  it("skips ENTIRELY in a worker session (WG_AGENT_ID): zero wg subprocesses at load", async () => {
+    process.env.WG_AGENT_ID = "agent-231";
+    const { backend, calls } = fakeBackend({ digest: "b3:new-binary" });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await assertConsolePluginCurrent(backend, "b3:old-binary");
+    expect(calls.length).toBe(0);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("skips ENTIRELY in a capability sandbox (WG_WORKER_CAPABILITY)", async () => {
+    process.env.WG_WORKER_CAPABILITY = "attempt-token";
+    const { backend, calls } = fakeBackend({ compat: "9.9.9", digest: "b3:new-binary" });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await assertConsolePluginCurrent(backend, "b3:old-binary");
+    expect(calls.length).toBe(0);
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("still runs the digest check in a console session (no worker env)", async () => {
+    const { backend, calls } = fakeBackend({ digest: "b3:new-binary" });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await assertConsolePluginCurrent(backend, "b3:old-binary");
+    expect(calls.some((c) => c.includes("digest"))).toBe(true);
+    expect(err.mock.calls.map((c) => String(c[0])).join("\n")).toContain("stale plugin cache");
+    err.mockRestore();
+  });
+
   it("is a silent no-op when the loaded stamp matches this wg's embed", async () => {
     const { backend, calls } = fakeBackend({ digest: "b3:same" });
     const err = vi.spyOn(console, "error").mockImplementation(() => {});

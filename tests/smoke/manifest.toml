@@ -1921,6 +1921,15 @@ description = "Pins fix-console-plugin: a plain human `pi` console session must 
 timeout_seconds = 60
 
 [[scenario]]
+name = "pi_worker_plugin_load_no_admin_refusal"
+script = "scenarios/pi_worker_plugin_load_no_admin_refusal.sh"
+owners = [
+    "hotfix-worker-plugin-2",
+]
+description = "Pins hotfix-worker-plugin-load: the console plugin self-heal (fix-console-plugin) must NOT run in a WG-managed WORKER session. A worker carries WG_AGENT_ID (trusted control mode) and `src/worker_cli.rs` refuses admin verbs there (`worker_control.admin_operation_refused`), so the load-time `wg pi-plugin compat-version`/`digest` shell-out killed every fresh worker spawn before it ran a tool (agent-231/agent-232). The fix makes the self-heal console-only (`isWorkerSession()` on WG_AGENT_ID / WG_WORKER_CAPABILITY). Credential-free: loads the REAL built plugin bundle through a node harness whose `pi.exec` shells the REAL candidate `wg`, and checks (1) control — the candidate wg really refuses `pi-plugin digest` under the worker env; (2) worker load runs ZERO wg subprocesses; (3) a real tool call (wg_ready) reaches the wg binary and never surfaces admin_operation_refused; (4) a console session (no worker env) still runs the self-heal pi-plugin subprocess. Candidate binary preferred (falls back to target/debug/wg, then PATH wg)."
+timeout_seconds = 180
+
+[[scenario]]
 name = "install_update_integrity"
 script = "scenarios/install_update_integrity.sh"
 owners = [
