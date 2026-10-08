@@ -19,12 +19,13 @@ The CLI is the plumbing; the TUI is the fallback console.
 npm install -g @worksgood/cli
 ```
 
-One command installs WG (`worksgood`, `wg`, `nex`) **and** the Pi coding agent
+One command installs WG (`worksgood`, `wg`, `nex`) and the Pi coding agent
 CLI. It resolves prebuilt per-platform packages
 (`@worksgood/linux-x64-gnu`, `@worksgood/darwin-arm64`) — zero postinstall
 scripts, no Rust toolchain, fully functional under `--ignore-scripts`. Node
 22.19+ (the floor Pi itself declares). The metapackage declares
-`@earendil-works/pi-coding-agent ^0.85.1` as a dependency.
+`@earendil-works/pi-coding-agent ^0.85.1` as a dependency. This npm route is
+the primary install path.
 
 The `pi-worksgood` plugin **ships embedded in the `wg` binary**: the exact
 compatible build is materialized into a versioned cache
@@ -38,7 +39,7 @@ wg pi-plugin status   # embed digest == cache digest, cache state: current
 ```
 
 `cargo install --git https://github.com/graphwork/wg --locked` (or
-`cargo install --path . --locked` from a checkout) is the **from-source**
+`cargo install --path . --locked` from a checkout) is the from-source
 route — for unsupported platforms, Alpine/musl, Windows, locked-down
 environments, and contributors. Full detail, channels, checksums, and
 uninstall live in [docs/guides/install.md](docs/guides/install.md).

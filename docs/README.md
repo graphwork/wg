@@ -152,13 +152,21 @@ remain under `wg`.
 ### Install
 
 ```bash
-# primary documented path (needs the Rust toolchain)
-cargo install --git https://github.com/graphwork/wg --locked
-
-# additive npm route (Node 22.19+): prebuilt per-platform packages, no Rust
-# toolchain, zero postinstall scripts; also installs the Pi coding agent CLI
 npm install -g @worksgood/cli
 ```
+
+One command installs WG (`worksgood`, `wg`, `nex`) and the Pi coding agent
+CLI. It resolves prebuilt per-platform packages
+(`@worksgood/linux-x64-gnu`, `@worksgood/darwin-arm64`) — zero postinstall
+scripts, no Rust toolchain, fully functional under `--ignore-scripts`. Node
+22.19+ (the floor Pi itself declares). The metapackage declares
+`@earendil-works/pi-coding-agent ^0.85.1` as a dependency. This npm route is
+the primary install path.
+
+`cargo install --git https://github.com/graphwork/wg --locked` (or
+`cargo install --path . --locked` from a checkout) is the from-source
+route — for unsupported platforms, Alpine/musl, Windows, locked-down
+environments, and contributors.
 
 > **macOS limitation:** the macOS binaries currently ship **unsigned** and
 > **un-notarized** (Apple Developer ID secrets are not configured), so

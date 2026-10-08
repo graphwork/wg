@@ -71,9 +71,11 @@ runs anyway).
   binaries; the `@earendil-works/pi-coding-agent` dependency is a caret range
   because pi versions/releases independently of WG.
 - **One install, whole stack.** The metapackage depends on the pi CLI, so
-  `npm i -g @worksgood/cli` brings WG + pi (matching the README's two-step
-  cargo+npm flow) and `--ignore-scripts` users keep full functionality (pi's
-  own package also ships no install hooks; WG execs `pi` as a sibling CLI).
+  `npm i -g @worksgood/cli` is the primary install path (the README's one
+  command) and brings WG + pi; `--ignore-scripts` users keep full functionality
+  (pi's own package also ships no install hooks; WG execs `pi` as a sibling CLI).
+  `cargo install --git https://github.com/graphwork/wg --locked` is the
+  from-source route.
 - **Publish order: platform packages first, metapackage last.** A brief
   registry-visibility window otherwise lets metapackage N resolve before
   platform package N exists.

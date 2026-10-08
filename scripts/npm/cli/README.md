@@ -4,10 +4,18 @@
 package, plus the [@earendil-works/pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
 CLI — one `npm install -g @worksgood/cli` (Node 22.19+) brings the whole WG+pi stack.
 
-`cargo install --git https://github.com/graphwork/wg --locked` remains the
-primary documented install path; npm is the additional channel for users who
-already live in Node-land (which is exactly the WG audience — the same users
-just installed pi from npm).
+One command installs WG (`worksgood`, `wg`, `nex`) and the Pi coding agent
+CLI. It resolves prebuilt per-platform packages
+(`@worksgood/linux-x64-gnu`, `@worksgood/darwin-arm64`) — zero postinstall
+scripts, no Rust toolchain, fully functional under `--ignore-scripts`. Node
+22.19+ (the floor Pi itself declares). The metapackage declares
+`@earendil-works/pi-coding-agent ^0.85.1` as a dependency. This npm route is
+the primary install path.
+
+`cargo install --git https://github.com/graphwork/wg --locked` (or
+`cargo install --path . --locked` from a checkout) is the from-source
+route — for unsupported platforms, Alpine/musl, Windows, locked-down
+environments, and contributors.
 
 ## How it works (zero install scripts)
 
