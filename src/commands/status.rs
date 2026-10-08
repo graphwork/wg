@@ -461,8 +461,8 @@ fn gather_status(dir: &Path, show_all: bool) -> Result<StatusOutput> {
 fn gather_service_status(dir: &Path) -> Result<ServiceStatusInfo> {
     let state = ServiceState::load(dir)?;
 
-    match state {
-        Some(s) if is_process_alive(s.pid) => {
+    if let Some(s) = &state {
+        if is_process_alive(s.pid) && state_birth_matches(s) {
             let uptime = chrono::DateTime::parse_from_rfc3339(&s.started_at)
                 .map(|started| {
                     let now = chrono::Utc::now();
@@ -471,19 +471,49 @@ fn gather_service_status(dir: &Path) -> Result<ServiceStatusInfo> {
                 })
                 .ok();
 
-            Ok(ServiceStatusInfo {
+            return Ok(ServiceStatusInfo {
                 running: true,
                 pid: Some(s.pid),
                 uptime,
-                socket: Some(s.socket_path),
-            })
+                socket: Some(s.socket_path.clone()),
+            });
         }
-        _ => Ok(ServiceStatusInfo {
-            running: false,
-            pid: None,
+    }
+
+    // Process-identity fallback: `state.json` may have been torn down while the
+    // daemon kept ticking (the stacked-daemon episode printed `Service: stopped`
+    // while a live daemon was dispatching). Never report `stopped` while a
+    // daemon process for this graph is observably alive.
+    let live_daemons = super::service::find_orphan_daemon_pids(dir, None);
+    if let Some(pid) = live_daemons.first().copied() {
+        return Ok(ServiceStatusInfo {
+            running: true,
+            pid: Some(pid),
             uptime: None,
-            socket: None,
-        }),
+            socket: Some(state.map(|s| s.socket_path).unwrap_or_else(|| {
+                super::service::default_socket_path(dir)
+                    .display()
+                    .to_string()
+            })),
+        });
+    }
+
+    Ok(ServiceStatusInfo {
+        running: false,
+        pid: None,
+        uptime: None,
+        socket: None,
+    })
+}
+
+/// True when the recorded PID is still the same process birth (or the platform
+/// has no birth identity to compare).
+fn state_birth_matches(state: &ServiceState) -> bool {
+    match state.pid_start_identity.as_deref() {
+        Some(birth) => {
+            worksgood::service_identity::pid_start_identity(state.pid).as_deref() == Some(birth)
+        }
+        None => true,
     }
 }
 
