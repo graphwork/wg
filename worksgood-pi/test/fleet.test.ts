@@ -269,21 +269,36 @@ describe("fleet read model — glyph + colour mapping", () => {
 // ── render: compact by default, expandable ──────────────────────────────────
 
 describe("renderFleetLines — compact/expand", () => {
-  it("compact mode shows the header, up to N live rows and a hint", () => {
+  it("compact mode shows the header, up to N live rows and a truncation line", () => {
     const lines = renderFleetLines(snapshot(), { maxCompactAgents: 1 });
     expect(lines[0].text).toContain("wg fleet ·");
     expect(lines[1].text).toContain("agent-7");
-    expect(lines.at(-1)!.text).toContain("/wg-fleet to expand");
-    // Expanded rows beyond the cap are summarised, not dropped silently.
+    // Content IS cut off, so the load-bearing truncation line explains why.
     expect(lines.some((l) => l.text.includes("+1 more"))).toBe(true);
+    expect(lines.at(-1)!.text).toContain("+1 more · /wg-fleet to expand");
+    // The persistent expand/collapse + /wg-viz footer hint is gone.
+    expect(lines.some((l) => l.text.includes("/wg-viz"))).toBe(false);
+    expect(lines.some((l) => l.text.includes("to collapse"))).toBe(false);
   });
 
-  it("expanded mode lists every live agent", () => {
+  it("compact mode with nothing hidden shows no discoverability hint", () => {
+    const oneLive = { agents: [snapshot().agents[0]], tasks: FIXTURE_TASKS };
+    const lines = renderFleetLines(oneLive, { maxCompactAgents: 3 });
+    expect(lines).toHaveLength(2); // header + the single live row, no footer
+    expect(lines.at(-1)!.text).toContain("agent-7");
+    expect(lines.some((l) => l.text.includes("/wg-fleet to expand"))).toBe(false);
+    expect(lines.some((l) => l.text.includes("/wg-viz"))).toBe(false);
+  });
+
+  it("expanded mode lists every live agent with no collapse hint", () => {
     const lines = renderFleetLines(snapshot(), { expanded: true });
     expect(lines.some((l) => l.text.includes("agent-7"))).toBe(true);
     expect(lines.some((l) => l.text.includes("agent-9"))).toBe(true);
     expect(lines.some((l) => l.text.includes("agent-1"))).toBe(false); // dead
-    expect(lines.at(-1)!.text).toContain("/wg-fleet to collapse");
+    // Even expanded, the re-explaining footer is gone (both states).
+    expect(lines.some((l) => l.text.includes("/wg-fleet to collapse"))).toBe(false);
+    expect(lines.some((l) => l.text.includes("/wg-viz"))).toBe(false);
+    expect(lines.at(-1)!.text).not.toContain("/wg-fleet");
   });
 });
 

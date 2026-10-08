@@ -251,8 +251,12 @@ export function agentLine(agent, now = Date.now()) {
 }
 /**
  * Render the panel lines. Compact by default (header + up to `maxCompactAgents`
- * live agent rows + a discoverability hint); expanded lists every live agent.
- * Always at least two lines so the surface reads as a panel, not a footer.
+ * live agent rows); expanded lists every live agent. When compact rows are cut
+ * off, a `+N more · /wg-fleet to expand` truncation line explains *why* content
+ * is hidden — that is the only chrome here. The persistent expand/collapse
+ * discoverability footer was dropped: docs own how to open the fuller views, and
+ * UI chrome that re-explains itself on every render is noise. Always at least
+ * two lines (the truncation or empty line) so the surface reads as a panel.
  */
 export function renderFleetLines(snapshot, opts = {}) {
     const expanded = opts.expanded ?? false;
@@ -270,13 +274,9 @@ export function renderFleetLines(snapshot, opts = {}) {
     if (!expanded && live.length > shown.length) {
         lines.push({ text: `+${live.length - shown.length} more · /wg-fleet to expand`, color: "dim" });
     }
-    if (expanded && live.length === 0) {
+    if (live.length === 0) {
         lines.push({ text: "no live agents", color: "dim" });
     }
-    lines.push({
-        text: expanded ? "/wg-fleet to collapse · /wg-viz opens the full graph" : "/wg-fleet to expand · /wg-viz opens the full graph",
-        color: "dim",
-    });
     return lines;
 }
 /** Plain-text one-line summary for `/wg-fleet` notifications. */
