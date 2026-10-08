@@ -21,6 +21,7 @@ pub(crate) mod coordinator;
 pub(crate) mod coordinator_agent;
 pub(crate) mod human_dispatch;
 pub mod ipc;
+pub(crate) mod lock;
 pub(crate) mod replay;
 pub(crate) mod signals;
 pub(crate) mod supervisor;
@@ -138,8 +139,7 @@ use worksgood::parser::load_graph;
 use worksgood::service::registry::AgentRegistry;
 
 use super::{
-    graph_path, is_process_alive, kill_process_force, kill_process_force_scoped,
-    kill_process_graceful_scoped,
+    graph_path, is_process_alive, kill_process_force_scoped, kill_process_graceful_scoped,
 };
 
 /// PIDs recorded in the agent registry for this graph.
@@ -1664,25 +1664,141 @@ fn wait_for_spawned_readiness(
     )
 }
 
-fn cleanup_failed_launch(dir: &Path, socket: &Path, nonce: &str, child: &mut process::Child) {
+fn cleanup_failed_launch(
+    dir: &Path,
+    socket: &Path,
+    nonce: &str,
+    child: &mut process::Child,
+    worker_pids: &[u32],
+) {
     // The still-owned Child handle is stronger than a numeric PID lookup: if
     // it has not exited, this is exactly the process we spawned. Kill its tree
     // before dropping the handle so a timed-out supervisor cannot later
-    // publish a daemon after `start` has returned failure.
+    // publish a daemon after `start` has returned failure. The kill is
+    // `_scoped` so a detached/in-flight task worker is never collateral.
+    let spawned_pid = child.id();
     if child.try_wait().ok().flatten().is_none() {
-        let _ = kill_process_force(child.id());
+        let _ = kill_process_force_scoped(spawned_pid, worker_pids);
         let _ = child.wait();
     }
 
+    // Reap a daemon that already re-parented to init (ppid = 1) because its
+    // supervisor died first. This is the exact orphan the failed-start path
+    // used to leave ticking on the same socket.
     let owns_state = ServiceState::load(dir)
         .ok()
         .flatten()
-        .is_some_and(|state| state.instance_nonce.as_deref() == Some(nonce));
-    if owns_state {
+        .filter(|state| state.instance_nonce.as_deref() == Some(nonce));
+    if let Some(state) = &owns_state
+        && is_process_alive(state.pid)
+    {
+        let _ = kill_process_force_scoped(state.pid, worker_pids);
+    }
+
+    if owns_state.is_some() {
         let _ = ServiceState::remove(dir);
         let _ = fs::remove_file(socket);
         let _ = fs::remove_file(chat_control_socket_path(socket));
     }
+    // A dead lock carrier must not block the next start's pre-check.
+    let _ = lock::reap_stale_daemon_lock(dir);
+}
+
+/// Is the instance we spawned (`nonce`) still alive by process identity?
+///
+/// This is the difference between "the daemon is slow to answer readiness" and
+/// "the daemon is gone": a live instance is never torn down just because the
+/// probe window expired.
+fn spawned_instance_alive(dir: &Path, nonce: &str) -> Option<u32> {
+    let state = ServiceState::load(dir).ok().flatten()?;
+    if state.instance_nonce.as_deref() != Some(nonce) {
+        return None;
+    }
+    if !is_process_alive(state.pid) {
+        return None;
+    }
+    if let Some(birth) = state.pid_start_identity.as_deref()
+        && worksgood::service_identity::pid_start_identity(state.pid).as_deref() != Some(birth)
+    {
+        return None;
+    }
+    Some(state.pid)
+}
+
+/// `--force` restart: kill the daemon that currently holds the single-writer
+/// lock and *confirm* it is gone by process identity before returning, so the
+/// caller can never start a second daemon alongside a still-live one.
+fn force_release_live_daemon(
+    dir: &Path,
+    owner: &lock::DaemonLockOwner,
+    worker_pids: &[u32],
+    json: bool,
+) -> Result<()> {
+    if !json {
+        println!(
+            "Replacing live daemon (PID {}) holding the single-writer lock...",
+            owner.pid
+        );
+    }
+
+    // Ask the old daemon to stop through its own authenticated IPC first so it
+    // reaches the clean-shutdown path (and its supervisor does not restart it).
+    let socket = PathBuf::from(&owner.socket_path);
+    if socket.exists()
+        && let Ok(mut stream) = connect_to_socket(&socket)
+    {
+        let request = IpcRequest::Shutdown {
+            force: false,
+            kill_agents: false,
+        };
+        if let Ok(json_req) = serde_json::to_string(&request) {
+            let _ = writeln!(stream, "{}", json_req);
+            let _ = stream.flush();
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    if !owner.is_live() {
+        let _ = lock::reap_stale_daemon_lock(dir);
+        return Ok(());
+    }
+
+    // A reused numeric PID is never restart authority.
+    if let Some(birth) = owner.pid_start_identity.as_deref()
+        && worksgood::service_identity::pid_start_identity(owner.pid).as_deref() != Some(birth)
+    {
+        anyhow::bail!(
+            "refusing to signal daemon PID {} during force-start: its process-birth identity changed",
+            owner.pid
+        );
+    }
+
+    let _ = kill_process_graceful_scoped(owner.pid, 5, worker_pids);
+
+    // CONFIRM: wait until the recorded process identity is gone AND the lock is
+    // free. Only then may a replacement start.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if !owner.is_live() && lock::is_daemon_lock_free(dir) {
+            let _ = lock::reap_stale_daemon_lock(dir);
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // Escalate to SIGKILL and give it one more confirm window.
+    if owner.is_live() {
+        let _ = kill_process_force_scoped(owner.pid, worker_pids);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    if owner.is_live() {
+        anyhow::bail!(
+            "could not confirm daemon PID {} exited before restarting; refusing to stack a second daemon on the same socket",
+            owner.pid
+        );
+    }
+    let _ = lock::reap_stale_daemon_lock(dir);
+    Ok(())
 }
 
 fn startup_failure(dir: &Path, reason: &str, json: bool) -> anyhow::Error {
@@ -1709,13 +1825,17 @@ fn startup_failure(dir: &Path, reason: &str, json: bool) -> anyhow::Error {
             }
         }
     }
-    eprintln!("Recovery: wg service start --force");
+    eprintln!(
+        "Recovery: retry with `wg service start --no-chat-agent` if the persistent chat agent is \
+         what is blocking startup; otherwise inspect the daemon log above ({}).",
+        log_path.display()
+    );
     if json {
         let output = serde_json::json!({
             "status": "failed",
             "error": reason,
             "log": log_path,
-            "recovery_command": "wg service start --force",
+            "recovery_command": "wg service start --no-chat-agent",
         });
         // Keep stdout a single machine-readable JSON document. Human evidence
         // is always emitted independently on stderr, including when stdout is
@@ -1786,6 +1906,19 @@ pub fn run_start(
             "warning: deprecated --executor {legacy_executor:?} is ignored; project route is the sole routing authority (effective handler={effective})"
         );
     }
+
+    // Serialize concurrent starts for this graph. The loser observes the
+    // winner's daemon lock below and refuses loudly instead of stacking a
+    // second supervisor+daemon pair. The lock is released when this function
+    // returns (success OR failure).
+    let _start_lock = lock::StartLock::acquire(dir)?;
+    let socket = socket_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_socket_path(dir));
+    // Reap a lock carrier whose recorded owner is provably dead so a crashed
+    // daemon never blocks a restart. Also drop a stale socket file left by a
+    // process that is gone.
+    let _ = lock::reap_stale_daemon_lock(dir);
 
     // Check if service is already running
     if let Some(state) = ServiceState::load(dir)? {
@@ -1896,6 +2029,30 @@ pub fn run_start(
         }
     }
 
+    // Single-writer fence: the daemon lock is the authority for "is a daemon
+    // already ticking on this socket?". Unlike `state.json` it survives a
+    // deleted state file, so a second coordinator loop can never be stacked on
+    // the same socket after a torn-down state (the observed stacked-daemon
+    // episode).
+    if let Some(owner) = lock::read_daemon_owner(dir)
+        && owner.is_live()
+    {
+        if force {
+            force_release_live_daemon(dir, &owner, &worker_pids, json)?;
+        } else {
+            return Err(startup_failure(
+                dir,
+                &format!(
+                    "a live daemon (PID {}) already holds the single-writer lock for this graph; refusing to start a second daemon on the same socket. Stop it with `wg service stop --force`, or replace it with `wg service start --force`.",
+                    owner.pid
+                ),
+                json,
+            ));
+        }
+    } else {
+        let _ = lock::reap_stale_daemon_lock(dir);
+    }
+
     // Also check for orphan daemon / supervisor processes that lost their
     // state file. A leftover supervisor would re-spawn a daemon, so it is
     // reaped alongside daemon orphans.
@@ -1922,11 +2079,8 @@ pub fn run_start(
         }
     }
 
-    let socket = socket_path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_socket_path(dir));
-
-    // Remove stale socket file if exists
+    // Remove a stale socket file left by a process that is gone. The
+    // live-owner case was already rejected (or killed under --force) above.
     if socket.exists() {
         fs::remove_file(&socket)
             .with_context(|| format!("Failed to remove stale socket at {:?}", socket))?;
@@ -2048,15 +2202,34 @@ pub fn run_start(
     // above. Process creation, a socket pathname, or a response from an old
     // daemon are all insufficient.
     let render_spinner = !json && std::io::stdout().is_terminal();
-    let ready =
-        match wait_for_spawned_readiness(dir, &socket, &instance_nonce, &mut child, render_spinner)
-        {
-            Ok(ready) => ready,
-            Err(error) => {
-                cleanup_failed_launch(dir, &socket, &instance_nonce, &mut child);
+    let mut degraded_note: Option<String> = None;
+    let ready = match wait_for_spawned_readiness(
+        dir,
+        &socket,
+        &instance_nonce,
+        &mut child,
+        render_spinner,
+    ) {
+        Ok(ready) => ready,
+        Err(error) => match spawned_instance_alive(dir, &instance_nonce) {
+            // (b) A live, identity-verified daemon is NEVER torn down just
+            // because the readiness probe window expired: the chat agent
+            // may still be starting, or the box may simply be slow. Report
+            // it as running with a degraded note instead of killing it.
+            Some(pid) => {
+                degraded_note = Some(format!(
+                    "readiness was not confirmed within {}ms ({error:#}); daemon PID {} is alive by process identity and was left running",
+                    startup_timeout().as_millis(),
+                    pid
+                ));
+                ReadyInstance { pid }
+            }
+            None => {
+                cleanup_failed_launch(dir, &socket, &instance_nonce, &mut child, &worker_pids);
                 return Err(startup_failure(dir, &format!("{error:#}"), json));
             }
-        };
+        },
+    };
 
     // Render the same project-local route snapshot that the daemon admitted.
     // Legacy --executor/config fields are observation-only and must not make a
@@ -2081,6 +2254,8 @@ pub fn run_start(
             "socket": socket_str,
             "instance_nonce": instance_nonce,
             "log": log_path_str,
+            "degraded": degraded_note.is_some(),
+            "note": degraded_note,
             "coordinator": {
                 "max_agents": eff_max_agents,
                 "poll_interval": eff_poll_interval,
@@ -2089,6 +2264,15 @@ pub fn run_start(
             }
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if let Some(note) = degraded_note.as_deref() {
+        println!(
+            "Service started (PID {}) but readiness was not yet confirmed — the daemon is alive.",
+            ready.pid
+        );
+        println!("  {note}");
+        println!("  Chat agents may still be starting; check `wg status` and the log.");
+        println!("Socket: {}", socket_str);
+        println!("Log: {}", log_path_str);
     } else {
         println!("Service started and ready (PID {})", ready.pid);
         println!("Socket: {}", socket_str);
@@ -2793,6 +2977,20 @@ pub fn run_daemon(
         socket_path,
     ));
 
+    // Single-writer fence: at most one daemon per graph/socket. The kernel
+    // `flock` (not the carrier file) is the authority, and it is released
+    // automatically if this process dies, so a crashed predecessor can never
+    // wedge a restart. A second daemon that loses this race exits loudly
+    // *before* touching the socket, so it can never stack a second coordinator
+    // loop on the same socket.
+    let _daemon_lock = lock::DaemonLock::acquire(dir, socket_path).with_context(|| {
+        format!(
+            "refusing to start a second daemon for {}; a live daemon already owns the socket",
+            dir.display()
+        )
+    })?;
+    logger.info("Acquired single-writer daemon lock");
+
     // --- Binary self-restart detection ---
     // Record the exe path and its metadata at startup so we can detect when
     // `cargo install` (or similar) replaces the binary on disk.  We use
@@ -3175,59 +3373,87 @@ pub fn run_daemon(
         u32,
         coordinator_agent::CoordinatorAgent,
     > = std::collections::HashMap::new();
+    // Chat-supervisor boot runs OFF the daemon's critical path. Spawning an LLM
+    // session (plus session-lock recovery and, historically, a `claude
+    // --version` probe per chat) must never delay the IPC accept loop that
+    // answers the readiness challenge — otherwise a graph with a handful of
+    // stale `.chat-N` panes blows the 8s start budget even though the daemon is
+    // perfectly healthy. The main loop drains finished spawns from this channel.
+    let (_chat_boot_tx, chat_boot_rx) =
+        std::sync::mpsc::channel::<(u32, Result<coordinator_agent::CoordinatorAgent>)>();
     if enable_coordinator_agent {
-        let to_spawn = worksgood::service::enumerate_chat_supervisors_for_boot(&dir);
-        if to_spawn.is_empty() {
-            logger.info(
-                "No chat-loop tasks in graph — no chat supervisors spawned at boot. \
-                 Use `wg chat new` (or the TUI '+' key) to create a chat agent.",
-            );
-        } else {
-            logger.info(&format!(
-                "Spawning {} chat supervisor(s) from graph: {}",
-                to_spawn.len(),
-                to_spawn
-                    .iter()
-                    .map(|s| if s.is_legacy {
-                        format!(".coordinator-{}", s.chat_id)
-                    } else {
-                        format!(".chat-{}", s.chat_id)
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ));
-        }
-        for spec in to_spawn {
-            if spec.is_legacy {
-                logger.warn(&format!(
-                    "Loading legacy `.coordinator-{}` task; please run `wg migrate chat-rename` to rename to `.chat-{}` (deprecation will be removed in a future release)",
-                    spec.chat_id, spec.chat_id
-                ));
-            }
-            match coordinator_agent::CoordinatorAgent::spawn(
-                &dir,
-                spec.chat_id,
-                daemon_cfg.model.as_deref(),
-                Some(&daemon_cfg.executor),
-                daemon_cfg.provider.as_deref(),
-                &logger,
-                event_log.clone(),
-            ) {
-                Ok(agent) => {
-                    logger.info(&format!(
-                        "Coordinator agent {} spawned successfully",
-                        spec.chat_id
+        let boot_dir = dir.clone();
+        let boot_logger = logger.clone();
+        let boot_event_log = event_log.clone();
+        let boot_model = daemon_cfg.model.clone();
+        let boot_executor = daemon_cfg.executor.clone();
+        let boot_provider = daemon_cfg.provider.clone();
+        let boot_tx = _chat_boot_tx.clone();
+        std::thread::Builder::new()
+            .name("wg-chat-boot".to_string())
+            .spawn(move || {
+                if let Ok(delay) = std::env::var("WG_TEST_SERVICE_CHAT_BOOT_DELAY_MS")
+                    && let Ok(delay) = delay.parse::<u64>()
+                    && delay > 0
+                {
+                    boot_logger.info(&format!(
+                        "Test hook: delaying chat-supervisor boot by {delay}ms"
                     ));
-                    coordinator_agents.insert(spec.chat_id, agent);
+                    std::thread::sleep(Duration::from_millis(delay));
                 }
-                Err(e) => {
-                    logger.warn(&format!(
-                        "Failed to spawn coordinator agent {}: {}. Chat will use stub responses.",
-                        spec.chat_id, e
+                let to_spawn =
+                    worksgood::service::enumerate_chat_supervisors_for_boot(&boot_dir);
+                if to_spawn.is_empty() {
+                    boot_logger.info(
+                        "No chat-loop tasks in graph — no chat supervisors spawned at boot. \
+                         Use `wg chat new` (or the TUI '+' key) to create a chat agent.",
+                    );
+                } else {
+                    boot_logger.info(&format!(
+                        "Spawning {} chat supervisor(s) from graph: {}",
+                        to_spawn.len(),
+                        to_spawn
+                            .iter()
+                            .map(|s| if s.is_legacy {
+                                format!(".coordinator-{}", s.chat_id)
+                            } else {
+                                format!(".chat-{}", s.chat_id)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", "),
                     ));
                 }
-            }
-        }
+                for spec in to_spawn {
+                    if spec.is_legacy {
+                        boot_logger.warn(&format!(
+                            "Loading legacy `.coordinator-{}` task; please run `wg migrate chat-rename` to rename to `.chat-{}` (deprecation will be removed in a future release)",
+                            spec.chat_id, spec.chat_id
+                        ));
+                    }
+                    let result = coordinator_agent::CoordinatorAgent::spawn(
+                        &boot_dir,
+                        spec.chat_id,
+                        boot_model.as_deref(),
+                        Some(&boot_executor),
+                        boot_provider.as_deref(),
+                        &boot_logger,
+                        boot_event_log.clone(),
+                    );
+                    if result.is_ok() {
+                        boot_logger.info(&format!(
+                            "Coordinator agent {} spawned successfully",
+                            spec.chat_id
+                        ));
+                    } else if let Err(e) = &result {
+                        boot_logger.warn(&format!(
+                            "Failed to spawn coordinator agent {}: {}. Chat will use stub responses.",
+                            spec.chat_id, e
+                        ));
+                    }
+                    let _ = boot_tx.send((spec.chat_id, result));
+                }
+            })
+            .context("Failed to start chat-supervisor boot thread")?;
     } else if no_coordinator_agent {
         logger.info("Coordinator agent disabled via --no-coordinator-agent flag");
     } else {
@@ -3382,6 +3608,15 @@ pub fn run_daemon(
                 pending_coordinator_ids.push(chat_id);
             }
             urgent_wake = true;
+        }
+
+        // Install chat supervisors produced by the off-critical-path boot
+        // thread. This never blocks the IPC accept loop, so readiness is
+        // answered immediately even while LLM sessions are still starting.
+        while let Ok((chat_id, result)) = chat_boot_rx.try_recv() {
+            if let Ok(agent) = result {
+                coordinator_agents.insert(chat_id, agent);
+            }
         }
 
         // Reap zombie child processes (agents that have exited).

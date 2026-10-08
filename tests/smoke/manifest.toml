@@ -3313,9 +3313,16 @@ timeout_seconds = 180
 [[scenario]]
 name = "service_start_readiness_pty"
 script = "scenarios/service_start_readiness_pty.sh"
-owners = ["fix-service-start-readiness", "integrate-maze-free-recovery"]
+owners = ["fix-service-start-readiness", "integrate-maze-free-recovery", "service-start-readiness"]
 description = "Candidate-binary terminal regression for service startup truthfulness: a real PTY repeatedly drives the exact human `wg service stop --force` -> immediate `wg service start` flow, and every printed success is independently challenged against the state nonce, daemon PID, and live socket. A forced readiness timeout must exit nonzero and emit an unmistakable reason, bounded daemon-log tail, and concrete recovery command on stderr even with stdout redirected; JSON failure stdout remains one parseable document. The integration owner runs this against the same freshly built binary as the composed landing-reconciliation flow."
 timeout_seconds = 90
+
+[[scenario]]
+name = "service_single_writer_readiness"
+script = "scenarios/service_single_writer_readiness.sh"
+owners = ["service-start-readiness"]
+description = "Pins service-start-readiness through the real candidate binary: with the persistent chat agent enabled, `wg service start` reaches ready without waiting for the chat LLM session (chat-supervisor boot is deliberately delayed); a readiness timeout leaves a live daemon running with a degraded note instead of killing it; two concurrent starts never stack two daemons on one socket; a stale daemon.lock whose owner is dead is reaped; `wg status` reports running from process identity even when state.json is gone; and the failed-start path offers the actionable --no-chat-agent / daemon-log remedy (not the circular --force hint) while leaving no orphaned daemon."
+timeout_seconds = 120
 
 [[scenario]]
 name = "project_local_pi_cli"

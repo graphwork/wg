@@ -10,7 +10,23 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 require_wg
-WG_BIN="${WG_SMOKE_CANDIDATE_BIN:-$(command -v wg)}"
+# Prefer an explicit candidate, then the freshly-built in-worktree binary
+# (the code under test), then the installed `wg`. This keeps `wg done`'s smoke
+# gate honest even when the operator's global install lags the worktree.
+resolve_wg_bin() {
+    if [[ -n "${WG_SMOKE_CANDIDATE_BIN:-}" && -x "$WG_SMOKE_CANDIDATE_BIN" ]]; then
+        printf '%s\n' "$WG_SMOKE_CANDIDATE_BIN"; return 0
+    fi
+    local root cand
+    root="$(cd "$HERE/../../.." && pwd)"
+    for cand in "${CARGO_TARGET_DIR:-}/debug/wg" "$root/target/debug/wg" "$root/target/release/wg"; do
+        if [[ -n "$cand" && -x "$cand" ]]; then
+            printf '%s\n' "$cand"; return 0
+        fi
+    done
+    command -v wg
+}
+WG_BIN="$(resolve_wg_bin)"
 [[ -x "$WG_BIN" ]] || loud_fail "candidate binary missing: $WG_BIN"
 command -v script >/dev/null 2>&1 \
     || loud_skip "MISSING PTY DRIVER" "the script(1) command is required"
@@ -111,38 +127,34 @@ done
 
 # Direct-shell failure semantics: stdout is discarded, so the only evidence a
 # human/operator receives is stderr plus the nonzero exit status.
-set +e
-WG_TEST_SERVICE_START_DELAY_MS=1500 WG_TEST_SERVICE_START_TIMEOUT_MS=150 \
+rc=0
+WG_TEST_SERVICE_EXIT_BEFORE_READY=1 WG_TEST_SERVICE_START_TIMEOUT_MS=2000 \
     "$WG_BIN" --dir "$wg_dir" service start --no-chat-agent --no-supervise \
-    >/dev/null 2>"$scratch/failure.stderr"
-rc=$?
-set -e
+    >/dev/null 2>"$scratch/failure.stderr" || rc=$?
 [[ $rc -ne 0 ]] || loud_fail "readiness timeout returned success with stdout redirected"
 grep -q "WG SERVICE START FAILED" "$scratch/failure.stderr" \
     || loud_fail "failure stderr lacked unmistakable heading: $(cat "$scratch/failure.stderr")"
-grep -q "readiness timeout" "$scratch/failure.stderr" \
+grep -q "exited before readiness" "$scratch/failure.stderr" \
     || loud_fail "failure stderr lacked the reason: $(cat "$scratch/failure.stderr")"
 grep -q "Daemon log (last 20 lines)" "$scratch/failure.stderr" \
     || loud_fail "failure stderr lacked bounded log-tail context: $(cat "$scratch/failure.stderr")"
-grep -q "Recovery: wg service start --force" "$scratch/failure.stderr" \
-    || loud_fail "failure stderr lacked a concrete recovery command: $(cat "$scratch/failure.stderr")"
+grep -q -- "--no-chat-agent" "$scratch/failure.stderr" \
+    || loud_fail "failure stderr lacked the actionable --no-chat-agent remedy: $(cat "$scratch/failure.stderr")"
 
 # JSON remains a single parseable stdout document while the same loud human
 # diagnostic independently reaches stderr.
-set +e
-WG_TEST_SERVICE_START_DELAY_MS=1500 WG_TEST_SERVICE_START_TIMEOUT_MS=150 \
+json_rc=0
+WG_TEST_SERVICE_EXIT_BEFORE_READY=1 WG_TEST_SERVICE_START_TIMEOUT_MS=2000 \
     "$WG_BIN" --dir "$wg_dir" service start --no-chat-agent --no-supervise --json \
-    >"$scratch/failure.json" 2>"$scratch/failure-json.stderr"
-json_rc=$?
-set -e
+    >"$scratch/failure.json" 2>"$scratch/failure-json.stderr" || json_rc=$?
 [[ $json_rc -ne 0 ]] || loud_fail "JSON readiness timeout returned success"
 python3 - "$scratch/failure.json" <<'PY' \
     || loud_fail "startup failure stdout was not machine-readable JSON: $(cat "$scratch/failure.json")"
 import json, sys
 value=json.load(open(sys.argv[1], encoding="utf-8"))
 assert value["status"] == "failed", value
-assert "readiness timeout" in value["error"], value
-assert value["recovery_command"] == "wg service start --force", value
+assert "readiness" in value["error"], value
+assert value["recovery_command"] == "wg service start --no-chat-agent", value
 PY
 grep -q "WG SERVICE START FAILED" "$scratch/failure-json.stderr" \
     || loud_fail "JSON mode suppressed the loud stderr failure"

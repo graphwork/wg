@@ -1176,16 +1176,23 @@ fn test_service_start_child_exit_before_readiness_is_nonzero_and_loud() {
     assert!(stderr.contains("exited before readiness"), "{stderr}");
     assert!(stderr.contains("Daemon log (last 20 lines)"), "{stderr}");
     assert!(
-        stderr.contains("Recovery: wg service start --force"),
-        "{stderr}"
+        stderr.contains("--no-chat-agent"),
+        "failure must offer the actionable --no-chat-agent remedy: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Recovery: wg service start --force"),
+        "the circular --force hint must be gone: {stderr}"
     );
 }
 
 #[test]
 #[serial]
-fn test_service_start_readiness_timeout_is_nonzero_and_loud() {
+fn test_readiness_timeout_does_not_kill_a_live_daemon() {
+    // A daemon that is alive by process identity but slow to answer the
+    // readiness probe (e.g. still starting chat agents) must NOT be torn down.
     let tmp = short_service_tempdir();
     let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
     let mut command = wg_command(&wg_dir);
     let output = command
         .args([
@@ -1198,14 +1205,252 @@ fn test_service_start_readiness_timeout_is_nonzero_and_loud() {
         .env("WG_TEST_SERVICE_START_TIMEOUT_MS", "150")
         .output()
         .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "readiness timeout with a live daemon must succeed (degraded):\nstdout={stdout}\nstderr={stderr}"
+    );
+    assert!(
+        stdout.contains("readiness was not yet confirmed") || stdout.contains("not yet confirmed"),
+        "degraded start must say readiness was unconfirmed: {stdout}"
+    );
+    // The daemon is alive and must eventually serve readiness (the delay is
+    // finite); the important invariant is that it was not killed at the probe
+    // deadline.
+    let pid = state_daemon_pid(&wg_dir).expect("state must still exist for the live daemon");
+    assert!(
+        is_alive(pid),
+        "the live daemon PID {pid} must have been left running"
+    );
+    assert!(
+        wait_for_service_ready(&wg_dir, Duration::from_secs(5)),
+        "the live daemon must become ready after its startup delay"
+    );
+    cleanup_daemon(&wg_dir);
+}
+
+#[cfg(unix)]
+fn is_alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[cfg(not(unix))]
+fn is_alive(_pid: u32) -> bool {
+    true
+}
+
+fn cleanup_daemon(wg_dir: &Path) {
+    let _ = wg_cmd(wg_dir, &["service", "stop", "--force", "--kill-agents"]);
+}
+
+/// Count live `wg service daemon` processes for this exact graph dir.
+#[cfg(unix)]
+fn live_daemon_count(wg_dir: &Path) -> usize {
+    let canonical = wg_dir
+        .canonicalize()
+        .unwrap_or_else(|_| wg_dir.to_path_buf());
+    let dir_str = canonical.to_string_lossy().to_string();
+    let mut count = 0;
+    if let Ok(entries) = fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let pid = match entry.file_name().to_string_lossy().parse::<u32>() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let Ok(raw) = fs::read(format!("/proc/{pid}/cmdline")) else {
+                continue;
+            };
+            let args: Vec<String> = String::from_utf8_lossy(&raw)
+                .split('\0')
+                .map(str::to_string)
+                .collect();
+            let is_daemon = args
+                .windows(2)
+                .any(|w| w[0] == "service" && w[1] == "daemon");
+            let has_dir = args.windows(2).any(|w| w[0] == "--dir" && w[1] == dir_str);
+            if is_daemon && has_dir {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[cfg(not(unix))]
+fn live_daemon_count(_wg_dir: &Path) -> usize {
+    0
+}
+
+#[test]
+#[serial]
+fn test_two_concurrent_starts_never_stack_daemons() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
+
+    let mut first = wg_command(&wg_dir);
+    first
+        .args(["service", "start", "--no-coordinator-agent"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut second = wg_command(&wg_dir);
+    second
+        .args(["service", "start", "--no-coordinator-agent"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut a = first.spawn().unwrap();
+    let mut b = second.spawn().unwrap();
+    let sa = a.wait().unwrap();
+    let sb = b.wait().unwrap();
+    assert!(
+        sa.success() || sb.success(),
+        "at least one concurrent start must succeed"
+    );
+
+    // Settle, then require exactly one ticking daemon for this graph.
+    let _ = wait_for(Duration::from_secs(5), 100, || {
+        live_daemon_count(&wg_dir) <= 1
+    });
+    assert_eq!(
+        live_daemon_count(&wg_dir),
+        1,
+        "two concurrent starts must never leave two daemons on one socket"
+    );
+    assert_matching_daemon_readiness(&wg_dir);
+    cleanup_daemon(&wg_dir);
+}
+
+#[test]
+#[serial]
+fn test_service_start_with_chat_agent_reaches_ready() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
+    // A chat-loop task makes the daemon spawn a chat supervisor at boot.
+    wg_ok(
+        &wg_dir,
+        &["add", ".chat-1", "--id", ".chat-1", "-t", "chat-loop"],
+    );
+
+    // The chat-supervisor boot thread is deliberately delayed for 5s; readiness
+    // must still be confirmed well before that (it cannot be gated on the chat
+    // LLM session spawning).
+    let started = Instant::now();
+    let mut command = wg_command(&wg_dir);
+    let output = command
+        .args(["service", "start", "--force"])
+        .env("WG_TEST_SERVICE_CHAT_BOOT_DELAY_MS", "5000")
+        .env("WG_TEST_SERVICE_START_TIMEOUT_MS", "8000")
+        .output()
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        output.status.success(),
+        "start with the chat agent enabled failed: {} / {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("started and ready"),
+        "chat-enabled start must confirm readiness: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "readiness must not wait for the chat-supervisor spawn (took {elapsed:?})"
+    );
+    assert_matching_daemon_readiness(&wg_dir);
+    cleanup_daemon(&wg_dir);
+}
+
+#[test]
+#[serial]
+fn test_dead_lock_owner_is_reaped_on_start() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
+
+    // A short-lived process we wait for, so its PID is provably dead.
+    let mut dead = std::process::Command::new("true").spawn().unwrap();
+    let dead_pid = dead.id();
+    let _ = dead.wait();
+
+    fs::create_dir_all(wg_dir.join("service")).unwrap();
+    let owner = serde_json::json!({
+        "pid": dead_pid,
+        "socket_path": wg_dir.join("service/daemon.sock").display().to_string(),
+        "started_at": chrono::Utc::now().to_rfc3339(),
+    });
+    fs::write(
+        wg_dir.join("service/daemon.lock"),
+        serde_json::to_vec(&owner).unwrap(),
+    )
+    .unwrap();
+
+    let output = start_readiness_fixture(&wg_dir);
+    assert!(
+        output.status.success(),
+        "a dead lock owner must be reaped, not block the start: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_matching_daemon_readiness(&wg_dir);
+    cleanup_daemon(&wg_dir);
+}
+
+#[test]
+#[serial]
+fn test_status_reports_running_from_process_identity_without_state() {
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let _guard = ServiceGuard::new(&wg_dir);
+    assert!(start_readiness_fixture(&wg_dir).status.success());
+    assert_matching_daemon_readiness(&wg_dir);
+
+    // Simulate the stacked-daemon episode: state.json is gone while the daemon
+    // is alive and dispatching. `wg status` must never say "stopped".
+    let pid = state_daemon_pid(&wg_dir).unwrap();
+    fs::remove_file(wg_dir.join("service/state.json")).unwrap();
+    let output = wg_cmd(&wg_dir, &["status"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Service: running"),
+        "status must derive running from process identity, got: {stdout}"
+    );
+    assert!(is_alive(pid), "daemon must still be alive");
+    cleanup_daemon(&wg_dir);
+}
+
+#[test]
+#[serial]
+fn test_service_start_readiness_timeout_is_nonzero_and_loud() {
+    // The genuine loud-failure path: the spawned daemon EXITS before it can
+    // answer readiness. (A live-but-slow daemon now succeeds with a degraded
+    // note instead — see test_readiness_timeout_does_not_kill_a_live_daemon.)
+    let tmp = short_service_tempdir();
+    let wg_dir = setup_workgraph(tmp.path());
+    let mut command = wg_command(&wg_dir);
+    let output = command
+        .args([
+            "service",
+            "start",
+            "--no-coordinator-agent",
+            "--no-supervise",
+        ])
+        .env("WG_TEST_SERVICE_EXIT_BEFORE_READY", "1")
+        .env("WG_TEST_SERVICE_START_TIMEOUT_MS", "2000")
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("WG SERVICE START FAILED"), "{stderr}");
-    assert!(stderr.contains("readiness timeout"), "{stderr}");
-    assert!(stderr.contains("Test hook: delaying readiness"), "{stderr}");
     assert!(
-        stderr.contains("Recovery: wg service start --force"),
+        stderr.contains("exited before readiness") || stderr.contains("readiness timeout"),
         "{stderr}"
+    );
+    assert!(
+        stderr.contains("--no-chat-agent"),
+        "failure must offer the actionable remedy: {stderr}"
     );
     assert!(
         !wg_dir.join("service/state.json").exists(),
