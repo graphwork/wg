@@ -14,6 +14,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { readWgEnv, WgBackend } from "./wg-backend.js";
 import { registerWgTools } from "./tools.js";
 import { registerWgCommands } from "./commands.js";
@@ -38,9 +41,22 @@ import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
  *    testable fail path the host `--selftest --force-compat-mismatch` exercises.
  *
  *  - **pi → wg (human console):** the env is absent, so we ask the `wg` actually
- *    on PATH (`wg pi-plugin compat-version`) ASYNCHRONOUSLY and complain loudly
- *    on mismatch. A factory cannot block on a child process, so this path warns
- *    on stderr / via pi notifications rather than throwing at load.
+ *    on PATH ASYNCHRONOUSLY and complain loudly on mismatch. A factory cannot
+ *    block on a child process, so this path warns on stderr rather than throwing
+ *    at load.
+ *
+ * The console path is also made **self-healing**, matching what worker spawns
+ * already get from the Hermetic `ensure-pi-plugin`: the running binary's cache
+ * may have been materialized by an OLDER binary (the operator-observed
+ * "silent-old console" gap — you `npm update -g`, open `pi`, and get whatever
+ * bytes the last touchpoint froze). Two cheap signals at load:
+ *
+ *  1. `wg pi-plugin compat-version` itself self-heals a stale console cache and
+ *     rewires `~/.pi/agent/settings.json` (the Rust side; loud on stderr).
+ *  2. the digest check below compares this build's `.wg-embed-digest` stamp
+ *     against `wg pi-plugin digest` (the binary's current embed) and, on
+ *     mismatch, warns **and** runs `wg pi-plugin install` so the next launch is
+ *     fixed — detecting an embed change even under an unchanged compat version.
  */
 function assertCompatVersionSync(): void {
   const expected = process.env.WG_PI_PLUGIN_COMPAT_VERSION?.trim();
@@ -53,25 +69,85 @@ function assertCompatVersionSync(): void {
   }
 }
 
-/** pi → wg drift catcher: ask the on-PATH `wg` for its compat version. */
-async function assertCompatVersionAsync(backend: WgBackend): Promise<void> {
+/**
+ * Read the content digest this build's cache was materialized with.
+ *
+ * Only a binary-materialized cache dir carries the `.wg-embed-digest` companion
+ * stamp (written beside the version dir by `ensure-pi-plugin`). A dev tree or an
+ * npm `node_modules` install has no stamp — return `undefined` so we never
+ * nag about a build `wg` does not own.
+ */
+export function readEmbedDigestAt(versionDir: string): string | undefined {
+  try {
+    const text = readFileSync(path.join(versionDir, ".wg-embed-digest"), "utf8").trim();
+    return text || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The version dir this copy of the plugin was loaded from (parent of `pi-worksgood/`). */
+function ownVersionDir(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+}
+
+/**
+ * pi → wg console drift catcher. Best-effort: never throws at load.
+ *
+ * @param ownDigest override for tests (defaults to this build's stamp).
+ */
+export async function assertConsolePluginCurrent(
+  backend: WgBackend,
+  ownDigest?: string,
+): Promise<void> {
   // Only meaningful when wg did NOT inject the env (i.e. the human-console
   // direction); the sync check already covered the wg→pi spawn.
   if (process.env.WG_PI_PLUGIN_COMPAT_VERSION) return;
+  // Capture our own stamp BEFORE the (self-healing) wg calls below can rewrite
+  // the cache under us. `undefined` for dev / npm installs.
+  const loadedDigest = ownDigest === undefined ? readEmbedDigestAt(ownVersionDir()) : ownDigest;
+
+  // (1) compat handshake + forward the Rust self-heal warning (if any).
   let found: string | undefined;
   try {
     const r = await backend.run(["pi-plugin", "compat-version"]);
     if (r.code === 0) found = r.stdout.trim();
+    if (r.stderr.trim()) console.error(`[pi-worksgood] ${r.stderr.trim()}`);
   } catch {
     return; // no `wg` on PATH / older wg without the verb — nothing to assert.
   }
   if (found && found !== EMBEDDED_COMPAT) {
-    const msg =
-      `WorksGood Pi integration compat mismatch: extension=${EMBEDDED_COMPAT} wg=${found}. ` +
-      "Reinstall the matching plugin with `wg pi-plugin install`.";
-    // A factory cannot turn an async result into a load-time throw, so the
-    // guaranteed signal for the console direction is a loud stderr line.
-    console.error(`[pi-worksgood] ${msg}`);
+    console.error(
+      `[pi-worksgood] WorksGood Pi integration compat mismatch: extension=${EMBEDDED_COMPAT} wg=${found}. ` +
+        "Reinstall the matching plugin with `wg pi-plugin install`.",
+    );
+  }
+
+  // (2) content-digest check — catches a stale cache even under an unchanged
+  // compat version, which the compat handshake alone cannot see.
+  let wgDigest: string | undefined;
+  try {
+    const r = await backend.run(["pi-plugin", "digest"]);
+    if (r.code === 0) wgDigest = r.stdout.trim();
+  } catch {
+    return; // older wg without `digest` — compat check above is the fallback.
+  }
+  if (!loadedDigest || !wgDigest || loadedDigest === wgDigest) return;
+
+  console.error(
+    `[pi-worksgood] stale plugin cache: loaded ${loadedDigest} but this wg embeds ${wgDigest}. ` +
+      "Refreshing with `wg pi-plugin install` — restart pi to load the updated /wg-fleet and wg tools.",
+  );
+  try {
+    const heal = await backend.run(["pi-plugin", "install"]);
+    if (heal.stderr.trim()) console.error(`[pi-worksgood] ${heal.stderr.trim()}`);
+    if (heal.code !== 0) {
+      console.error(
+        `[pi-worksgood] self-heal failed (exit ${heal.code}); run \`wg pi-plugin install\` manually.`,
+      );
+    }
+  } catch {
+    /* best-effort: the warning above is the guaranteed signal */
   }
 }
 
@@ -79,7 +155,7 @@ export default function worksgoodPi(pi: ExtensionAPI): void {
   assertCompatVersionSync(); // wg→pi: throw → extension load error (loud, testable)
   const env = readWgEnv();
   const backend = new WgBackend(pi, env);
-  void assertCompatVersionAsync(backend); // pi→wg: best-effort drift catcher
+  void assertConsolePluginCurrent(backend); // pi→wg: best-effort self-heal + drift catcher
 
   registerWgTools(pi, backend); // wg_capabilities / wg_ready / wg_show / wg_add / wg_publish / wg_done / wg_fail / wg_msg_* / wg_run
   registerWgCommands(pi, backend); // /wg, /wg-model (+ autocomplete)

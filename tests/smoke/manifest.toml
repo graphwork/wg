@@ -1912,6 +1912,15 @@ description = "Pins fix-plugin-cache: the wg-pi plugin cache silently served a s
 timeout_seconds = 60
 
 [[scenario]]
+name = "pi_plugin_console_selfheal"
+script = "scenarios/pi_plugin_console_selfheal.sh"
+owners = [
+    "fix-console-plugin",
+]
+description = "Pins fix-console-plugin: a plain human `pi` console session must never silently run a plugin cache materialized by an OLDER `wg` binary. The console touchpoint the shipped plugin already shells at load (`wg pi-plugin compat-version`) self-heals the binary-owned cache and rewires ~/.pi/agent/settings.json, and a new `wg pi-plugin digest` verb lets the plugin detect an embed change under an UNCHANGED compat version. Credential-free, pure `wg` binary, isolated HOME/XDG_CACHE_HOME, candidate binary preferred (falls back to target/debug/wg, then PATH wg; loud SKIP when the resolved binary predates the verb): (1) an UNWIRED console is NOT bootstrapped by the query verb (no ~/.pi, no cache extraction); (2) `wg pi-plugin digest` equals the materialized `.wg-embed-digest` stamp; (3) a CURRENT console is a silent, write-free no-op (cache + settings bytes unchanged); (4) a STALE cache (same compat, changed content) self-heals from the running binary's embed with a loud, actionable 'restart pi' warning and restores the shipped files + stamp; (5) a stale wired version-dir path is rewired to the current entry while unrelated extensions are preserved."
+timeout_seconds = 60
+
+[[scenario]]
 name = "install_update_integrity"
 script = "scenarios/install_update_integrity.sh"
 owners = [
