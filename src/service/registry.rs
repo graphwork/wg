@@ -143,6 +143,24 @@ impl AgentEntry {
         }
     }
 
+    /// Whether the process currently occupying [`Self::pid`] is verifiably
+    /// the *same* process this entry recorded, determined from the kernel's
+    /// process start-time identity (the same mechanism used by the dead-agent
+    /// triage path).
+    ///
+    /// Returns `true` when the identity matches **or** the check is
+    /// inconclusive (non-Linux, missing `/proc`, unparseable `started_at`) so
+    /// a caller never reaps a possibly-live owner on a weak signal. Returns
+    /// `false` only when the PID is positively occupied by a *different*
+    /// process — i.e. the PID was reused after this attempt died.
+    pub fn process_identity_matches(&self) -> bool {
+        match DateTime::parse_from_rfc3339(&self.started_at) {
+            Ok(started) => super::verify_process_identity(self.pid, started.timestamp()),
+            // Unparseable start time: cannot prove reuse, so stay conservative.
+            Err(_) => true,
+        }
+    }
+
     /// Calculate uptime in seconds from started_at to now
     pub fn uptime_secs(&self) -> Option<i64> {
         let started = DateTime::parse_from_rfc3339(&self.started_at).ok()?;
@@ -769,6 +787,50 @@ mod tests {
         assert!(
             !entry.is_live(0),
             "timeout=0 should reject even 1-second-old heartbeat"
+        );
+    }
+
+    #[test]
+    fn process_identity_matches_detects_pid_reuse() {
+        let make = |pid: u32, started_at: String| AgentEntry {
+            id: "agent-test".to_string(),
+            pid,
+            task_id: "t".to_string(),
+            executor: "claude".to_string(),
+            started_at,
+            last_heartbeat: Utc::now().to_rfc3339(),
+            status: AgentStatus::Working,
+            output_file: "/tmp/out".to_string(),
+            model: None,
+            completed_at: None,
+            worktree_path: None,
+            pgid: None,
+        };
+
+        // A live process whose recorded start matches its real start: identity
+        // holds (the 120s slack absorbs spawn/wrapper startup skew).
+        assert!(
+            make(std::process::id(), Utc::now().to_rfc3339()).process_identity_matches(),
+            "own PID with a current start time must verify"
+        );
+
+        // Same live PID, but the registry claims it started an hour ago while
+        // the process actually started seconds ago: a PID-reuse signature.
+        #[cfg(target_os = "linux")]
+        assert!(
+            !make(
+                std::process::id(),
+                (Utc::now() - chrono::Duration::hours(1)).to_rfc3339()
+            )
+            .process_identity_matches(),
+            "a PID reused after the recorded start time must NOT verify"
+        );
+
+        // Unparseable start time cannot prove reuse: stay conservative so a
+        // caller never reaps a possibly-live owner on a weak signal.
+        assert!(
+            make(std::process::id(), "not-a-timestamp".to_string()).process_identity_matches(),
+            "unparseable start time must default to identity-verified"
         );
     }
 

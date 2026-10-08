@@ -21,7 +21,7 @@ use worksgood::lifecycle::{
 };
 use worksgood::parser::{load_graph, modify_graph};
 use worksgood::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
-use worksgood::service::registry::{AgentRegistry, LockedRegistry};
+use worksgood::service::registry::{AgentEntry, AgentRegistry, AgentStatus, LockedRegistry};
 
 use super::context::{
     build_previous_attempt_context, build_scope_context, build_task_context, discover_test_files,
@@ -674,12 +674,141 @@ fn output_reservation(dir: &Path, agent_id: &str) -> Result<(PathBuf, String)> {
     Ok((output_dir, token))
 }
 
+/// Why a registry entry that claims a worktree is no longer a genuine owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaleWorktreeOwner {
+    /// Registry status is terminal (Done/Failed/Dead/Parked/Stopping): the
+    /// attempt already finished and cannot be doing work.
+    TerminalStatus,
+    /// No process exists at the recorded pid.
+    ProcessGone,
+    /// A process exists at the recorded pid but it is an unreaped zombie: it
+    /// has already exited (`kill(pid, 0)` still succeeds for zombies).
+    Zombie,
+    /// A process exists at the recorded pid but its kernel start time does not
+    /// match the entry's recorded start: the PID was reused by an unrelated
+    /// process after this attempt died.
+    PidReused,
+}
+
+impl StaleWorktreeOwner {
+    fn describe(self) -> &'static str {
+        match self {
+            StaleWorktreeOwner::TerminalStatus => "attempt already finished",
+            StaleWorktreeOwner::ProcessGone => "process exited",
+            StaleWorktreeOwner::Zombie => "process is an unreaped zombie",
+            StaleWorktreeOwner::PidReused => "PID was reused by a different process",
+        }
+    }
+}
+
+/// The liveness verdict for a registry entry claiming a worktree path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorktreeOwnerLiveness {
+    /// Process identity verified and heartbeat fresh: a genuine concurrent
+    /// owner that must keep exclusive use of the worktree.
+    Live,
+    /// Process identity verified but the heartbeat has aged out. Keep the
+    /// conservative ambiguous-owner bail rather than reaping a truly running
+    /// process on a stale-heartbeat signal alone.
+    Ambiguous,
+    /// The entry is a dead predecessor, not a live owner: safe to reconcile.
+    Stale(StaleWorktreeOwner),
+}
+
+/// Classify whether a registry entry claiming a worktree is a genuine live
+/// owner. This is deliberately *process-identity aware*: status + "pid exists"
+/// alone makes a just-dead attempt whose PID was reused (or whose slot lingers
+/// as a zombie) look live forever, which wedged same-task retries in a loop.
+fn classify_worktree_owner(
+    agent: &AgentEntry,
+    heartbeat_timeout_secs: u64,
+) -> WorktreeOwnerLiveness {
+    if !worksgood::service::is_process_alive(agent.pid) {
+        return WorktreeOwnerLiveness::Stale(if agent.is_alive() {
+            StaleWorktreeOwner::ProcessGone
+        } else {
+            StaleWorktreeOwner::TerminalStatus
+        });
+    }
+    // A zombie still answers `kill(pid, 0)`, so check its state before trusting
+    // it as the recorded process.
+    if worksgood::service::is_zombie_process(agent.pid) {
+        return WorktreeOwnerLiveness::Stale(StaleWorktreeOwner::Zombie);
+    }
+    if !agent.process_identity_matches() {
+        return WorktreeOwnerLiveness::Stale(StaleWorktreeOwner::PidReused);
+    }
+    // The recorded process is identity-verified live from here on.
+    if !agent.is_alive() {
+        // Marked terminal, yet the original process still runs: do not reap a
+        // genuinely running process just because its status looks finished.
+        return WorktreeOwnerLiveness::Ambiguous;
+    }
+    match agent.seconds_since_heartbeat() {
+        Some(secs) if secs >= 0 && (secs as u64) <= heartbeat_timeout_secs => {
+            WorktreeOwnerLiveness::Live
+        }
+        _ => WorktreeOwnerLiveness::Ambiguous,
+    }
+}
+
+/// Reap a proven-stale predecessor so a legitimate same-task retry can reuse
+/// the worktree. The reclaim acknowledgment (observer state + owner token) is
+/// recorded first and retained for inspection; then the registry entry is
+/// moved to a terminal `Dead` state so no later guard treats it as a live
+/// owner. Idempotent: replaying the same predecessor is a no-op beyond the
+/// one-time loud log.
+fn reconcile_stale_worktree_owner(
+    dir: &Path,
+    registry: &mut LockedRegistry,
+    info: &worktree::WorktreeInfo,
+    stale: &AgentEntry,
+    reason: StaleWorktreeOwner,
+) -> Result<()> {
+    let first = acknowledge_dead_worktree_owner(dir, info, stale)?;
+    let mut reaped = false;
+    if let Some(entry) = registry.get_agent_mut(&stale.id)
+        && (entry.status != AgentStatus::Dead || entry.completed_at.is_none())
+    {
+        entry.status = AgentStatus::Dead;
+        if entry.completed_at.is_none() {
+            entry.completed_at = Some(Utc::now().to_rfc3339());
+        }
+        reaped = true;
+    }
+    if reaped {
+        registry.save_ref()?;
+    }
+    if reaped || first {
+        let outcome = if reaped {
+            "reaped the registry entry to Dead and proceeding with this retry"
+        } else {
+            "predecessor had already been reconciled; proceeding with this retry"
+        };
+        eprintln!(
+            "[spawn] STALE-WORKTREE-OWNER reconciled: predecessor {} for task '{}' at {} is not a live owner ({}: pid {}, recorded status {:?}); {} (this is a retry of a dead attempt, not a second concurrent spawn). Owner token, observer state, and all bytes are retained for inspection",
+            stale.id,
+            stale.task_id,
+            info.path.display(),
+            reason.describe(),
+            stale.pid,
+            stale.status,
+            outcome
+        );
+    }
+    Ok(())
+}
+
 fn reusable_worktree_is_available(
     dir: &Path,
-    registry: &LockedRegistry,
+    registry: &mut LockedRegistry,
     info: &worktree::WorktreeInfo,
     task_id: &str,
 ) -> Result<()> {
+    // Collect first: reconciling mutates the registry, so we cannot hold an
+    // immutable iterator borrow across the reap.
+    let mut stale: Vec<(AgentEntry, StaleWorktreeOwner)> = Vec::new();
     for agent in registry.all() {
         let claims_path = agent
             .worktree_path
@@ -689,6 +818,8 @@ fn reusable_worktree_is_available(
         if !claims_path {
             continue;
         }
+        // A claim from a DIFFERENT task is a genuine conflicting owner and
+        // must still fail closed, exactly as before.
         if agent.task_id != task_id {
             anyhow::bail!(
                 "isolated worktree {} has conflicting registered owner {} for task '{}' while dispatching '{}'; bytes and metadata were preserved for explicit inspection",
@@ -698,31 +829,35 @@ fn reusable_worktree_is_available(
                 task_id
             );
         }
-        if agent.is_live(crate::commands::service::worktree::HEARTBEAT_LIVENESS_TIMEOUT_SECS) {
-            anyhow::bail!(
+        match classify_worktree_owner(
+            agent,
+            crate::commands::service::worktree::HEARTBEAT_LIVENESS_TIMEOUT_SECS,
+        ) {
+            // A genuinely live owner (identity verified, fresh heartbeat) still
+            // blocks a second simultaneous spawn for the same worktree.
+            WorktreeOwnerLiveness::Live => anyhow::bail!(
                 "isolated worktree {} is protected by authenticated live attempt {} for task '{}' (status {:?}); no process launched",
                 info.path.display(),
                 agent.id,
                 agent.task_id,
                 agent.status
-            );
-        }
-        if worksgood::service::is_process_alive(agent.pid) {
-            anyhow::bail!(
+            ),
+            // PID alive and identity verified, but heartbeat stale: do not reap
+            // a possibly-running process on this evidence alone.
+            WorktreeOwnerLiveness::Ambiguous => anyhow::bail!(
                 "isolated worktree {} still has an ambiguous process owner {} for task '{}' (status {:?}); owner death is not yet proven and no process launched",
                 info.path.display(),
                 agent.id,
                 agent.task_id,
                 agent.status
-            );
+            ),
+            WorktreeOwnerLiveness::Stale(reason) => {
+                stale.push((agent.clone(), reason));
+            }
         }
-        if acknowledge_dead_worktree_owner(dir, info, agent)? {
-            eprintln!(
-                "[spawn] Fenced proven-dead worktree owner {} once; retaining owner token, observer state, and all bytes at {} before bounded retry dispatch",
-                agent.id,
-                info.path.display()
-            );
-        }
+    }
+    for (agent, reason) in stale {
+        reconcile_stale_worktree_owner(dir, registry, info, &agent, reason)?;
     }
     Ok(())
 }
@@ -9257,8 +9392,154 @@ esac
             fs::read(info.path.join("retained-wip.txt")).unwrap(),
             b"dirty evidence\n"
         );
+        // The proven-dead predecessor is reaped to a terminal state so no later
+        // guard can treat it as a live owner and wedge the retry.
+        assert_eq!(locked.get_agent(&prior).unwrap().status, AgentStatus::Dead);
+        assert!(locked.get_agent(&prior).unwrap().completed_at.is_some());
         drop(locked);
         worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
+    }
+
+    /// A just-dead predecessor whose PID was recycled by an unrelated live
+    /// process must not wedge a same-task retry. Status=Working + fresh
+    /// heartbeat + "a process exists at pid" used to look live forever; the
+    /// start-time identity check proves the PID was reused.
+    #[test]
+    #[serial_test::serial]
+    fn pid_reuse_does_not_block_same_task_retry() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["reuse-task"], true);
+        let dir = project.path().join(".wg");
+        let info =
+            worktree::create_worktree(project.path(), &dir, "agent-1", "reuse-task").unwrap();
+
+        let mut registry = AgentRegistry::new();
+        // Our own PID is definitely alive, so `kill(pid, 0)` passes; only the
+        // recorded start time distinguishes it from the dead predecessor.
+        let prior = registry.register_agent(
+            std::process::id(),
+            "reuse-task",
+            "shell",
+            "/tmp/reuse-output",
+        );
+        registry.set_worktree_path(&prior, &info.path);
+        // Claim the process started an hour ago, while the process actually at
+        // this PID started seconds ago: a PID-reuse signature.
+        registry.get_agent_mut(&prior).unwrap().started_at =
+            (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        registry.save(&dir).unwrap();
+
+        let mut locked = AgentRegistry::load_locked(&dir).unwrap();
+        let workspace =
+            prepare_spawn_workspace(&dir, project.path(), "reuse-task", true, &mut locked)
+                .expect("PID reuse must not block a same-task retry");
+        assert_eq!(workspace.agent_id, "agent-2");
+        assert_eq!(workspace.worktree_info.as_ref().unwrap().path, info.path);
+        assert_eq!(locked.get_agent(&prior).unwrap().status, AgentStatus::Dead);
+        drop(workspace);
+        drop(locked);
+        worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
+    }
+
+    /// An unreaped zombie at the recorded PID answers `kill(pid, 0)` but
+    /// cannot be doing work; it must not block a same-task retry.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial]
+    fn zombie_owner_does_not_block_same_task_retry() {
+        let _global = GlobalConfigGuard::isolated();
+        let project = init_spawn_project(&["zombie-task"], true);
+        let dir = project.path().join(".wg");
+        let info =
+            worktree::create_worktree(project.path(), &dir, "agent-1", "zombie-task").unwrap();
+
+        // Spawn a child that exits immediately but is never reaped by this
+        // test, so it lingers as a zombie (kill(pid, 0) still succeeds).
+        let mut child = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let zombie_pid = child.id();
+        for _ in 0..200 {
+            if worksgood::service::is_zombie_process(zombie_pid) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            worksgood::service::is_zombie_process(zombie_pid),
+            "child {} did not become a zombie",
+            zombie_pid
+        );
+
+        let mut registry = AgentRegistry::new();
+        let prior = registry.register_agent(zombie_pid, "zombie-task", "shell", "/tmp/zombie");
+        registry.set_worktree_path(&prior, &info.path);
+        registry.save(&dir).unwrap();
+
+        let mut locked = AgentRegistry::load_locked(&dir).unwrap();
+        let workspace =
+            prepare_spawn_workspace(&dir, project.path(), "zombie-task", true, &mut locked)
+                .expect("a zombie owner must not block a same-task retry");
+        assert_eq!(workspace.agent_id, "agent-2");
+        assert_eq!(locked.get_agent(&prior).unwrap().status, AgentStatus::Dead);
+        drop(workspace);
+        drop(locked);
+        let _ = child.wait();
+        worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
+    }
+
+    /// The identity-aware guard must not weaken the genuine protections: an
+    /// identity-verified live owner still blocks a second simultaneous spawn,
+    /// and a claim from a different task still fails closed.
+    #[test]
+    #[serial_test::serial]
+    fn live_owner_still_blocks_and_cross_task_fails_closed() {
+        let _global = GlobalConfigGuard::isolated();
+
+        // Same task, genuinely live owner (our own PID, start time matches).
+        {
+            let project = init_spawn_project(&["live-task"], true);
+            let dir = project.path().join(".wg");
+            let info =
+                worktree::create_worktree(project.path(), &dir, "agent-1", "live-task").unwrap();
+            let mut registry = AgentRegistry::new();
+            let owner =
+                registry.register_agent(std::process::id(), "live-task", "shell", "/tmp/live");
+            registry.set_worktree_path(&owner, &info.path);
+            registry.save(&dir).unwrap();
+            let mut locked = AgentRegistry::load_locked(&dir).unwrap();
+            let error =
+                prepare_spawn_workspace(&dir, project.path(), "live-task", true, &mut locked)
+                    .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("protected by authenticated live attempt"),
+                "{error:#}"
+            );
+            drop(locked);
+            worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
+        }
+
+        // Different task on the same path, even with a live-looking PID, must
+        // still fail closed with the conflicting-owner bail.
+        {
+            let project = init_spawn_project(&["cross-task"], true);
+            let dir = project.path().join(".wg");
+            let info =
+                worktree::create_worktree(project.path(), &dir, "agent-1", "cross-task").unwrap();
+            let mut registry = AgentRegistry::new();
+            let owner =
+                registry.register_agent(std::process::id(), "other-task", "shell", "/tmp/cross");
+            registry.set_worktree_path(&owner, &info.path);
+            registry.save(&dir).unwrap();
+            let mut locked = AgentRegistry::load_locked(&dir).unwrap();
+            let error =
+                prepare_spawn_workspace(&dir, project.path(), "cross-task", true, &mut locked)
+                    .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("conflicting registered owner"),
+                "{error:#}"
+            );
+            drop(locked);
+            worktree::remove_worktree(project.path(), &info.path, &info.branch).unwrap();
+        }
     }
 
     #[test]
