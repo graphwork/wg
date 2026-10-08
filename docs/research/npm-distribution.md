@@ -3,6 +3,15 @@
 **Task:** `research-npm-distribution`
 **Date:** 2026-07-19
 **Status:** Research + recommendation (no code changed)
+
+> **Superseded — current documented stance.** `npm install -g @worksgood/cli`
+> is now the **primary** documented install path and `cargo install` the
+> from-source route (see `README.md`, `docs/guides/install.md`,
+> `scripts/npm/cli/README.md`). The macOS release binaries are currently
+> **unsigned and un-notarized**: the "already signed/notarized" statements
+> below describe an intended future release pipeline, not the shipped
+> artifacts. Do not cite them as current fact.
+
 **Related:** `docs/research/low-friction-install-upgrade.md` (the installer-script / GitHub-Release
 path; this doc is the *npm* leg of that same distribution stack), `Cargo.toml`
 (`[package.metadata.binstall]`), `.github/workflows/release.yml`
