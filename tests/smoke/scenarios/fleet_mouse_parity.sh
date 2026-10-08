@@ -260,7 +260,7 @@ else
     click() { sgr 0 "$2" "$1" M; sleep 0.2; sgr 0 "$2" "$1" m; sleep 0.8; }
     sel_id() { cap | grep -o '❯ *‖ *task-[0-9]*' | head -1 | grep -o 'task-[0-9]*'; }
 
-    wait_cap "/wg-fleet to expand" "pi did not boot with the wg fleet widget"
+    wait_cap "wg fleet ·" "pi did not boot with the wg fleet widget"
     tmux send-keys -t "$session" '/wg-fleet'; sleep 1; tmux send-keys -t "$session" Enter
     wait_cap "wg-fleet ▸" "live /wg-fleet panel did not open"
 
