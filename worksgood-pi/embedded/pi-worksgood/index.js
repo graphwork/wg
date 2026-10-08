@@ -54,7 +54,26 @@ import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
  *     against `wg pi-plugin digest` (the binary's current embed) and, on
  *     mismatch, warns **and** runs `wg pi-plugin install` so the next launch is
  *     fixed — detecting an embed change even under an unchanged compat version.
+ *
+ * **This self-heal is CONSOLE-ONLY.** A WG-managed worker session must never
+ * shell `wg pi-plugin …` at load: the worker's own gate refuses admin verbs
+ * (`worker_cli::maybe_run` → `worker_control.admin_operation_refused`), so the
+ * console concern would weaponize the worker gate against every worker spawn
+ * and kill it before it could run a tool. {@link isWorkerSession} detects that
+ * context, and the daemon's JIT pre-spawn `ensure-pi-plugin` already keeps a
+ * worker's cache current — so the check is both unsafe *and* meaningless there.
  */
+/**
+ * True when this pi process is a WG-managed worker/agent, not a human console.
+ *
+ * The daemon exports `WG_AGENT_ID` for every spawned task agent, and an
+ * attempt-scoped sandbox holds `WG_WORKER_CAPABILITY`. Either signal means the
+ * session is administered by WG, so the console self-heal must not run.
+ */
+export function isWorkerSession(env = process.env) {
+    const nonEmpty = (value) => typeof value === "string" && value.trim().length > 0;
+    return nonEmpty(env.WG_AGENT_ID) || nonEmpty(env.WG_WORKER_CAPABILITY);
+}
 function assertCompatVersionSync() {
     const expected = process.env.WG_PI_PLUGIN_COMPAT_VERSION?.trim();
     if (expected && expected !== EMBEDDED_COMPAT) {
@@ -93,6 +112,11 @@ export async function assertConsolePluginCurrent(backend, ownDigest) {
     // Only meaningful when wg did NOT inject the env (i.e. the human-console
     // direction); the sync check already covered the wg→pi spawn.
     if (process.env.WG_PI_PLUGIN_COMPAT_VERSION)
+        return;
+    // Console-only: a WG-managed worker must never shell `wg pi-plugin …` at
+    // load. The worker gate refuses admin verbs, and the daemon already kept the
+    // worker's cache current before spawn — so this is unsafe AND useless here.
+    if (isWorkerSession())
         return;
     // Capture our own stamp BEFORE the (self-healing) wg calls below can rewrite
     // the cache under us. `undefined` for dev / npm installs.

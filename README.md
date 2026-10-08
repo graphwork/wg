@@ -6,17 +6,116 @@ WG stands for works good.
 
 Agents can come and go. The graph remains.
 
+![WG inside a Pi session: the /wg-fleet cockpit — counts header, dependency tree, and task detail](docs/assets/pi-fleet.gif)
+
+Pi sessions are the primary interface. The WorksGood plugin (`pi-worksgood`)
+loads inside pi, so the task graph lives beside you — claim work, spawn agents,
+watch the graph evolve, and open any task's detail without leaving the session.
+The CLI is the plumbing; the TUI is the fallback console.
+
+## Install once
+
+```bash
+npm install -g @worksgood/cli
+```
+
+One command installs WG (`worksgood`, `wg`, `nex`) and the Pi coding agent
+CLI. It resolves prebuilt per-platform packages
+(`@worksgood/linux-x64-gnu`, `@worksgood/darwin-arm64`) — zero postinstall
+scripts, no Rust toolchain, fully functional under `--ignore-scripts`. Node
+22.19+ (the floor Pi itself declares). The metapackage declares
+`@earendil-works/pi-coding-agent ^0.85.1` as a dependency. This npm route is
+the primary install path.
+
+The `pi-worksgood` plugin **ships embedded in the `wg` binary**: the exact
+compatible build is materialized into a versioned cache
+(`${XDG_CACHE_HOME:-~/.cache}/wg/worksgood-pi/<compat>/`) and loaded by
+absolute path, so there is no PATH/npm skew. It **self-heals** — after any
+upgrade the next action that resolves the plugin recomputes the binary's embed
+digest and re-materializes the cache, reporting the refresh loudly. Verify:
+
+```bash
+wg pi-plugin status   # embed digest == cache digest, cache state: current
+```
+
+`cargo install --git https://github.com/graphwork/wg --locked` (or
+`cargo install --path . --locked` from a checkout) is the from-source
+route — for unsupported platforms, Alpine/musl, Windows, locked-down
+environments, and contributors. Full detail, channels, checksums, and
+uninstall live in [docs/guides/install.md](docs/guides/install.md).
+
+> **macOS limitation:** the macOS binaries currently ship **unsigned** and
+> **un-notarized** (Apple Developer ID secrets are not configured), so
+> Gatekeeper may block the first run. Allow it with
+> `xattr -d com.apple.quarantine "$(which wg)"` (repeat for `worksgood` and
+> `nex`) or right-click → Open. This is a known temporary limitation.
+
+On an unsupported platform (or with `--no-optional`) the npm shim prints the
+`cargo install` fallback instead of failing.
+
+## Start in any project
+
+```bash
+mkdir -p ~/work/my-project && cd ~/work/my-project
+wg init      # create this project's task graph (.wg/) — non-mutating, route-free
+wg setup     # pick the routes unattended workers/evaluation use (optional for attended use)
+pi           # open the Pi session; the WorksGood plugin loads automatically
+```
+
+Then, inside the session:
+
+```text
+/wg-fleet    # the cockpit: counts header + dependency tree; scroll and drill into any task
+```
+
+`/wg-fleet` is the in-session cockpit — a scrollable, read-only view of the
+live graph: in-progress/ready/blocked/done counts, the dependency tree, and a
+per-task detail pane (status, live agent activity, and a bounded stream tail).
+It reads through the daemon's read-only `GetFleet` surface and never mutates
+graph state. Enable it once with `{"fleetView": true}` in
+`~/.pi/agent/extensions/pi-worksgood/config.json` (or `WG_PI_FLEET_VIEW=1`);
+`/wg-viz` is the always-on lighter companion.
+
+Claim work, spawn agents, and close tasks from the same session — no TUI
+required.
+
+## The agent loop
+
+You don't drive the graph by hand. You talk to your pi agent, and it uses the
+WG tools natively. The tools it has:
+
+| Tool | What it does |
+|---|---|
+| `wg_capabilities` | the effective trusted/scoped/read-only policy before coordinating |
+| `wg_ready` / `wg_show` | list ready work and inspect a task's detail, deps, artifacts, logs |
+| `wg_add` / `wg_publish` | create a visible draft task, then release it for dispatch |
+| `wg_done` / `wg_fail` | complete (with evidence) or fail after a genuine attempt |
+| `wg_msg_send` / `wg_msg_read` | coordinate with other agents |
+| `wg_run` | load a task into the agent's context and work it |
+
+And the in-session commands: `/wg ready|graph|show|run|add|done|fail`,
+`/wg-viz` and `/wg-fleet` (live graph views), `/wg-model <provider:id>` (warm
+in-session model swap), and `/wg-wake [on|off]` (completion-event wakeups).
+The graph is the shared medium — artifacts you write are read by other agents,
+and tasks you publish are dispatched to other agents.
+
+## The TUI is still there
+
+`wg tui` remains the standalone console when you want the graph without pi —
+watch any project without starting an agent session. It shows the same graph:
+tasks, agents, claims, logs, and dependencies.
+
 ![WG TUI showing tasks, agents, claims, logs, and dependencies](docs/assets/wg-tui.gif)
-
-WG records what needs doing, who or what claimed it, what blocked it,
-what evidence was produced, where judgment entered, what failed, what was
-retried, and how the work changed over time.
-
-Launch the operating surface:
 
 ```bash
 wg tui
 ```
+
+## The graph remains
+
+WG records what needs doing, who or what claimed it, what blocked it,
+what evidence was produced, where judgment entered, what failed, what was
+retried, and how the work changed over time.
 
 > **Most AI systems center the agent. WG centers the work.**
 
@@ -88,33 +187,16 @@ institutional work:
 > **The company is not a wrapper around the product. The company is an
 > output of the product.**
 
-## Start the OS
+## Configure routes and tiers
 
-A normal install places three commands on `PATH`: `worksgood` (the attended human lifecycle concierge), `wg` (the complete expert task/tool CLI), and `nex` (the standalone native model client).
+A normal install places three commands on `PATH`: `worksgood` (the attended
+human lifecycle concierge), `wg` (the complete expert task/tool CLI), and `nex`
+(the standalone native model client).
 
-```bash
-cargo install --git https://github.com/graphwork/wg --locked
-# or, from npm (Node 22.19+): same three commands plus the Pi coding agent CLI,
-# from prebuilt per-platform packages — no install scripts, no Rust toolchain:
-npm install -g @worksgood/cli
-mkdir -p ~/work/my-project && cd ~/work/my-project
-worksgood
-```
-
-The npm route ships the same prebuilt release binaries via
-[`@worksgood/cli`](https://www.npmjs.com/package/@worksgood/cli) (esbuild/biome-style
-`optionalDependencies` — zero postinstall; fully functional under
-`--ignore-scripts`; `WG_BINARY_PATH` overrides the packaged binary). The
-metapackage declares `@earendil-works/pi-coding-agent ^0.85.1` as a
-dependency, so one command brings the whole WG + Pi stack. On an
-unsupported platform (or with `--no-optional`) the shim prints the `cargo
-install` fallback instead of failing. See `scripts/npm/README.md`.
-
-> **macOS limitation:** the macOS binaries currently ship **unsigned** and
-> **un-notarized** (Apple Developer ID secrets are not configured), so
-> Gatekeeper may block the first run. Allow it with
-> `xattr -d com.apple.quarantine "$(which wg)"` (repeat for `worksgood` and
-> `nex`) or right-click → Open. This is a known temporary limitation.
+For explicit graph-only expert use, `wg init` followed by `wg tui` is
+**non-mutating** — those commands never select a model, authenticate, install
+packages, or start a service. The complete task/tool command set remains under
+`wg`; agent integrations continue to use the `wg_*` protocol.
 
 ### This system is yours
 
@@ -132,9 +214,17 @@ Once installed, this is your tool, not a research artifact:
 - The **concierge** is the front door: install → Pi login → tiers → TUI.
   Run `worksgood` and follow the prompts.
 
-Bare `worksgood` takes the simple attended path: it verifies `pi`, ensures the compatible WorksGood plugin, initializes a route-free graph when needed, and opens the TUI. Choose **New chat → Pi**; Pi owns login, provider/model selection, and model switching. No profile, worker/evaluator route, reasoning tier, dispatcher, or service is required or changed. Use `worksgood --without-ai` (or `wg init --no-agency && wg tui`) to open a graph without checking Pi.
+Bare `worksgood` takes the simple attended path: it verifies `pi`, ensures the
+compatible WorksGood plugin, initializes a route-free graph when needed, and
+opens the TUI. Choose **New chat → Pi**; Pi owns login, provider/model
+selection, and model switching. No profile, worker/evaluator route, reasoning
+tier, dispatcher, or service is required or changed. Use
+`worksgood --without-ai` (or `wg init --no-agency && wg tui`) to open a graph
+without checking Pi.
 
-Repository-wide automation is a separate advanced choice. If you want unattended workers and evaluation and already know one exact Pi route, configure it with one paste and one confirmation:
+Repository-wide automation is a separate advanced choice. If you want
+unattended workers and evaluation and already know one exact Pi route,
+configure it with one paste and one confirmation:
 
 ```bash
 worksgood setup --model pi:openrouter:deepseek/deepseek-v4-flash
@@ -142,7 +232,13 @@ worksgood setup --model pi:openrouter:deepseek/deepseek-v4-flash
 worksgood --model pi:openrouter:deepseek/deepseek-v4-flash
 ```
 
-Those exact routes and reasoning settings govern **unattended dispatch only**; they never select or rewrite the model a human chooses inside an attended Pi chat. The route is copied to every automation role without normalization or fallback. Worker roles default to reasoning `high`; eval/assign/FLIP roles default to `low`. Override those independently with `--strong-reasoning` and `--weak-reasoning`. `--profile` remains the advanced path for selecting and customizing an existing reusable automation base.
+Those exact routes and reasoning settings govern **unattended dispatch only**;
+they never select or rewrite the model a human chooses inside an attended Pi
+chat. The route is copied to every automation role without normalization or
+fallback. Worker roles default to reasoning `high`; eval/assign/FLIP roles
+default to `low`. Override those independently with `--strong-reasoning` and
+`--weak-reasoning`. `--profile` remains the advanced path for selecting and
+customizing an existing reusable automation base.
 
 #### The two-tier model plane (strong vs weak)
 
@@ -159,7 +255,31 @@ Non-interactive setup keeps the single-model paste; an optional `--weak-model <p
 
 > **Naming note — two different "FLIP"s.** The *completion-review FLIP* (`flip_inference` / `flip_comparison` roles) runs by default on the weak tier as part of terminal-completion review. The separately-named `agency.flip_enabled` config flag is an opt-in agency rollout feature and has nothing to do with those FLIP roles' routing.
 
-For explicit graph-only expert use, `wg init` followed by `wg tui` is **non-mutating** — those commands never select a model, authenticate, install packages, or start a service. The complete task/tool command set remains under `wg`; agent integrations continue to use the `wg_*` protocol.
+#### Selecting the project profile (per-repo, no global round-trip)
+
+Project route selection is per-repo and writes only `worksgood.toml`; there is
+no machine-global active-profile to flip. To run a batch of tasks on a given
+provider's credits in one repo, select that profile for that repo; other repos
+are unaffected:
+
+```bash
+wg profile select claude   # this repo's workers run the claude profile (opus worker)
+# ... dispatch / run a batch on Anthropic credits in THIS repo ...
+wg profile select nex      # switch this repo back to the in-process localhost endpoint
+```
+
+`wg profile select codex` is the third target. Every `profile select` writes
+the closed Pi projection into `worksgood.toml` and reloads this project's
+daemon — already-spawned workers keep their model; the *next* worker the
+daemon spawns picks up the new projection (no daemon restart). Pass
+`--no-reload` to stage the switch without poking the daemon. Two repos sharing
+one `$HOME` are fully isolated.
+
+To run through OpenRouter, use the `openrouter:` provider prefix inside a
+`pi:` route, e.g. `wg setup --route pi --model pi:openrouter:anthropic/claude-opus-4-7`.
+API keys live in a credential store managed by `wg secret`. See
+[docs/config-precedence.md](docs/config-precedence.md) and
+[docs/pi-model-plane.md](docs/pi-model-plane.md).
 
 ### Quickstart: drive a free OpenRouter model through Pi
 
@@ -168,7 +288,7 @@ endpoints, availability, and cost; WG owns the task graph plus exact per-role
 `pi:<provider>:<model>` routes. The full, verified, copy-paste path —
 install WG and Pi, authenticate with OpenRouter, discover and validate a
 current free model, install the `pi-worksgood` integration, optionally add
-web plugins, select the route, and open the TUI — lives in
+web plugins, select the route, and open the session — lives in
 [**docs/quickstart-pi-openrouter.md**](docs/quickstart-pi-openrouter.md)
 (and the same path, as a styled standalone page, ships in
 [`website/quickstart-pi-openrouter.html`](website/quickstart-pi-openrouter.html)
@@ -177,10 +297,10 @@ The spine:
 
 ```bash
 # 1. install WorksGood (worksgood + wg + nex) and Pi (needs Node 22.19+).
-#    Rust route (primary):    cargo install --git https://github.com/graphwork/wg --locked
-#    npm route (prebuilt):    npm install -g @worksgood/cli        # brings WG + Pi in one install
-cargo install --git https://github.com/graphwork/wg --locked
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent   # skip when using the npm route
+npm install -g @worksgood/cli        # brings WG + Pi in one install
+# from-source alternative:
+#   cargo install --git https://github.com/graphwork/wg --locked
+#   npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 # 2. authenticate Pi with OpenRouter (once, in Pi — WG never sees the key)
 pi
@@ -190,8 +310,8 @@ pi
 pi --list-models ":free"
 pi --model "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" -p "Reply OK"
 
-# 4. install the WorksGood Pi integration (pi-worksgood, embedded in wg)
-wg pi-plugin install && wg pi-plugin status
+# 4. verify the embedded Pi integration (self-healing, no separate install)
+wg pi-plugin status
 
 # 5. initialize a project and select the Pi route (project-scoped; global untouched)
 wg init
@@ -201,9 +321,9 @@ wg profile pi --strong "pi:openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" \
 wg profile select pi
 wg config --models         # every role shows handler=pi, exact route, reasoning
 
-# 6. start the service and open the operating surface
+# 6. start the service and open the session
 wg service start
-wg tui
+pi                         # /wg-fleet is the cockpit
 ```
 
 Replace the model id with whatever `pi --list-models ":free"` currently
@@ -212,14 +332,13 @@ frequently. See the [full quickstart](docs/quickstart-pi-openrouter.md) for
 macOS/Termux notes, optional `pi-web-access` / `pi-agent-browser-native`
 plugins, the `pi-worksgood`/hermetic details, and troubleshooting
 (PATH, `Failed to run wg`, missing Pi/plugin/model/auth). Legacy WG model
-catalogs/endpoints remain migration-only and never authorize dispatch; see
-[Pi model-plane configuration](docs/pi-model-plane.md).
+catalogs/endpoints remain migration-only and never authorize dispatch.
 
 ### Then let agents work
 
 ```bash
 wg service start
-wg tui
+pi                         # talk to your agent; /wg-fleet watches the graph
 ```
 
 The loop: declare work, let the service dispatch it, watch the graph evolve.
@@ -259,9 +378,13 @@ tomorrow, the work would still be there.
 
 - **[docs/worksgood-concierge.md](docs/worksgood-concierge.md)** — attended
   setup/status/stop/restart/TUI lifecycle; `wg` remains the expert CLI
+- **[docs/guides/install.md](docs/guides/install.md)** — install paths (npm
+  primary, cargo from source), channels, verification, uninstall
 - **[docs/quickstart-pi-openrouter.md](docs/quickstart-pi-openrouter.md)** — verified
   pushbutton path: install WG + Pi, authenticate with OpenRouter, find a free
-  model, install `pi-worksgood`, select the Pi route, open `wg tui`
+  model, verify `pi-worksgood`, select the Pi route, open the session
+- **[worksgood-pi/README.md](worksgood-pi/README.md)** — the Pi plugin: tools,
+  `/wg` commands, `/wg-fleet`, `/wg-viz`, model bridge, completion wakeups
 - **[docs/GUIDE.md](docs/GUIDE.md)** — operator manual: configuration, the
   service, agent management, models, TUI, troubleshooting, AI assistants
 - **[docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md)** — how agents should use

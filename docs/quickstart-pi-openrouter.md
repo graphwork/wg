@@ -39,26 +39,18 @@ graph plus exact per-role `pi:<provider>:<model>` routes. See
 
 ## 1. Install WorksGood (`worksgood` + `wg` + `nex`)
 
-`cargo install` is the primary documented path and requires the Rust toolchain ([rustup](https://rustup.rs/)).
-
-```bash
-cargo install --git https://github.com/graphwork/wg --locked
-worksgood --help
-wg --version
-nex --version
-```
-
-**npm route (prebuilt, additive, no Rust toolchain).** Node 22.19+; one command
-also installs the Pi coding agent CLI, so you can skip step 2:
-
 ```bash
 npm install -g @worksgood/cli
 ```
 
-It resolves prebuilt per-platform packages (`@worksgood/linux-x64-gnu`,
-`@worksgood/darwin-arm64`), ships zero postinstall scripts (works fully under
-`--ignore-scripts`), and declares `@earendil-works/pi-coding-agent ^0.85.1` as
-a dependency.
+One command installs WG (`worksgood`, `wg`, `nex`) and the Pi coding agent
+CLI. It resolves prebuilt per-platform packages
+(`@worksgood/linux-x64-gnu`, `@worksgood/darwin-arm64`) — zero postinstall
+scripts, no Rust toolchain, fully functional under `--ignore-scripts`. Node
+22.19+ (the floor Pi itself declares). The metapackage declares
+`@earendil-works/pi-coding-agent ^0.85.1` as a dependency. This npm route is
+the primary install path, and because it also installs the Pi coding agent CLI
+you can skip step 2.
 
 > **macOS limitation:** the macOS binaries currently ship **unsigned** and
 > **un-notarized** (Apple Developer ID secrets are not configured), so
@@ -66,10 +58,17 @@ a dependency.
 > `xattr -d com.apple.quarantine "$(which wg)"` (repeat for `worksgood` and
 > `nex`) or right-click → Open.
 
-From a source checkout instead:
+`cargo install --git https://github.com/graphwork/wg --locked` (or
+`cargo install --path . --locked` from a checkout) is the from-source
+route — for unsupported platforms, Alpine/musl, Windows, locked-down
+environments, and contributors. It requires the Rust toolchain
+([rustup](https://rustup.rs/)).
 
 ```bash
-cargo install --path . --locked
+cargo install --git https://github.com/graphwork/wg --locked
+worksgood --help
+wg --version
+nex --version
 ```
 
 Make `~/.cargo/bin` reachable:
@@ -83,7 +82,7 @@ echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
 
 ## 2. Install Pi
 
-Pi is an npm package. Requires Node.js 20+.
+Pi is an npm package. Requires Node 22.19+ (the floor Pi itself declares).
 
 > **Skip this step if you used the npm route in step 1** — `@worksgood/cli`
 > already installs `@earendil-works/pi-coding-agent ^0.85.1` as a dependency.
