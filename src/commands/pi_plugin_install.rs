@@ -19,7 +19,17 @@ pub fn run(cmd: PiPluginCommands) -> Result<()> {
         PiPluginCommands::Status => run_status(),
         PiPluginCommands::Path => run_path(),
         PiPluginCommands::CompatVersion => {
+            // Console-critical: a human pi session shells this at load, so heal a
+            // stale console cache here (worker spawns already self-heal via the
+            // Hermetic ensure). Loud on stderr when a refresh happened.
+            if let Some(warning) = pi_plugin::console_self_heal().unwrap_or(None) {
+                eprintln!("WorksGood pi-plugin: {warning}");
+            }
             println!("{}", pi_plugin::WG_PI_PLUGIN_COMPAT_VERSION);
+            Ok(())
+        }
+        PiPluginCommands::Digest => {
+            println!("{}", pi_plugin::embedded_digest());
             Ok(())
         }
     }

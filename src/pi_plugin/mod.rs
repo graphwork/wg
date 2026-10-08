@@ -336,7 +336,11 @@ fn collect_embedded_files(dir: &Dir<'_>, out: &mut Vec<(String, Vec<u8>)>) {
 }
 
 /// The content digest of the exact file set this binary embeds. Computed once.
-fn embedded_digest() -> &'static str {
+///
+/// Exposed so the console-critical `wg pi-plugin digest` verb can hand the
+/// running binary's embed digest to a live pi session, which compares it to the
+/// `.wg-embed-digest` companion stamp beside its own loaded cache dir.
+pub fn embedded_digest() -> &'static str {
     static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     DIGEST.get_or_init(|| {
         let mut files = Vec::new();
@@ -791,6 +795,76 @@ pub fn ensure_pi_plugin(mode: EnsureMode) -> Result<ResolvedPlugin> {
         );
     }
     Ok(resolved)
+}
+
+/// Console-path self-heal for the query verbs a human `pi` session calls at
+/// load (today: `wg pi-plugin compat-version`, the exact command the shipped
+/// plugin shells once per console start). Worker spawns already self-heal via
+/// the Hermetic [`ensure_pi_plugin`]; the plain "open pi" path had no such
+/// guarantee, so a cache materialized by an older binary served stale bytes
+/// forever (the operator-observed silent-old-console gap).
+///
+/// Cheap and side-effect-free when everything is current. It only acts when the
+/// console was *already wired* (`~/.pi/agent/settings.json` exists — implied by
+/// the fact that a plugin is calling us) and the resolved source is this
+/// binary's own cache (a `Source::Dev` or foreign `WG_PI_PLUGIN_DIR` tree is a
+/// live tree, never a binary-owned cache to repair). On drift it re-materializes
+/// the embedded truth and re-points `settings.json` at the fresh version dir.
+///
+/// Returns a loud, actionable warning when a refresh or settings rewire
+/// happened, else `None`.
+pub fn console_self_heal() -> Result<Option<String>> {
+    console_self_heal_at(
+        pick_source(&compile_time_plugin_dir()),
+        &wg_cache_dir(),
+        &home_dir(),
+    )
+}
+
+/// Environment-free core of [`console_self_heal`] (unit-testable).
+fn console_self_heal_at(
+    pick: (Source, Option<PathBuf>),
+    cache_dir: &Path,
+    home: &Path,
+) -> Result<Option<String>> {
+    // The console was never wired here — nothing to heal (and never bootstrap a
+    // global `~/.pi` from a query verb; that is `wg pi-plugin install`'s job).
+    if !pi_settings_path(home).is_file() {
+        return Ok(None);
+    }
+    let cache_relevant = match pick.0 {
+        Source::Cache => true,
+        Source::EnvOverride => pick
+            .1
+            .as_deref()
+            .is_some_and(|r| is_cache_dir_override(r, cache_dir)),
+        Source::Dev => false,
+    };
+    if !cache_relevant {
+        return Ok(None);
+    }
+
+    let resolved = ensure_pi_plugin_at(EnsureMode::Console, pick, cache_dir, home)?;
+    Ok(console_heal_warning(&resolved))
+}
+
+/// The loud, actionable stderr line a console self-heal produces, or `None`
+/// when the cache and settings were already correct.
+fn console_heal_warning(resolved: &ResolvedPlugin) -> Option<String> {
+    if resolved.cache_refreshed
+        || resolved.console_settings_changed
+        || resolved.legacy_settings_migrated
+    {
+        Some(format!(
+            "console plugin was stale — refreshed {} from this wg binary (compat {}) \
+             and rewired ~/.pi/agent/settings.json; restart pi to load the updated \
+             /wg-fleet panel and wg tools",
+            resolved.root.display(),
+            WG_PI_PLUGIN_COMPAT_VERSION
+        ))
+    } else {
+        None
+    }
 }
 
 /// Like [`ensure_pi_plugin`] but FORCES the in-repo dev source
@@ -1614,5 +1688,172 @@ mod tests {
             !s.ready,
             "a cache-naming EnvOverride must not report ready while drifted"
         );
+    }
+
+    // --- console self-heal (fix-console-plugin) ------------------------------
+
+    fn cache_dist(cache_dir: &Path) -> PathBuf {
+        pi_plugin_cache_parent(cache_dir)
+            .join(WG_PI_PLUGIN_COMPAT_VERSION)
+            .join("pi-worksgood")
+            .join("index.js")
+    }
+
+    #[test]
+    fn test_console_self_heal_noop_without_settings() {
+        // A query verb must never bootstrap a global ~/.pi (that is
+        // `wg pi-plugin install`'s job) — no settings means nothing to heal.
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let healed =
+            console_self_heal_at((Source::Cache, None), cache.path(), home.path()).unwrap();
+        assert!(healed.is_none());
+        assert!(
+            !home.path().join(".pi").exists(),
+            "an unwired console must not be bootstrapped by a query verb"
+        );
+        assert!(!pi_plugin_cache_parent(cache.path()).exists());
+    }
+
+    #[test]
+    fn test_console_self_heal_when_current_is_silent_noop() {
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        // Wire the console first (the state a live plugin implies).
+        ensure_pi_plugin_at(
+            EnsureMode::Console,
+            (Source::Cache, None),
+            cache.path(),
+            home.path(),
+        )
+        .unwrap();
+        let parent = pi_plugin_cache_parent(cache.path());
+        let stamp = parent.join(WG_PI_PLUGIN_COMPAT_VERSION).join(OK_STAMP);
+        let mtime1 = std::fs::metadata(&stamp).unwrap().modified().unwrap();
+        let settings = pi_settings_path(home.path());
+        let settings_before = std::fs::read_to_string(&settings).unwrap();
+
+        let healed =
+            console_self_heal_at((Source::Cache, None), cache.path(), home.path()).unwrap();
+        assert!(healed.is_none(), "a current console must be a silent no-op");
+        let mtime2 = std::fs::metadata(&stamp).unwrap().modified().unwrap();
+        assert_eq!(mtime1, mtime2, "no-op must not rewrite the cache");
+        assert_eq!(
+            settings_before,
+            std::fs::read_to_string(&settings).unwrap(),
+            "no-op must not rewrite settings.json"
+        );
+    }
+
+    #[test]
+    fn test_console_self_heal_repairs_stale_cache_with_loud_warning() {
+        // Stale cache + fresh binary (embed changed under an unchanged compat):
+        // the console-critical query must self-heal and warn — never silently
+        // serve the old bytes.
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        ensure_pi_plugin_at(
+            EnsureMode::Console,
+            (Source::Cache, None),
+            cache.path(),
+            home.path(),
+        )
+        .unwrap();
+        let version = pi_plugin_cache_parent(cache.path()).join(WG_PI_PLUGIN_COMPAT_VERSION);
+        std::fs::write(version.join(EMBED_DIGEST_STAMP), b"b3:stale-embed\n").unwrap();
+        std::fs::remove_file(version.join("pi-worksgood").join("completion-watcher.js")).unwrap();
+        assert!(!cache_is_correct(&version));
+
+        let healed =
+            console_self_heal_at((Source::Cache, None), cache.path(), home.path()).unwrap();
+        let warning = healed.expect("a stale console must self-heal loudly");
+        assert!(
+            warning.contains("stale") && warning.contains("restart pi"),
+            "warning must be actionable: {warning}"
+        );
+        assert!(
+            cache_is_correct(&version),
+            "self-heal must restore the embed truth"
+        );
+        assert!(
+            settings_lists_entry(&pi_settings_path(home.path()), &cache_dist(cache.path())),
+            "self-heal must keep settings wired to the fresh entry"
+        );
+    }
+
+    #[test]
+    fn test_console_self_heal_rewires_settings_from_stale_version_dir() {
+        // (b) the console settings PATH must be fixed when the resolved entry
+        // changes (e.g. a compat bump left an older version dir wired).
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let settings = pi_settings_path(home.path());
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "extensions": [
+                    "/home/u/my-ext/index.ts",
+                    "/home/u/.cache/wg/worksgood-pi/0.0.1/pi-worksgood/index.js"
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let healed =
+            console_self_heal_at((Source::Cache, None), cache.path(), home.path()).unwrap();
+        assert!(healed.is_some(), "a stale wired path must be repaired");
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let exts: Vec<&str> = value["extensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            exts,
+            vec![
+                "/home/u/my-ext/index.ts",
+                cache_dist(cache.path()).to_str().unwrap()
+            ],
+            "stale version dir replaced, unrelated entry preserved"
+        );
+        assert!(settings_lists_entry(&settings, &cache_dist(cache.path())));
+    }
+
+    #[test]
+    fn test_console_self_heal_skips_dev_and_foreign_sources() {
+        let cache = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let settings = pi_settings_path(home.path());
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, "{}\n").unwrap();
+
+        let dev = TempDir::new().unwrap();
+        std::fs::create_dir_all(dev.path().join("pi-worksgood")).unwrap();
+        std::fs::write(dev.path().join("pi-worksgood").join("index.js"), b"// dev").unwrap();
+        assert!(
+            console_self_heal_at(
+                (Source::Dev, Some(dev.path().to_path_buf())),
+                cache.path(),
+                home.path()
+            )
+            .unwrap()
+            .is_none(),
+            "a live dev tree is never a binary-owned cache to repair"
+        );
+        assert!(
+            console_self_heal_at(
+                (Source::EnvOverride, Some(dev.path().to_path_buf())),
+                cache.path(),
+                home.path()
+            )
+            .unwrap()
+            .is_none(),
+            "a foreign WG_PI_PLUGIN_DIR is used verbatim, never healed"
+        );
+        assert!(!pi_plugin_cache_parent(cache.path()).exists());
     }
 }

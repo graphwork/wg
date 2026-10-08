@@ -5713,8 +5713,20 @@ pub enum PiPluginCommands {
     Path,
 
     /// Print WG_PI_PLUGIN_COMPAT_VERSION (the plugin's runtime assertion reads this).
+    ///
+    /// Console-critical query: a live human `pi` session shells this once at load,
+    /// so it also self-heals a stale console cache (re-materialize + rewire
+    /// `~/.pi/agent/settings.json`) and warns loudly on stderr when it did.
     #[command(name = "compat-version")]
     CompatVersion,
+
+    /// Print this binary's embedded plugin content digest (`b3:…`) — scriptable.
+    ///
+    /// The console plugin compares this against the `.wg-embed-digest` stamp
+    /// beside its own loaded cache dir to detect a stale console cache (a newer
+    /// binary whose embed changed under an unchanged compat version).
+    #[command(name = "digest")]
+    Digest,
 }
 
 #[derive(Subcommand)]
