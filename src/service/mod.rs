@@ -670,6 +670,43 @@ pub fn read_proc_start_time_secs(_pid: u32) -> Option<i64> {
     None
 }
 
+/// Read the kernel process *state* character from `/proc/<pid>/stat`
+/// (field 3: `R` running, `S` sleeping, `D` disk sleep, `Z` zombie, ...).
+///
+/// Returns `None` when the process is gone, `/proc` is unavailable, or the
+/// stat file cannot be parsed.
+#[cfg(target_os = "linux")]
+pub fn read_proc_state(pid: u32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Field 2 (comm) can contain spaces and parentheses; find the last ')'.
+    let comm_end = stat.rfind(')')?;
+    let fields: Vec<&str> = stat[comm_end + 2..].split_whitespace().collect();
+    fields.first()?.chars().next()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn read_proc_state(_pid: u32) -> Option<char> {
+    None
+}
+
+/// Whether `pid` currently exists only as an unreaped zombie.
+///
+/// `kill(pid, 0)` (and therefore [`is_process_alive`]) still succeeds for a
+/// zombie, because the kernel keeps the PID slot until the parent reaps it.
+/// A zombie cannot be doing any work, so callers that use liveness to protect
+/// a resource must treat it as dead. Returns `false` on non-Linux platforms
+/// and whenever the state is unknown, so the conservative full liveness check
+/// still governs those cases.
+#[cfg(target_os = "linux")]
+pub fn is_zombie_process(pid: u32) -> bool {
+    matches!(read_proc_state(pid), Some('Z') | Some('X'))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn is_zombie_process(_pid: u32) -> bool {
+    false
+}
+
 /// Read system boot time from `/proc/stat` (btime line).
 #[cfg(target_os = "linux")]
 fn read_boot_time() -> Option<i64> {
