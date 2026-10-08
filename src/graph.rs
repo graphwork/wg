@@ -1433,7 +1433,46 @@ impl Default for Task {
     }
 }
 
+/// Canonical digest of a task's *definition* (not its runtime state).
+///
+/// Dispatch/creation idempotency keys on this digest: re-creating a task that
+/// is equivalent to an existing live task must be a no-op (reuse the existing
+/// id), never a new sibling (`fix-console-plugin-2`, `fleet-hint-line-trim`).
+/// The digest covers the immutable fields that determine *what work the task
+/// represents* — title, description, and the sorted, de-duplicated set of
+/// dependencies — and deliberately excludes mutable lifecycle state (status,
+/// assigned, timestamps, logs, token usage, presentation). Two tasks with the
+/// same definition are the same work item regardless of which attempt or
+/// daemon generation is currently servicing them; the identity is a content
+/// hash because that is stable across the churn that mints duplicates (restart,
+/// retry, daemon-down re-emit) while ids/slugs are not.
+///
+/// Hash-based keys are the right identity here because the synonyms the churn
+/// produces (`-2`, `-trim`, a re-slug that drops a word) are *different ids for
+/// the same content*; only a hash of the content collapses them.
+pub fn task_definition_digest(title: &str, description: Option<&str>, after: &[String]) -> String {
+    let mut deps: Vec<&str> = after.iter().map(String::as_str).collect();
+    deps.sort_unstable();
+    deps.dedup();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"wg-task-definition-v1\0");
+    hasher.update(title.trim().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(description.unwrap_or("").trim().as_bytes());
+    hasher.update(b"\0");
+    for dep in deps {
+        hasher.update(dep.as_bytes());
+        hasher.update(b"\0");
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
 impl Task {
+    /// Definition digest for this task. See [`task_definition_digest`].
+    pub fn definition_digest(&self) -> String {
+        task_definition_digest(&self.title, self.description.as_deref(), &self.after)
+    }
+
     /// Retain a source-attempt accounting record exactly once. Lifecycle
     /// replay uses this path with the accounting bytes carried by the event.
     pub fn retain_source_attempt_usage(&mut self, record: SourceAttemptUsage) {
@@ -4061,6 +4100,51 @@ mod tests {
             title: title.to_string(),
             ..Task::default()
         }
+    }
+
+    #[test]
+    fn definition_digest_is_stable_and_content_addressed() {
+        let a = task_definition_digest(
+            "Fix console plugin",
+            Some("the plugin fails"),
+            &["dep-b".to_string(), "dep-a".to_string()],
+        );
+        // Dependency order is irrelevant: the digest sorts.
+        let b = task_definition_digest(
+            "Fix console plugin",
+            Some("the plugin fails"),
+            &["dep-a".to_string(), "dep-b".to_string()],
+        );
+        assert_eq!(
+            a, b,
+            "dependency order must not change the definition digest"
+        );
+
+        // Title/description whitespace is normalized.
+        let c = task_definition_digest(
+            "  Fix console plugin  ",
+            Some("  the plugin fails  "),
+            &["dep-a".to_string(), "dep-b".to_string()],
+        );
+        assert_eq!(a, c, "surrounding whitespace must not change the digest");
+
+        // A different definition is a different digest.
+        let d = task_definition_digest(
+            "Fix console plugin",
+            Some("something else"),
+            &["dep-a".to_string(), "dep-b".to_string()],
+        );
+        assert_ne!(a, d);
+
+        // The digest ignores runtime state; two tasks with the same definition
+        // hash equal even when status/assigned/logs differ.
+        let mut t1 = make_task("fix-console-plugin", "Fix console plugin");
+        t1.description = Some("the plugin fails".to_string());
+        t1.status = Status::Open;
+        let mut t2 = make_task("fix-console-plugin", "Fix console plugin");
+        t2.description = Some("the plugin fails".to_string());
+        t2.status = Status::InProgress;
+        assert_eq!(t1.definition_digest(), t2.definition_digest());
     }
 
     #[test]

@@ -231,6 +231,21 @@ fn detect_dead_reason(agent: &AgentEntry, grace_period_secs: i64) -> Option<Dead
     None
 }
 
+/// Process-identity-aware liveness verdict for one in-flight attempt.
+///
+/// `true` means the entry is in an alive status **and** the process currently
+/// occupying its PID is verifiably the same process the entry recorded (the
+/// kernel start-time identity), i.e. `detect_dead_reason` proves neither
+/// `ProcessExited` nor `PidReused`. Status + heartbeat alone are deliberately
+/// insufficient: that weaker check is exactly what let a dead predecessor look
+/// like a live owner during the 2026-10-08 restart churn.
+///
+/// `grace_period_secs` is respected so a just-registered attempt whose process
+/// has not finished `exec` is never mistaken for dead.
+pub(crate) fn attempt_process_is_live(agent: &AgentEntry, grace_period_secs: i64) -> bool {
+    agent.is_alive() && detect_dead_reason(agent, grace_period_secs).is_none()
+}
+
 /// Clean up dead agents (process exited)
 /// Returns list of cleaned up agent IDs
 pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<String>> {

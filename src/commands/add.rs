@@ -588,6 +588,9 @@ pub fn run_with_remote_provider(
     // Atomic load-modify-save under file lock
     let mut error: Option<anyhow::Error> = None;
     let mut task_id_out = String::new();
+    // Set when this add is an idempotent no-op against an equivalent live task
+    // (restart/retry churn guard). See `find_equivalent_live_task`.
+    let mut deduped_existing: Option<String> = None;
 
     let _graph = modify_graph(&path, |graph| {
     // For --subtask, don't add implicit --after on the parent (the parent→child
@@ -599,16 +602,43 @@ pub fn run_with_remote_provider(
         default_parent_after(graph, after)
     };
 
+    // Idempotent creation: a task is *equivalent* to an existing one when its
+    // definition digest (title + description + sorted dependency set) matches
+    // and the existing task is still live work (Open/Incomplete/InProgress).
+    // In that case creating a sibling (`-2`, `-trim`, …) is the daemon-down
+    // churn bug, not new work — no-op and reuse the existing id. The digest is
+    // content-addressed (see `graph::task_definition_digest`), so it collapses
+    // the different ids/slugs a restart may produce for the same work.
+    let requested_digest = worksgood::graph::task_definition_digest(
+        title,
+        description,
+        &effective_after,
+    );
+
     // Generate ID if not provided
     let task_id = match id {
         Some(id) => {
-            if graph.get_node(id).is_some() {
+            if let Some(existing) = graph.get_task(id) {
+                if matches!(
+                    existing.status,
+                    Status::Open | Status::Incomplete | Status::InProgress
+                ) && existing.definition_digest() == requested_digest
+                {
+                    deduped_existing = Some(id.to_string());
+                    return false;
+                }
                 error = Some(anyhow::anyhow!("Task with ID '{}' already exists", id));
                 return false;
             }
             id.to_string()
         }
-        None => generate_id(title, graph),
+        None => match find_equivalent_live_task(graph, &requested_digest) {
+            Some(existing_id) => {
+                deduped_existing = Some(existing_id);
+                return false;
+            }
+            None => generate_id(title, graph),
+        },
     };
     if task_id.starts_with('.') && !worksgood::graph::is_validated_system_task_id(&task_id) {
         error = Some(anyhow::anyhow!(
@@ -862,6 +892,16 @@ pub fn run_with_remote_provider(
     true
     })
     .context("Failed to save graph")?;
+
+    // Idempotent-add no-op: an equivalent live task already exists. Report it
+    // and stop without minting a sibling id, creating a worktree, or dispatching.
+    if let Some(existing_id) = deduped_existing {
+        println!(
+            "Task already exists with an equivalent definition: {} — no new task created (idempotent add; definition hash matched an OPEN/IN_PROGRESS task)",
+            existing_id
+        );
+        return Ok(());
+    }
 
     if let Some(e) = error {
         return Err(e);
@@ -1194,15 +1234,27 @@ fn add_task_directly(
 
     let mut error: Option<anyhow::Error> = None;
     let mut task_id_out = String::new();
+    let mut deduped_existing: Option<String> = None;
     let reasoning = reasoning
         .map(str::parse::<ReasoningLevel>)
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let _graph = modify_graph_inner(&graph_path, |graph| {
+        // Idempotent creation (same rule as the local `run`): an equivalent
+        // OPEN/IN_PROGRESS task makes this a no-op rather than a `-2` sibling.
+        let requested_digest = worksgood::graph::task_definition_digest(title, description, after);
         let task_id = match id {
             Some(id) => {
-                if graph.get_node(id).is_some() {
+                if let Some(existing) = graph.get_task(id) {
+                    if matches!(
+                        existing.status,
+                        Status::Open | Status::Incomplete | Status::InProgress
+                    ) && existing.definition_digest() == requested_digest
+                    {
+                        deduped_existing = Some(id.to_string());
+                        return false;
+                    }
                     error = Some(anyhow::anyhow!(
                         "Task with ID '{}' already exists in peer",
                         id
@@ -1211,7 +1263,13 @@ fn add_task_directly(
                 }
                 id.to_string()
             }
-            None => generate_id(title, graph),
+            None => match find_equivalent_live_task(graph, &requested_digest) {
+                Some(existing_id) => {
+                    deduped_existing = Some(existing_id);
+                    return false;
+                }
+                None => generate_id(title, graph),
+            },
         };
         if task_id.starts_with('.') && !worksgood::graph::is_validated_system_task_id(&task_id) {
             error = Some(anyhow::anyhow!(
@@ -1382,6 +1440,12 @@ fn add_task_directly(
     })
     .context("Failed to save peer graph")?;
 
+    // Idempotent no-op: an equivalent live task already exists in the peer
+    // graph — return its id instead of a freshly minted sibling.
+    if let Some(existing_id) = deduped_existing {
+        return Ok(existing_id);
+    }
+
     if let Some(e) = error {
         return Err(e);
     }
@@ -1458,6 +1522,19 @@ fn default_parent_after(graph: &worksgood::WorkGraph, after: &[String]) -> Vec<S
         }
         _ => vec![],
     }
+}
+
+fn find_equivalent_live_task(graph: &worksgood::WorkGraph, digest: &str) -> Option<String> {
+    graph
+        .tasks()
+        .filter(|task| {
+            matches!(
+                task.status,
+                Status::Open | Status::Incomplete | Status::InProgress
+            )
+        })
+        .find(|task| task.definition_digest() == digest)
+        .map(|task| task.id.clone())
 }
 
 fn generate_id(title: &str, graph: &worksgood::WorkGraph) -> String {
@@ -1545,6 +1622,55 @@ mod tests {
         let mut task = stub_task(id);
         task.after = after.iter().map(|dep| (*dep).to_string()).collect();
         task
+    }
+
+    fn add_generated_task(dir: &Path, title: &str) -> Result<()> {
+        run(
+            dir,
+            title,
+            None,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            "internal",
+            None,
+            None,
+            None,
+            None,
+            false,
+            true,
+            &[],
+            &[],
+            None,
+            None,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            false,
+        )
     }
 
     fn add_minimal_task(dir: &Path, title: &str, id: &str, after: &[String]) -> Result<()> {
@@ -1870,6 +1996,101 @@ mod tests {
         let graph = WorkGraph::new();
         let id = generate_id("Deploy service", &graph);
         assert_eq!(id, "deploy-service");
+    }
+
+    #[test]
+    fn equivalent_live_task_dedupes_by_definition_hash() {
+        // A restart/retry that re-adds the same work must find the existing
+        // live task instead of minting `fix-console-plugin-2`.
+        let mut graph = WorkGraph::new();
+        let mut original = stub_task("fix-console-plugin");
+        original.title = "Fix console plugin".to_string();
+        original.description = Some("the plugin fails".to_string());
+        original.status = Status::InProgress;
+        original.after = vec!["dep-a".to_string()];
+        graph.add_node(Node::Task(original));
+
+        let digest = worksgood::graph::task_definition_digest(
+            "Fix console plugin",
+            Some("the plugin fails"),
+            &["dep-a".to_string()],
+        );
+        assert_eq!(
+            find_equivalent_live_task(&graph, &digest),
+            Some("fix-console-plugin".to_string())
+        );
+
+        // A sibling with a different id but the same definition is also matched.
+        let mut graph2 = WorkGraph::new();
+        let mut sibling = stub_task("fix-console-plugin-trim");
+        sibling.title = "Fix console plugin".to_string();
+        sibling.description = Some("the plugin fails".to_string());
+        sibling.after = vec!["dep-a".to_string()];
+        graph2.add_node(Node::Task(sibling));
+        assert_eq!(
+            find_equivalent_live_task(&graph2, &digest),
+            Some("fix-console-plugin-trim".to_string())
+        );
+
+        // A terminal (Done) task is NOT equivalent work to re-create.
+        let mut graph3 = WorkGraph::new();
+        let mut done = stub_task("fix-console-plugin");
+        done.title = "Fix console plugin".to_string();
+        done.description = Some("the plugin fails".to_string());
+        done.status = Status::Done;
+        done.after = vec!["dep-a".to_string()];
+        graph3.add_node(Node::Task(done));
+        assert_eq!(find_equivalent_live_task(&graph3, &digest), None);
+
+        // A genuinely different definition is not equivalent.
+        assert_eq!(
+            find_equivalent_live_task(
+                &graph,
+                &worksgood::graph::task_definition_digest(
+                    "Fix console plugin",
+                    Some("a different bug"),
+                    &["dep-a".to_string()]
+                )
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn add_is_idempotent_by_definition_hash() {
+        // End-to-end through run(): a second identical add is a no-op and does
+        // not create a `-2` sibling.
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+        std::fs::create_dir_all(dir_path).unwrap();
+        let path = super::graph_path(dir_path);
+        worksgood::parser::save_graph(&WorkGraph::new(), &path).unwrap();
+
+        add_generated_task(dir_path, "Fix console plugin").unwrap();
+        add_generated_task(dir_path, "Fix console plugin").unwrap();
+
+        let graph = worksgood::parser::load_graph(&path).unwrap();
+        let ids: Vec<&str> = graph.tasks().map(|t| t.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["fix-console-plugin"],
+            "no -2 sibling must be minted"
+        );
+    }
+
+    #[test]
+    fn add_explicit_id_same_definition_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+        std::fs::create_dir_all(dir_path).unwrap();
+        let path = super::graph_path(dir_path);
+        worksgood::parser::save_graph(&WorkGraph::new(), &path).unwrap();
+
+        add_minimal_task(dir_path, "Fix console plugin", "fix-console-plugin", &[]).unwrap();
+        // Re-adding the same id with the same definition is a no-op, not an error.
+        add_minimal_task(dir_path, "Fix console plugin", "fix-console-plugin", &[]).unwrap();
+        let graph = worksgood::parser::load_graph(&path).unwrap();
+        assert_eq!(graph.tasks().count(), 1);
     }
 
     #[test]

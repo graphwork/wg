@@ -58,6 +58,14 @@ struct SpawnSummary {
     /// is tripped (and the cooldown has not elapsed). Other tasks dispatch
     /// normally — the breaker is per-task.
     spawn_breaker_tripped_tasks: usize,
+    /// Tasks skipped this tick because they already have a live attempt.
+    ///
+    /// This is the restart-idempotency guard: after `wg service start --force`
+    /// the graph may show a task as `Open` (e.g. `wg retry` cleared the claim)
+    /// while the previous attempt's process is still alive. Re-dispatching
+    /// would mint a second identity/worktree and fire the claim/worktree
+    /// fences (the 2026-10-08 churn). The live attempt is honored instead.
+    refused_duplicate_dispatches: usize,
 }
 
 /// Clean up dead agents and count alive ones. Returns `None` with an early
@@ -2568,6 +2576,11 @@ fn spawn_agents_for_ready_tasks(
             .is_some_and(|snapshot| snapshot.level.blocks_builds());
     let mut active_build_heavy = active_build_heavy_count(dir, graph);
     let mut profile_cache = worksgood::dispatch::ProfileCache::new();
+    // Restart-idempotency: one snapshot of the persisted in-flight claims. A
+    // task with a live attempt (by process identity) is never re-dispatched,
+    // regardless of the graph status a restart or `wg retry` left behind.
+    let inflight_registry = AgentRegistry::load(dir).ok();
+    let liveness_grace = config.agent.reaper_grace_seconds as i64;
 
     for task in final_ready {
         if summary.spawned >= slots_available {
@@ -2580,6 +2593,26 @@ fn spawn_agents_for_ready_tasks(
             continue;
         }
         if task.assigned.is_some() || is_daemon_managed(task) {
+            continue;
+        }
+        // Restart-idempotency fence (in-flight accounting survives the restart):
+        // a task whose persisted claim has a LIVE attempt must not be
+        // re-dispatched. This is not a weakened fence — it is the claim fence
+        // applied one step earlier, keyed on process identity, so a genuine
+        // concurrent second spawn is still refused (it just never gets minted
+        // now).
+        if let Some(registry) = inflight_registry.as_ref()
+            && let Some(live) = super::startup_reconcile::live_attempt_for_task_in(
+                registry,
+                &task.id,
+                liveness_grace,
+            )
+        {
+            summary.refused_duplicate_dispatches += 1;
+            eprintln!(
+                "[dispatcher] Restart-idempotent: refusing to re-dispatch '{}' — live attempt {} (pid {}, status {:?}) already owns it; honoring the persisted claim",
+                task.id, live.id, live.pid, live.status
+            );
             continue;
         }
         // Readiness filters retired rows before priority ordering. Keep this
@@ -2893,6 +2926,15 @@ fn spawn_agents_for_ready_tasks(
                 }
             }
         }
+    }
+
+    // Observability: surface refused duplicate dispatches as a count so an
+    // operator sees churn instead of a stream of near-identical failures.
+    if summary.refused_duplicate_dispatches > 0 {
+        eprintln!(
+            "[dispatcher] Restart-idempotent reconcile: refused-duplicate-dispatches={} (tasks already have a live attempt; no second identity/worktree minted)",
+            summary.refused_duplicate_dispatches
+        );
     }
 
     summary

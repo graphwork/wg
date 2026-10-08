@@ -23,6 +23,7 @@ pub(crate) mod human_dispatch;
 pub mod ipc;
 pub(crate) mod replay;
 pub(crate) mod signals;
+pub(crate) mod startup_reconcile;
 pub(crate) mod supervisor;
 mod triage;
 pub(crate) mod worktree;
@@ -3365,6 +3366,31 @@ pub fn run_daemon(
     let mut archival_hold_notice: Option<String> = None;
     let archival_build_id = crate::commands::archive::current_build_id()
         .unwrap_or_else(|_| "unverified-build".to_string());
+
+    // --- Restart-idempotent in-flight reconciliation (before the first tick) ---
+    // A routine `wg service start --force` previously lost in-flight accounting,
+    // so the first tick re-dispatched already-claimed work (worktree-protection
+    // retry loops, duplicate task ids, duplicate claims — 2026-10-08). This one
+    // pass loads the persisted claims, reaps proven-dead attempts by process
+    // identity, and honors live ones so the dispatcher cannot mint a second
+    // identity for a task that already has a live attempt. The dispatch loop
+    // additionally refuses to spawn a task with a live attempt on every tick, so
+    // `wg service tick` and mid-tick restarts are covered too.
+    match startup_reconcile::reconcile_inflight_on_startup(&dir, &graph_path(&dir)) {
+        Ok(report) => {
+            if report.resumed_count() > 0 || report.reaped_count() > 0 {
+                logger.info(&format!(
+                    "startup reconcile: resumed(honored)={} reaped={} live_tasks={:?}",
+                    report.resumed_count(),
+                    report.reaped_count(),
+                    report.live_tasks
+                ));
+            }
+        }
+        Err(error) => logger.warn(&format!(
+            "startup in-flight reconcile unavailable (dispatch will still refuse live-attempt re-dispatch per tick): {error:#}"
+        )),
+    }
 
     while running {
         // A request is only an in-memory try_send. It never touches a retained
