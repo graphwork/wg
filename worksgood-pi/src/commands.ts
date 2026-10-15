@@ -1,15 +1,18 @@
 /**
  * commands.ts — human-facing slash commands.
  *
- *   /wg            ready | graph | show <id> | run <id> | add <title> | done <id> | fail <id> <reason>
+ *   /wg            init | ready | graph | show <id> | run <id> | add <title> | done <id> | fail <id> <reason>
  *                  on | off | status
  *   /wg-model      <provider:id>   warm in-session model swap via pi's native setModel
  *
  * `/wg run <id>` follows plugin-research.md §1.1: it loads the task and injects
  * it as a user message so pi's own agent loop works the task with the wg tools
- * in context. `/wg-model` resolves through `ctx.modelRegistry` and calls
- * `pi.setModel`; the resulting `model_select` event is what model-bridge.ts
- * writes back to WG (plugin-research.md §1.3).
+ * in context. `/wg init` is the conversational bootstrap: it injects ONE short
+ * user message telling the agent to inspect state, then run `wg init` / `wg
+ * setup` / `wg pi-plugin install` with its own tools — the plugin itself stays
+ * quiet until summoned (no load-time work here). `/wg-model` resolves through
+ * `ctx.modelRegistry` and calls `pi.setModel`; the resulting `model_select`
+ * event is what model-bridge.ts writes back to WG (plugin-research.md §1.3).
  *
  * `/wg on | off | status` manage the plugin itself from inside the pi CLI
  * (PLUGIN ON/OFF AS COMMANDS): `on` runs the ensure path
@@ -20,9 +23,12 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { WgBackend } from "./wg-backend.js";
 
 export const WG_SUBCOMMANDS = [
+  "init",
   "ready",
   "graph",
   "show",
@@ -34,6 +40,25 @@ export const WG_SUBCOMMANDS = [
   "off",
   "status",
 ] as const;
+
+/**
+ * The compact bootstrap prompt `/wg init` injects. One paragraph: the agent
+ * does the setup with its own tools, asking the operator only what it cannot
+ * infer, and reports a short summary. Exported so the injected wording is
+ * pinned by tests and shared with any future bootstrap surface.
+ */
+export const WG_INIT_BOOTSTRAP_PROMPT =
+  "Bootstrap the WorksGood (WG) environment for this project using your tools and the `wg` verbs. " +
+  "First REPORT state without changing anything: does `.wg` exist (run `wg status`), and is the plugin current (run `wg pi-plugin status`). " +
+  "If WG is not set up here, run `wg init`; then run `wg setup` to choose the execution route, asking me ONLY what you cannot infer (e.g. which model route/provider) \u2014 if I say \"default\" or \"you choose\", take the Pi defaults via `wg setup --route pi --yes`. " +
+  "Then run `wg pi-plugin install` and verify with `wg status` + `wg pi-plugin status`. " +
+  "Ask before creating anything surprising. " +
+  "Finish with a 3-5 line summary: the chosen route, the daemon state, how to open the fleet (`/wg-fleet`), and how to quiet it back down (`/wg-wake off` mutes completion wakeups; `wg service stop` stops the daemon).";
+
+/** True when `dir` looks like an initialized WG project (`.wg/` or `worksgood.toml`). */
+function isWgProject(dir: string): boolean {
+  return existsSync(join(dir, ".wg")) || existsSync(join(dir, "worksgood.toml"));
+}
 
 /** Split "provider:rest" into [provider, rest]; tolerates "provider/model" too. */
 export function parseModelSpec(spec: string): { provider: string; id: string } | null {
@@ -127,7 +152,7 @@ export function registerWgCommands(pi: ExtensionAPI, backend: WgBackend): void {
 
   pi.registerCommand("wg", {
     description:
-      "WG task graph: /wg ready | graph | show <id> | run <id> | add <title> | done <id> | fail <id> <reason> | on | off | status",
+      "WG task graph: /wg init | ready | graph | show <id> | run <id> | add <title> | done <id> | fail <id> <reason> | on | off | status",
     getArgumentCompletions: (prefix: string) => {
       const [sub, rest] = splitFirst(prefix);
       // Completing the subcommand itself (no trailing space yet).
@@ -141,7 +166,20 @@ export function registerWgCommands(pi: ExtensionAPI, backend: WgBackend): void {
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const [sub, rest] = splitFirst(args);
       switch (sub) {
-        case "":
+        case "init": {
+          pi.sendUserMessage(WG_INIT_BOOTSTRAP_PROMPT);
+          emit(ctx, "Starting WG setup \u2014 the agent will report state, then init, route, and install the plugin.");
+          return;
+        }
+        case "": {
+          // Quiet nicety: when summoned bare in a project with no WG state,
+          // point at the setup command instead of running a doomed `wg ready`.
+          const projectDir = backend.env.dir?.trim() || ctx.cwd?.trim();
+          if (projectDir && !isWgProject(projectDir)) {
+            return emit(ctx, "WG isn't set up in this project yet \u2014 run /wg init to set up WG here.", "warning");
+          }
+          // fall through to the default ready view
+        }
         case "ready":
         case "graph": {
           const r = await backend.ready({ signal: ctx.signal });
