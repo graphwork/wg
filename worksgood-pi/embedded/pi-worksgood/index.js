@@ -184,7 +184,7 @@ export default function worksgoodPi(pi) {
 // Re-export the building blocks so the SDK host and tests can use them directly.
 export { WgBackend, readWgEnv, canonicalChatId, normalizeGetFleet, buildCliFleet, parseVizJson, normalizeAgentUsage } from "./wg-backend.js";
 export { registerWgTools } from "./tools.js";
-export { registerWgCommands, parseModelSpec } from "./commands.js";
+export { registerWgCommands, parseModelSpec, WG_INIT_BOOTSTRAP_PROMPT } from "./commands.js";
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";
 export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_WIDGET_KEY, VIZ_WIDGET_POLL_MS } from "./viz-panel.js";
 export { installFleetView, FLEET_WIDGET_KEY, FLEET_POLL_MS, } from "./fleet-view.js";
