@@ -172,7 +172,7 @@ export default function worksgoodPi(pi) {
     registerWgTools(pi, backend); // wg_capabilities / wg_ready / wg_show / wg_add / wg_publish / wg_done / wg_fail / wg_msg_* / wg_run
     registerWgCommands(pi, backend); // /wg, /wg-model (+ autocomplete)
     installModelBridge(pi, backend, process.env); // registerProvider + model_select → CoordinatorState
-    installVizPanel(pi, backend, env); // /wg-viz panel + live widget (TUI mode only, read-only)
+    installVizPanel(pi, backend, env); // /wg-viz on-demand panel (TUI mode only, read-only; mounts NO ambient widget)
     installFleetView(pi, backend, env); // /wg-fleet bottom panel (config-gated, TUI mode only, read-only)
     installCompletionWatcher(pi, backend, env); // /wg-wake + polling watcher: tell the session when tasks finish
     // Tear down any session-scoped resources (the future daemon-IPC socket /
@@ -186,7 +186,7 @@ export { WgBackend, readWgEnv, canonicalChatId, normalizeGetFleet, buildCliFleet
 export { registerWgTools } from "./tools.js";
 export { registerWgCommands, parseModelSpec, WG_INIT_BOOTSTRAP_PROMPT } from "./commands.js";
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";
-export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_WIDGET_KEY, VIZ_WIDGET_POLL_MS } from "./viz-panel.js";
+export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_PANEL_POLL_MS } from "./viz-panel.js";
 export { installFleetView, FLEET_WIDGET_KEY, FLEET_POLL_MS, } from "./fleet-view.js";
 export { FleetPanelComponent, openFleetPanel, makeFleetFetcher, makeFleetDetailFetcher, FLEET_PANEL_POLL_MS, DETAIL_ENTER_GUARD_MS, } from "./fleet-panel.js";
 export { DEFAULT_TRANSCRIPT_LINES, FLEET_PANEL_DEFAULT_HEIGHT, FLEET_PANEL_MIN_HEIGHT, MAX_TRANSCRIPT_BODY_BYTES, MAX_TRANSCRIPT_LINES, MAX_TRANSCRIPT_LINE_CHARS, TRANSCRIPT_TAIL_BYTES, agentActivityLabel, agentForTask, agentStreamCandidates, agentUsageDetailLabel, agentUsageLabel, boundTranscriptBody, buildFleetTree, clampScroll, fleetCountsHeader, getFleetRowToVizTask, getFleetToVizSnapshot, maxScroll, pageScroll, readAgentStreamTail, readTextTail, renderWgTree, safeTailText, scrollToKeepVisible, transcriptLineLimit, wgTreeLineDepth, } from "./fleet-panel-model.js";

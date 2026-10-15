@@ -1,18 +1,12 @@
 /**
  * viz-panel.ts — the embedded VizView: a live, clickable work-graph panel
- * inside a Pi session.
+ * inside a Pi session, opened **on demand** by the `/wg-viz` command.
  *
- * Two surfaces, both strictly **read-only** (lifecycle authority stays with
- * workers and the coordinator — the panel only ever sends the read-only
- * `viz_snapshot` IPC request or runs the read-only `wg viz` fallback):
+ * The panel is strictly **read-only** (lifecycle authority stays with workers
+ * and the coordinator — the panel only ever sends the read-only `viz_snapshot`
+ * IPC request or runs the read-only `wg viz` fallback):
  *
- *  1. **Widget** — `ctx.ui.setWidget("wg-viz", …)`, one line:
- *     `wg ▸ 2 in-progress · 3 ready · 1 blocked · 5 done · 0 failed`, fed by a
- *     bounded poll of the daemon socket (fixed interval, no overlapping
- *     requests, change-guard so identical snapshots never re-render). When the
- *     daemon is offline the widget silently clears (ASCII fallback belongs to
- *     the full panel, not a one-line footer).
- *  2. **`/wg-viz`** — `ctx.ui.custom()` full panel: the dependency tree with
+ *  **`/wg-viz`** — `ctx.ui.custom()` full panel: the dependency tree with
  *     keyboard navigation (up/down move selection, enter/o expand/collapse,
  *     l toggles the selected task's detail lines, q/escape closes) and mouse
  *     clicks via the component's `handleMouse` hit-testing over the rendered
@@ -21,13 +15,19 @@
  *     When the daemon socket is unavailable the panel renders the `wg viz`
  *     ASCII fallback (read-only CLI) instead of the live snapshot.
  *
+ * There is deliberately **no ambient widget**: `installVizPanel` mounts zero
+ * surfaces at load time. The one-line `setWidget("wg-viz", …)` footer that
+ * used to sit above the editor (ungated + polling, experienced by the operator
+ * as a HUD) was removed; the panel is only ever created by the command handler
+ * and disposed when the user closes it.
+ *
  * Slice boundary (first slice, documented deferrals): no filters, no agency
  * lanes UI, no chat surfaces, no back-edge arc rendering, no scrollback
  * search — full viz_viewer parity is deferred. HUD-only detail sections
  * (admission waiting, agency identity, route receipts) are likewise deferred
  * because the `viz_snapshot` projection is deliberately bounded. In non-TUI
- * modes (`rpc`/`json`/`print`) the panel degrades silently: no widget, no
- * custom component (guarded on `ctx.mode`).
+ * modes (`rpc`/`json`/`print`) the panel degrades silently: no custom component
+ * (guarded on `ctx.mode`).
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
@@ -50,11 +50,8 @@ import {
 } from "./viz-readmodel.js";
 import type { PiMouseResult } from "./mouse.js";
 
-/** Widget registration key (also the settings-visible extension surface id). */
-export const VIZ_WIDGET_KEY = "wg-viz";
-
-/** Default bounded poll cadence for the widget. */
-export const VIZ_WIDGET_POLL_MS = 5000;
+/** Default bounded poll cadence for the on-demand `/wg-viz` panel. */
+export const VIZ_PANEL_POLL_MS = 5000;
 
 type TuiLike = { requestRender: (force?: boolean) => void };
 
@@ -303,7 +300,7 @@ export async function openVizPanel(
       ? new VizPoller(
           () => fetchVizSnapshot(socketPath),
           (snapshot) => component?.update(snapshot),
-          VIZ_WIDGET_POLL_MS,
+          VIZ_PANEL_POLL_MS,
         )
       : null;
     component = new VizPanelComponent(initial, tui, poller, () => done(), theme, asciiFallback);
@@ -324,49 +321,19 @@ export async function openVizPanel(
 }
 
 /**
- * Install the panel: the `/wg-viz` command plus the TUI-only live widget.
- * Non-TUI modes (`rpc`/`json`/`print`) degrade silently — no widget, no
- * component, no polling.
+ * Install the panel: the on-demand `/wg-viz` command only.
+ *
+ * Deliberately mounts **no** ambient surface at load time — no `setWidget`,
+ * no poll timer, no session lifecycle hooks. The full panel is created on
+ * demand by the command handler (`openVizPanel`) and disposed when the user
+ * closes it. Non-TUI modes (`rpc`/`json`/`print`) degrade silently — the
+ * command no-ops.
  */
 export function installVizPanel(
   pi: ExtensionAPI,
   backend: Pick<WgBackend, "run">,
   env: WgEnv,
-  options: { widgetPollMs?: number } = {},
 ): void {
-  const widgetPollMs = options.widgetPollMs ?? VIZ_WIDGET_POLL_MS;
-  let widgetTimer: ReturnType<typeof setInterval> | null = null;
-  let inFlight = false;
-  /** Sentinel so the very first refresh always writes the widget (even a clear). */
-  let lastWidgetLine: string | null | undefined = undefined;
-
-  const setWidgetLine = (ctx: ExtensionContext, line: string | null): void => {
-    if (line === lastWidgetLine) return;
-    lastWidgetLine = line;
-    try {
-      ctx.ui.setWidget(VIZ_WIDGET_KEY, line ? [line] : undefined);
-    } catch {
-      /* UI already gone */
-    }
-  };
-  const refreshWidget = async (ctx: ExtensionContext): Promise<void> => {
-    if (ctx.mode !== "tui" || inFlight) return;
-    inFlight = true;
-    try {
-      const result = await vizSnapshotWithFallback(backend, env, { timeoutMs: 2000 });
-      if (result.kind !== "snapshot") {
-        // Daemon offline: silently clear the widget.
-        setWidgetLine(ctx, null);
-        return;
-      }
-      setWidgetLine(ctx, widgetLine(taskCounts(result.snapshot.tasks)));
-    } catch {
-      setWidgetLine(ctx, null);
-    } finally {
-      inFlight = false;
-    }
-  };
-
   pi.registerCommand("wg-viz", {
     description: "Live WG work-graph panel (read-only): tree, selection, task detail, log tail",
     handler: async (_args: string, ctx: ExtensionContext) => {
@@ -377,26 +344,9 @@ export function installVizPanel(
         const initial = result.kind === "snapshot" ? result.snapshot : null;
         const ascii = result.kind === "ascii" ? result.text : null;
         await openVizPanel(ctx, env, initial, ascii);
-        // Sync the widget right away when the panel closes.
-        void refreshWidget(ctx);
       } catch {
         // Silent degrade: the panel must never throw into the chat.
       }
     },
-  });
-
-  pi.on("session_start", (_event, ctx) => {
-    if (ctx.mode !== "tui") return; // works in TUI mode only
-    if (widgetTimer) clearInterval(widgetTimer);
-    lastWidgetLine = undefined;
-    widgetTimer = setInterval(() => void refreshWidget(ctx), widgetPollMs);
-    void refreshWidget(ctx);
-  });
-
-  pi.on("session_shutdown", () => {
-    if (widgetTimer) {
-      clearInterval(widgetTimer);
-      widgetTimer = null;
-    }
   });
 }
