@@ -55,17 +55,60 @@ On an unsupported platform (or with `--no-optional`) the npm shim prints the
 
 ## Start in any project
 
+The npm install above is **the** setup — it puts `wg` and a Pi that carries the
+`pi-worksgood` plugin on your machine. Then, per project:
+
 ```bash
 mkdir -p ~/work/my-project && cd ~/work/my-project
 wg init      # create this project's task graph (.wg/) — non-mutating, route-free
 wg setup     # pick the routes unattended workers/evaluation use (optional for attended use)
-pi           # open the Pi session; the WorksGood plugin loads automatically
+pi           # open the Pi session; the WorksGood plugin loads silently
 ```
 
-Then, inside the session:
+From-source installs (unsupported platforms, Alpine/musl, Windows, contributors)
+are one paragraph in [docs/guides/install.md](docs/guides/install.md).
+
+The plugin is **quiet by default**: it mounts nothing at startup and exposes its
+tools and `/wg` commands without commentary. The first time in a project, run
+the CLI steps above — or just ask, inside the session:
+
+```text
+/wg init     # conversational bootstrap: the agent reports state, then runs
+             # wg init / wg setup / wg pi-plugin install and summarizes the result
+```
+
+`/wg init` is the in-session alternative to the CLI `wg init` + `wg setup`
+steps; both reach the same project graph and route. Plain language works too —
+ask the agent to "set up worksgood here" and it routes to the same flow.
+
+### Control the plugin
+
+```text
+/wg on       # ensure the plugin (runs `wg pi-plugin install`)
+/wg off      # remove this plugin's settings entry (runs `wg pi-plugin disable`, next launch)
+/wg status   # one compact line: plugin · graph · fleet state
+```
+
+`/wg on|off` shell the `wg` binary — `settings.json` is never hand-edited. The
+non-interactive equivalents are `wg pi-plugin install` and
+`wg pi-plugin disable`.
+
+### The `/wg` surface
+
+```text
+/wg init              bootstrap WG in this project (conversational)
+/wg ready             list ready tasks        /wg graph    show the graph
+/wg show <id>         inspect a task          /wg run <id> load + work a task
+/wg add <title>       create a draft task     /wg done <id> complete a task
+/wg fail <id> <why>   fail after an attempt
+/wg on | off | status control the plugin itself
+```
+
+Graph views are **on demand only** — there is no always-on widget:
 
 ```text
 /wg-fleet    # the cockpit: counts header + dependency tree; scroll and drill into any task
+/wg-viz      # lighter read-only graph panel, opened on demand
 ```
 
 `/wg-fleet` is the in-session cockpit — a scrollable, read-only view of the
@@ -73,8 +116,9 @@ live graph: in-progress/ready/blocked/done counts, the dependency tree, and a
 per-task detail pane (status, live agent activity, and a bounded stream tail).
 It reads through the daemon's read-only `GetFleet` surface and never mutates
 graph state. Enable it once with `{"fleetView": true}` in
-`~/.pi/agent/extensions/pi-worksgood/config.json` (or `WG_PI_FLEET_VIEW=1`);
-`/wg-viz` is the always-on lighter companion.
+`~/.pi/agent/extensions/pi-worksgood/config.json` (or `WG_PI_FLEET_VIEW=1`).
+`/wg-viz` opens the lighter read-only panel on demand and mounts no ambient
+widget.
 
 Claim work, spawn agents, and close tasks from the same session — no TUI
 required.
@@ -93,9 +137,10 @@ WG tools natively. The tools it has:
 | `wg_msg_send` / `wg_msg_read` | coordinate with other agents |
 | `wg_run` | load a task into the agent's context and work it |
 
-And the in-session commands: `/wg ready|graph|show|run|add|done|fail`,
-`/wg-viz` and `/wg-fleet` (live graph views), `/wg-model <provider:id>` (warm
-in-session model swap), and `/wg-wake [on|off]` (completion-event wakeups).
+And the in-session commands: `/wg init|ready|graph|show|run|add|done|fail`,
+`/wg on|off|status` (plugin control), `/wg-viz` and `/wg-fleet` (on-demand
+read-only graph views), `/wg-model <provider:id>` (warm in-session model swap),
+and `/wg-wake [on|off]` (completion-event wakeups).
 The graph is the shared medium — artifacts you write are read by other agents,
 and tasks you publish are dispatched to other agents.
 
