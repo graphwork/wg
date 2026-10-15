@@ -17,6 +17,7 @@ pub fn run(cmd: PiPluginCommands) -> Result<()> {
     match cmd {
         PiPluginCommands::Install { dev } => run_install(dev),
         PiPluginCommands::Status => run_status(),
+        PiPluginCommands::Disable => run_disable(),
         PiPluginCommands::Path => run_path(),
         PiPluginCommands::CompatVersion => {
             // Console-critical: a human pi session shells this at load, so heal a
@@ -127,6 +128,37 @@ fn run_install(dev: bool) -> Result<()> {
     } else if plugin.legacy_settings_migrated {
         println!("  Compatibility: migrated the legacy managed extension path to pi-worksgood.");
     }
+    Ok(())
+}
+
+/// `wg pi-plugin disable` — the human-facing `/wg off` backend. Removes this
+/// plugin's `extensions` entry from the global pi settings so the next `pi`
+/// launch loads nothing from WorksGood. Idempotent and surgical.
+fn run_disable() -> Result<()> {
+    let settings_path = pi_plugin::status().settings_path;
+    let outcome = pi_plugin::disable_console_settings()?;
+    if !outcome.settings_present {
+        println!(
+            "No pi settings at {} — pi-worksgood is already disabled.",
+            settings_path.display()
+        );
+        return Ok(());
+    }
+    if outcome.removed == 0 {
+        println!(
+            "pi-worksgood is not wired into {} — nothing to remove (already disabled).",
+            settings_path.display()
+        );
+        return Ok(());
+    }
+    println!(
+        "Disabled pi-worksgood — removed {} managed extension entr{} from {}.",
+        outcome.removed,
+        if outcome.removed == 1 { "y" } else { "ies" },
+        settings_path.display()
+    );
+    println!("  Other extensions and package records were left untouched.");
+    println!("  Takes effect on the next pi launch (the current session keeps its loaded tools).");
     Ok(())
 }
 

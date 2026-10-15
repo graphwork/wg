@@ -2,6 +2,7 @@
  * commands.ts — human-facing slash commands.
  *
  *   /wg            ready | graph | show <id> | run <id> | add <title> | done <id> | fail <id> <reason>
+ *                  on | off | status
  *   /wg-model      <provider:id>   warm in-session model swap via pi's native setModel
  *
  * `/wg run <id>` follows plugin-research.md §1.1: it loads the task and injects
@@ -9,8 +10,26 @@
  * in context. `/wg-model` resolves through `ctx.modelRegistry` and calls
  * `pi.setModel`; the resulting `model_select` event is what model-bridge.ts
  * writes back to WG (plugin-research.md §1.3).
+ *
+ * `/wg on | off | status` manage the plugin itself from inside the pi CLI
+ * (PLUGIN ON/OFF AS COMMANDS): `on` runs the ensure path
+ * (`wg pi-plugin install`), `off` removes this plugin's `extensions` entry
+ * (`wg pi-plugin disable`), and `status` prints one compact truth line. Both
+ * lifecycle verbs shell the `wg` binary — settings.json is never hand-edited by
+ * the user, and the TS side never performs JSON surgery on it.
  */
-const WG_SUBCOMMANDS = ["ready", "graph", "show", "run", "add", "done", "fail"];
+export const WG_SUBCOMMANDS = [
+    "ready",
+    "graph",
+    "show",
+    "run",
+    "add",
+    "done",
+    "fail",
+    "on",
+    "off",
+    "status",
+];
 /** Split "provider:rest" into [provider, rest]; tolerates "provider/model" too. */
 export function parseModelSpec(spec) {
     const s = spec.trim();
@@ -43,6 +62,40 @@ function emit(ctx, text, type = "info") {
         (type === "error" ? console.error : console.log)(text);
     }
 }
+/**
+ * Parse `wg pi-plugin status` stdout into the compact plugin state. The Rust
+ * side renders a `cache state:` line whose first token is `current`,
+ * `MISSING`, or `DRIFTED`; anything else (including a failed / empty run) is
+ * honestly reported as `unknown` rather than guessed.
+ */
+export function parsePluginState(stdout) {
+    const match = /cache state:\s*([A-Za-z]+)/.exec(stdout ?? "");
+    if (!match)
+        return "unknown";
+    const value = (match[1] ?? "").toLowerCase();
+    if (value.startsWith("current"))
+        return "current";
+    if (value.startsWith("drift"))
+        return "stale";
+    if (value.startsWith("missing"))
+        return "missing";
+    return "unknown";
+}
+/**
+ * One compact, truthful `/wg status` line: plugin health + graph presence +
+ * fleet availability. Read-only.
+ */
+export function formatStatusLine(input) {
+    const tasks = input.status?.tasks;
+    const graphText = input.graph
+        ? `present (${tasks?.in_progress ?? 0} in-progress, ${tasks?.ready ?? 0} ready, ${tasks?.done_total ?? 0} done)`
+        : "absent";
+    const alive = input.status?.agents?.alive ?? 0;
+    const fleetText = input.status?.service?.running
+        ? `service up (${alive} agent${alive === 1 ? "" : "s"})`
+        : "daemon down";
+    return `WG · plugin: ${input.plugin} · graph: ${graphText} · fleet: ${fleetText}`;
+}
 export function registerWgCommands(pi, backend) {
     // Stash the model registry from the live context so /wg-model autocomplete
     // can list available models (getArgumentCompletions has no ctx of its own).
@@ -56,7 +109,7 @@ export function registerWgCommands(pi, backend) {
         }
     });
     pi.registerCommand("wg", {
-        description: "WG task graph: /wg ready | graph | show <id> | run <id> | add <title> | done <id> | fail <id> <reason>",
+        description: "WG task graph: /wg ready | graph | show <id> | run <id> | add <title> | done <id> | fail <id> <reason> | on | off | status",
         getArgumentCompletions: (prefix) => {
             const [sub, rest] = splitFirst(prefix);
             // Completing the subcommand itself (no trailing space yet).
@@ -122,6 +175,43 @@ export function registerWgCommands(pi, backend) {
                         return emit(ctx, "usage: /wg fail <id> <reason>", "warning");
                     const r = await backend.fail(id, reason, { signal: ctx.signal });
                     emit(ctx, r.stdout.trim() || r.stderr.trim(), r.code === 0 ? "info" : "error");
+                    return;
+                }
+                case "on": {
+                    // Enable: run the ensure path (`wg pi-plugin install`). The Rust side
+                    // reports an honest no-op when the cache + settings are already
+                    // current; we never claim a change it did not make.
+                    const r = await backend.piPluginInstall({ signal: ctx.signal });
+                    if (r.code !== 0) {
+                        return emit(ctx, r.stderr.trim() || r.stdout.trim() || "wg pi-plugin install failed", "error");
+                    }
+                    const text = r.stdout.trim();
+                    emit(ctx, text || "wg pi-plugin install reported no output.", "info");
+                    const alreadyCurrent = /already up to date|nothing changed/i.test(text);
+                    emit(ctx, alreadyCurrent
+                        ? "pi-worksgood is already current — no restart needed."
+                        : "restart pi to load the updated plugin.", "info");
+                    return;
+                }
+                case "off": {
+                    // Disable: remove THIS plugin's settings entry via `wg pi-plugin
+                    // disable` (atomic, surgical). The Rust side reports whether anything
+                    // was removed and tells the user it lands on the next launch.
+                    const r = await backend.piPluginDisable({ signal: ctx.signal });
+                    if (r.code !== 0) {
+                        return emit(ctx, r.stderr.trim() || r.stdout.trim() || "wg pi-plugin disable failed", "error");
+                    }
+                    emit(ctx, r.stdout.trim() || "pi-worksgood disabled.", "info");
+                    return;
+                }
+                case "status": {
+                    const [pluginRes, graph, status] = await Promise.all([
+                        backend.piPluginStatus({ signal: ctx.signal }),
+                        backend.graphPresent({ signal: ctx.signal }),
+                        backend.statusJson({ signal: ctx.signal }),
+                    ]);
+                    const plugin = pluginRes.code === 0 ? parsePluginState(pluginRes.stdout) : "unknown";
+                    emit(ctx, formatStatusLine({ plugin, graph, status }), "info");
                     return;
                 }
                 default:

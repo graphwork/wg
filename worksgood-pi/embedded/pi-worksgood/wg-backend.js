@@ -116,6 +116,45 @@ export class WgBackend {
     fail(id, reason, opts = {}) {
         return this.run(["fail", id, "--reason", reason], opts);
     }
+    // ── plugin lifecycle (the /wg on | off | status backend) ────────────────
+    /** `/wg on` — the ensure path: materialize the build + wire settings. */
+    piPluginInstall(opts = {}) {
+        return this.run(["pi-plugin", "install"], opts);
+    }
+    /** `/wg status` — read-only plugin health (source/cache/wired/drift). */
+    piPluginStatus(opts = {}) {
+        return this.run(["pi-plugin", "status"], opts);
+    }
+    /**
+     * `/wg off` — remove this plugin's `extensions` entry from
+     * `~/.pi/agent/settings.json` (atomic, surgical; other extensions untouched).
+     *
+     * Deliberately a `wg` verb rather than TS-side JSON surgery: the settings
+     * shape, the CWD-independent `~/.pi` resolution, and the atomic rewrite all
+     * live next to the install path that writes the entry in the first place, so
+     * disable can never drift from install.
+     */
+    piPluginDisable(opts = {}) {
+        return this.run(["pi-plugin", "disable"], opts);
+    }
+    /**
+     * `/wg status` — is a WG graph present here? `wg list` exits non-zero with
+     * `WG not initialized` when no graph resolves; every other outcome means the
+     * graph is readable. Read-only.
+     */
+    async graphPresent(opts = {}) {
+        try {
+            const r = await this.run(["list"], opts);
+            return r.code === 0;
+        }
+        catch {
+            return false;
+        }
+    }
+    /** `/wg status` — the structured `wg status --json` snapshot (or null). */
+    statusJson(opts = {}) {
+        return this.runJson(["status"], opts);
+    }
     log(id, message, opts = {}) {
         return this.run(["log", id, message], opts);
     }

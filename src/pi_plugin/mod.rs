@@ -521,12 +521,22 @@ fn materialize_cache(parent: &Path) -> Result<PathBuf> {
 /// Used to replace our own entry idempotently while leaving all unrelated
 /// extensions untouched.
 fn is_wg_managed_entry(entry: &str, new_entry: &str) -> bool {
-    entry == new_entry
+    entry == new_entry || is_wg_managed_extension(entry)
+}
+
+/// Is `entry` a WorksGood-managed `extensions` entry (canonical or legacy),
+/// independent of the exact absolute path it currently points at?
+///
+/// Deliberately path-shape based (task contract: "only the entry whose path
+/// contains worksgood-pi"): the cache lives under `…/wg/worksgood-pi/<v>/`,
+/// the dev tree under `…/worksgood-pi/pi-worksgood/index.js`, and the retired
+/// bundle under `…/wg/pi-plugin/<v>/dist/index.js`. It is used by
+/// [`remove_console_settings`] so disabling removes OUR entry without a
+/// resolved `new_entry`, while every unrelated extension is preserved.
+fn is_wg_managed_extension(entry: &str) -> bool {
+    entry.contains("worksgood-pi")
         || entry.contains("/wg/pi-plugin/")
-        || entry.contains("/wg/worksgood-pi/")
         || entry.ends_with("/pi-plugin/dist/index.js")
-        || entry.ends_with("/worksgood-pi/dist/index.js")
-        || entry.ends_with("/worksgood-pi/pi-worksgood/index.js")
 }
 
 fn is_package_source(source: &str, package_name: &str) -> bool {
@@ -687,6 +697,145 @@ fn upsert_console_settings(settings_path: &Path, dist_entry: &Path) -> Result<Se
         legacy_migrated,
         legacy_package_accepted,
     })
+}
+
+/// The outcome of removing the WorksGood plugin from the pi `settings.json`
+/// `extensions` array. Reported by `wg pi-plugin disable` so `/wg off` can
+/// distinguish "disabled" from "was never wired" from "no settings at all".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DisableOutcome {
+    /// The settings file existed and was readable (a missing file is a no-op).
+    pub settings_present: bool,
+    /// How many WorksGood-managed `extensions` entries were removed.
+    pub removed: usize,
+    /// True when the settings file was rewritten on disk.
+    pub changed: bool,
+}
+
+/// Remove this WorksGood plugin's entry from the global pi `extensions` array so
+/// the next `pi` launch does not load it (the human-facing `/wg off` backend).
+///
+/// Surgical and idempotent: only [`is_wg_managed_extension`] entries are
+/// removed, every unrelated extension and every key (including `packages`) is
+/// preserved byte-for-byte, and the rewrite is atomic (temp file + rename) so a
+/// crash or a mid-write permission failure can never leave a truncated,
+/// unparseable `settings.json`. A missing settings file is a clean no-op — this
+/// never bootstraps `~/.pi`; that is `wg pi-plugin install`'s job.
+///
+/// Re-enable with [`ensure_pi_plugin`] in [`EnsureMode::Console`].
+pub fn disable_console_settings() -> Result<DisableOutcome> {
+    remove_console_settings(&pi_settings_path(&home_dir()))
+}
+
+/// Testable core of [`disable_console_settings`]: explicit settings path so unit
+/// tests need no env mutation.
+fn remove_console_settings(settings_path: &Path) -> Result<DisableOutcome> {
+    let text = match std::fs::read_to_string(settings_path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(DisableOutcome::default());
+        }
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "read pi settings {:?} (check permissions on {:?})",
+                    settings_path,
+                    settings_path.parent().unwrap_or(settings_path)
+                )
+            });
+        }
+    };
+    if text.trim().is_empty() {
+        return Ok(DisableOutcome {
+            settings_present: true,
+            removed: 0,
+            changed: false,
+        });
+    }
+
+    let mut root: serde_json::Value = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "parse existing pi settings {:?} (refusing to clobber)",
+            settings_path
+        )
+    })?;
+    if !root.is_object() {
+        anyhow::bail!(
+            "pi settings {:?} is not a JSON object; refusing to overwrite",
+            settings_path
+        );
+    }
+
+    // Preserve EVERY unrelated entry in order; drop only our own managed paths.
+    let mut removed = 0usize;
+    let mut kept: Vec<serde_json::Value> = Vec::new();
+    if let Some(existing) = root.get("extensions").and_then(|e| e.as_array()) {
+        for value in existing {
+            match value.as_str() {
+                Some(entry) if is_wg_managed_extension(entry) => removed += 1,
+                _ => kept.push(value.clone()),
+            }
+        }
+    }
+    if removed == 0 {
+        return Ok(DisableOutcome {
+            settings_present: true,
+            removed: 0,
+            changed: false,
+        });
+    }
+
+    root["extensions"] = serde_json::Value::Array(kept);
+    let serialized = serde_json::to_string_pretty(&root)? + "\n";
+    write_settings_atomic(settings_path, &serialized)?;
+    Ok(DisableOutcome {
+        settings_present: true,
+        removed,
+        changed: true,
+    })
+}
+
+/// Atomically replace a pi `settings.json`: write a sibling temp file, fsync it,
+/// then `rename(2)` it over the destination (same directory ⇒ same filesystem ⇒
+/// atomic). On any failure the temp file is removed and the original is left
+/// untouched. The error context names the path so a permissions failure is
+/// actionable.
+fn write_settings_atomic(settings_path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+
+    let parent = settings_path
+        .parent()
+        .context("pi settings path has no parent directory")?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create pi settings dir {:?}", parent))?;
+    let tmp = parent.join(format!(
+        ".settings.json.wg-disable-{}.tmp",
+        std::process::id()
+    ));
+
+    let write = std::fs::File::create(&tmp).and_then(|mut file| {
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()
+    });
+    if let Err(err) = write {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err).with_context(|| {
+            format!(
+                "write pi settings {:?} (check permissions on {:?})",
+                settings_path, parent
+            )
+        });
+    }
+    if let Err(err) = std::fs::rename(&tmp, settings_path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err).with_context(|| {
+            format!(
+                "replace pi settings {:?} (check permissions on {:?})",
+                settings_path, parent
+            )
+        });
+    }
+    Ok(())
 }
 
 // --- the primitive ------------------------------------------------------------
@@ -1245,6 +1394,194 @@ mod tests {
             new
         ));
         assert!(!is_wg_managed_entry("/home/u/other/index.ts", new));
+    }
+
+    #[test]
+    fn test_is_wg_managed_extension_matches_only_worksgood_paths() {
+        assert!(is_wg_managed_extension(
+            "/home/u/.cache/wg/worksgood-pi/0.3.0/pi-worksgood/index.js"
+        ));
+        assert!(is_wg_managed_extension(
+            "/repo/worksgood-pi/pi-worksgood/index.js"
+        ));
+        // Legacy/retired managed bundle.
+        assert!(is_wg_managed_extension(
+            "/home/u/.cache/wg/pi-plugin/0.1.0/dist/index.js"
+        ));
+        assert!(is_wg_managed_extension("/repo/pi-plugin/dist/index.js"));
+        // Unrelated third-party extensions must never match.
+        assert!(!is_wg_managed_extension("/home/u/my-ext/index.ts"));
+        assert!(!is_wg_managed_extension("npm:pi-web-access@1.0.0"));
+        assert!(!is_wg_managed_extension(
+            "/home/u/pi-plugin-other/dist/index.js"
+        ));
+    }
+
+    fn settings_fixture(home: &TempDir) -> std::path::PathBuf {
+        let settings = pi_settings_path(home.path());
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        settings
+    }
+
+    #[test]
+    fn test_disable_removes_only_worksgood_entry_and_preserves_everything_else() {
+        let home = TempDir::new().unwrap();
+        let settings = settings_fixture(&home);
+        std::fs::write(
+            &settings,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "theme": "dark",
+                "packages": ["npm:pi-web-access@1.0.0"],
+                "extensions": [
+                    "/home/u/my-ext/index.ts",
+                    "/home/u/.cache/wg/worksgood-pi/0.3.0/pi-worksgood/index.js",
+                    "/home/u/other-ext/index.js"
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let outcome = remove_console_settings(&settings).unwrap();
+        assert!(outcome.settings_present);
+        assert!(outcome.changed);
+        assert_eq!(outcome.removed, 1, "exactly the worksgood entry is removed");
+
+        let val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let exts: Vec<&str> = val["extensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            exts,
+            vec!["/home/u/my-ext/index.ts", "/home/u/other-ext/index.js"],
+            "unrelated extensions are preserved in order"
+        );
+        // Unrelated top-level keys + package records are untouched.
+        assert_eq!(val["theme"].as_str().unwrap(), "dark");
+        assert_eq!(
+            val["packages"][0].as_str().unwrap(),
+            "npm:pi-web-access@1.0.0"
+        );
+
+        // Idempotent: a second disable is a clean no-op (file unchanged).
+        let before = std::fs::read_to_string(&settings).unwrap();
+        let second = remove_console_settings(&settings).unwrap();
+        assert!(!second.changed);
+        assert_eq!(second.removed, 0);
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), before);
+    }
+
+    #[test]
+    fn test_disable_removes_legacy_managed_entry_too() {
+        let home = TempDir::new().unwrap();
+        let settings = settings_fixture(&home);
+        std::fs::write(
+            &settings,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "extensions": [
+                    "/home/u/keep/index.js",
+                    "/home/u/.cache/wg/pi-plugin/0.1.0/dist/index.js"
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let outcome = remove_console_settings(&settings).unwrap();
+        assert_eq!(outcome.removed, 1);
+        let val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let exts: Vec<&str> = val["extensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(exts, vec!["/home/u/keep/index.js"]);
+    }
+
+    #[test]
+    fn test_disable_missing_settings_is_a_clean_noop() {
+        let home = TempDir::new().unwrap();
+        let settings = pi_settings_path(home.path());
+        let outcome = remove_console_settings(&settings).unwrap();
+        assert!(!outcome.settings_present);
+        assert!(!outcome.changed);
+        assert_eq!(outcome.removed, 0);
+        assert!(!settings.exists(), "disable must never bootstrap ~/.pi");
+    }
+
+    #[test]
+    fn test_disable_not_wired_is_a_noop_without_rewriting() {
+        let home = TempDir::new().unwrap();
+        let settings = settings_fixture(&home);
+        std::fs::write(
+            &settings,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "extensions": ["/home/u/only/index.js"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(&settings).unwrap();
+        let outcome = remove_console_settings(&settings).unwrap();
+        assert!(outcome.settings_present);
+        assert!(!outcome.changed);
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), before);
+    }
+
+    #[test]
+    fn test_disable_refuses_to_clobber_non_object_settings() {
+        let home = TempDir::new().unwrap();
+        let settings = settings_fixture(&home);
+        std::fs::write(&settings, "[1, 2, 3]\n").unwrap();
+        let err = remove_console_settings(&settings).unwrap_err();
+        assert!(
+            err.to_string().contains("not a JSON object"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_disable_round_trips_with_console_install() {
+        // install wires exactly one canonical entry; disable removes it; the
+        // settings file ends back in its pre-install shape.
+        let home = TempDir::new().unwrap();
+        let settings = settings_fixture(&home);
+        std::fs::write(
+            &settings,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "extensions": ["/home/u/my-ext/index.ts"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let canonical = PathBuf::from("/home/u/.cache/wg/worksgood-pi/0.3.0/pi-worksgood/index.js");
+
+        assert!(
+            upsert_console_settings(&settings, &canonical)
+                .unwrap()
+                .changed
+        );
+        let wired: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(wired["extensions"].as_array().unwrap().len(), 2);
+
+        let outcome = remove_console_settings(&settings).unwrap();
+        assert_eq!(outcome.removed, 1);
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            after["extensions"].as_array().unwrap(),
+            &vec![serde_json::Value::String(
+                "/home/u/my-ext/index.ts".to_string()
+            )]
+        );
     }
 
     #[test]

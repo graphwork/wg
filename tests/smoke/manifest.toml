@@ -3509,3 +3509,12 @@ owners = [
 ]
 description = "tui-fleet-usage-columns: the TUI dashboard agent table gains a compact TOKENS/TURNS/TOOLS column derived from each agent's bounded raw_stream.jsonl tail via the SAME `stream_event::live_usage_for_agent` derivation the pi plugin uses (no second parser), and the Agency tab's agent list shows the full tokens/turns/tools label; a row with no usable stream degrades to a blank segment (never fabricated zeros). Live wg tui/tmux human flow: the CANDIDATE worktree binary boots a synthetic .wg with one in-progress task assigned to a fake `pi` agent carrying 2 turns (1234 total tokens) + 31 tool events, the scenario sends '6' to the Dashboard and '2' to the Agency tab and asserts the rendered cell grid (via tui-dump) shows `1.2k 2t 31x` and `1234 tokens (1200 in / 34 out) · 2 turns · 31 tool uses`. Credential-free."
 timeout_seconds = 300
+
+[[scenario]]
+name = "pi_plugin_toggle_commands"
+script = "scenarios/pi_plugin_toggle_commands.sh"
+owners = [
+    "wg-plugin-toggle",
+]
+description = "PLUGIN ON/OFF AS COMMANDS: the pi plugin exposes `/wg on` (ensure path = `wg pi-plugin install`), `/wg off` (removes THIS plugin's settings entry via the new `wg pi-plugin disable`), and `/wg status` (one compact truthful line), so a human never hand-edits ~/.pi/agent/settings.json. Human-flow proof: the built plugin's REAL registered wg command handler is driven exactly as pi drives it (fake pi + fake ctx) into an isolated HOME, and it shells the REAL candidate `wg` binary — `on` wires exactly one managed extensions entry, `off` removes exactly that entry while preserving every unrelated extension, `off`/`on` are idempotent (honest no-ops), and `status` is a single `WG · plugin: … · graph: … · fleet: …` line. Completions include on/off/status. Credential-free; SKIPs LOUDLY if the candidate binary lacks `pi-plugin disable`."
+timeout_seconds = 180

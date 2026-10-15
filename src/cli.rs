@@ -5709,6 +5709,12 @@ pub enum PiPluginCommands {
     /// Print resolved source, cache path, compat version, and wired/drift state.
     Status,
 
+    /// Disable the pi-worksgood Console integration: remove THIS plugin's
+    /// `extensions` entry from `~/.pi/agent/settings.json` (atomic, surgical —
+    /// other extensions are untouched). Idempotent; takes effect on the next pi
+    /// launch. Re-enable with `wg pi-plugin install`.
+    Disable,
+
     /// Print the resolved `pi-worksgood/index.js` path (scriptable).
     Path,
 
