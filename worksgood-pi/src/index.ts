@@ -185,7 +185,7 @@ export default function worksgoodPi(pi: ExtensionAPI): void {
   registerWgTools(pi, backend); // wg_capabilities / wg_ready / wg_show / wg_add / wg_publish / wg_done / wg_fail / wg_msg_* / wg_run
   registerWgCommands(pi, backend); // /wg, /wg-model (+ autocomplete)
   installModelBridge(pi, backend, process.env); // registerProvider + model_select → CoordinatorState
-  installVizPanel(pi, backend, env); // /wg-viz panel + live widget (TUI mode only, read-only)
+  installVizPanel(pi, backend, env); // /wg-viz on-demand panel (TUI mode only, read-only; mounts NO ambient widget)
   installFleetView(pi, backend, env); // /wg-fleet bottom panel (config-gated, TUI mode only, read-only)
   installCompletionWatcher(pi, backend, env); // /wg-wake + polling watcher: tell the session when tasks finish
 
@@ -212,7 +212,7 @@ export type { WgEnv, ExecHost } from "./wg-backend.js";
 export { registerWgTools } from "./tools.js";
 export { registerWgCommands, parseModelSpec } from "./commands.js";
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";
-export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_WIDGET_KEY, VIZ_WIDGET_POLL_MS } from "./viz-panel.js";
+export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_PANEL_POLL_MS } from "./viz-panel.js";
 export {
   installFleetView,
   FLEET_WIDGET_KEY,

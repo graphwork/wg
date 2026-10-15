@@ -1,9 +1,9 @@
 /**
  * fleet-config.ts — the config gate for the FleetView bottom panel.
  *
- * The FleetView panel is **optional**: unlike the always-on one-line `wg-viz`
- * widget, nothing is mounted below the editor unless the operator opts in. The
- * opt-in follows the same **extension-config file pattern** pi-subagents uses
+ * The FleetView panel is **optional**: nothing is mounted below the editor
+ * unless the operator opts in. The opt-in follows the same **extension-config
+ * file pattern** pi-subagents uses
  * (`~/.pi/agent/extensions/<name>/config.json`, honouring `PI_CODING_AGENT_DIR`
  * and `HOME`), so a WG operator already has a familiar place to flip it on:
  *

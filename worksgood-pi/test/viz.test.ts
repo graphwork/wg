@@ -1,5 +1,5 @@
 /**
- * viz tests — the embedded VizView panel (widget + /wg-viz custom component).
+ * viz tests — the embedded VizView `/wg-viz` on-demand panel.
  *
  * Pins, against a **fixture daemon socket** (a real one-shot UDS server that
  * speaks the daemon's `IpcRequest`/`IpcResponse` JSON-line protocol):
@@ -7,8 +7,8 @@
  *   - the tree renders and selection moves through the visible order;
  *   - detail lines match the TUI HUD read model (sections + shapes) for the
  *     fixture graph;
- *   - the widget one-line summary derives from the snapshot and silently
- *     clears when the daemon is offline;
+ *   - `/wg-viz` opens the on-demand panel with live fixture-socket data;
+ *   - `installVizPanel` mounts NO ambient surface at load (no `setWidget`);
  *   - socket-unavailable degrades to the read-only `wg viz` ASCII fallback.
  */
 
@@ -35,7 +35,7 @@ import {
   widgetLine,
 } from "../pi-worksgood/viz-readmodel.js";
 // @ts-expect-error — built artifact import (see above)
-import { VizPanelComponent, installVizPanel, VIZ_WIDGET_KEY } from "../pi-worksgood/viz-panel.js";
+import { VizPanelComponent, installVizPanel } from "../pi-worksgood/viz-panel.js";
 // @ts-expect-error — built artifact import (see above)
 import { isPiMouseResult } from "../pi-worksgood/mouse.js";
 
@@ -439,13 +439,31 @@ describe("VizPanelComponent", () => {
   });
 });
 
-// ── installation: command + widget ───────────────────────────────────────────
+// ── installation: on-demand command, zero ambient surfaces ────────────────
 
 describe("installVizPanel", () => {
+  type CustomFactory = (
+    tui: unknown,
+    theme: unknown,
+    keybindings: unknown,
+    done: () => void,
+  ) => { render: (w: number) => string[]; handleInput?: (d: string) => void; dispose?: () => void };
+
   function makePi(mode: "tui" | "rpc" | "json" | "print" = "tui") {
     const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
     const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
-    const ui = { setWidget: vi.fn(), notify: vi.fn() };
+    const panels: Array<{ render: (w: number) => string[]; dispose: () => void }> = [];
+    const ui = {
+      setWidget: vi.fn(),
+      notify: vi.fn(),
+      // Mirror pi: `custom()` builds the component via the factory and keeps it
+      // until the user closes it. We capture the rendered panel for assertions.
+      custom: vi.fn(async (factory: CustomFactory) => {
+        const tui = { requestRender: vi.fn() };
+        const component = factory(tui, null, null, () => undefined);
+        panels.push({ render: (w: number) => component.render(w), dispose: () => component.dispose?.() });
+      }),
+    };
     const pi = {
       registerCommand: vi.fn((name: string, def: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
         commands.set(name, def),
@@ -455,72 +473,54 @@ describe("installVizPanel", () => {
       registerProvider: vi.fn(),
     };
     const ctx = { mode, hasUI: mode !== "print" && mode !== "json", ui, signal: undefined };
-    return { pi, handlers, commands, ui, ctx };
+    return { pi, handlers, commands, ui, panels, ctx };
   }
 
-  it("registers the /wg-viz command and the TUI widget lifecycle", async () => {
-    const { pi, commands } = makePi();
-    installVizPanel(pi as never, { run: async () => ({ stdout: "", stderr: "", code: 0, killed: false }) } as never, {});
+  it("registers /wg-viz and mounts ZERO ambient surfaces at load (setWidget never called)", () => {
+    const { pi, ui, commands } = makePi();
+    installVizPanel(
+      pi as never,
+      { run: async () => ({ stdout: "", stderr: "", code: 0, killed: false }) } as never,
+      { daemonSocket: socketPath } as never,
+    );
     expect(commands.has("wg-viz")).toBe(true);
-    expect(pi.on).toHaveBeenCalledWith("session_start", expect.any(Function));
-    expect(pi.on).toHaveBeenCalledWith("session_shutdown", expect.any(Function));
+    // The load-time surface assertion: no widget, no poll timer, no lifecycle
+    // hooks — the panel is created only on demand by the command handler.
+    expect(ui.setWidget).not.toHaveBeenCalled();
+    expect(pi.on).not.toHaveBeenCalled();
   });
 
-  it("widget shows the one-line summary from the fixture socket and never mutates the graph", async () => {
-    vi.useFakeTimers();
-    try {
-      receivedRequests.length = 0;
-      const { pi, handlers, ui, ctx } = makePi("tui");
-      installVizPanel(pi as never, { run: async () => ({ stdout: "", stderr: "", code: 0, killed: false }) } as never, {
-        daemonSocket: socketPath,
-      } as never, { widgetPollMs: 10 });
-      handlers.get("session_start")!({}, ctx);
-      await vi.advanceTimersByTimeAsync(30);
-      expect(ui.setWidget).toHaveBeenCalled();
-      const lastCall = ui.setWidget.mock.calls.at(-1)!;
-      expect(lastCall[0]).toBe(VIZ_WIDGET_KEY);
-      expect(String(lastCall[1]![0])).toContain("wg ▸ 1 in-progress · 1 ready · 0 blocked · 1 done · 0 failed");
-      // Read-only proof, widget path: only viz_snapshot requests were sent.
-      for (const req of receivedRequests) expect(req.cmd).toBe("viz_snapshot");
-      handlers.get("session_shutdown")!({}, ctx);
-    } finally {
-      vi.useRealTimers();
-    }
+  it("/wg-viz opens the on-demand panel view with live data from the fixture socket", async () => {
+    receivedRequests.length = 0;
+    const { pi, commands, ui, panels, ctx } = makePi("tui");
+    installVizPanel(
+      pi as never,
+      { run: async () => ({ stdout: "", stderr: "", code: 0, killed: false }) } as never,
+      { daemonSocket: socketPath } as never,
+    );
+    await commands.get("wg-viz")!.handler("", ctx);
+    // The custom full view is opened exactly once, with live fixture data.
+    expect(ui.custom).toHaveBeenCalledTimes(1);
+    expect(panels).toHaveLength(1);
+    const lines = panels[0]!.render(120);
+    expect(lines.some((l) => l.includes("smoke-pin"))).toBe(true);
+    expect(lines.some((l) => l.includes("opaque-exec"))).toBe(true);
+    // Read-only proof: only the read-only viz_snapshot request was sent.
+    expect(receivedRequests.length).toBeGreaterThanOrEqual(1);
+    for (const req of receivedRequests) expect(req.cmd).toBe("viz_snapshot");
+    panels[0]!.dispose();
   });
 
-  it("silently clears the widget when the daemon is offline (no ASCII cruft in the footer)", async () => {
-    vi.useFakeTimers();
-    try {
-      const { pi, handlers, ui, ctx } = makePi("tui");
-      const run = vi.fn(async () => ({ stdout: "ascii", stderr: "", code: 0, killed: false }));
-      installVizPanel(pi as never, { run } as never, { daemonSocket: undefined, dir: "/nowhere" } as never, {
-        widgetPollMs: 10,
-      });
-      handlers.get("session_start")!({}, ctx);
-      await vi.advanceTimersByTimeAsync(30);
-      const calls = ui.setWidget.mock.calls.filter((c) => c[0] === VIZ_WIDGET_KEY);
-      expect(calls.length).toBeGreaterThan(0);
-      expect(calls.at(-1)![1]).toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("degrades silently in non-TUI modes: no widget, no polling, command no-ops", async () => {
-    vi.useFakeTimers();
-    try {
-      const { pi, handlers, ui, ctx, commands } = makePi("json");
-      installVizPanel(pi as never, { run: async () => ({ stdout: "", stderr: "", code: 0, killed: false }) } as never, {
-        daemonSocket: socketPath,
-      } as never, { widgetPollMs: 10 });
-      handlers.get("session_start")!({}, ctx);
-      await vi.advanceTimersByTimeAsync(30);
-      expect(ui.setWidget).not.toHaveBeenCalled();
-      // The command itself no-ops outside TUI mode.
-      await commands.get("wg-viz")!.handler("", ctx);
-      expect(ui.notify).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+  it("degrades silently in non-TUI modes: no widget, no panel, command no-ops", async () => {
+    const { pi, ui, commands, ctx } = makePi("json");
+    installVizPanel(
+      pi as never,
+      { run: async () => ({ stdout: "", stderr: "", code: 0, killed: false }) } as never,
+      { daemonSocket: socketPath } as never,
+    );
+    expect(ui.setWidget).not.toHaveBeenCalled();
+    await commands.get("wg-viz")!.handler("", ctx);
+    expect(ui.custom).not.toHaveBeenCalled();
+    expect(ui.notify).not.toHaveBeenCalled();
   });
 });
