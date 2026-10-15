@@ -537,14 +537,20 @@ fn worker_launch_plan(
             "--mode".to_string(),
             "rpc".to_string(),
             "--no-approve".to_string(),
-            "-ne".to_string(),
+            "--no-mcp".to_string(),
+            "--no-skills".to_string(),
+            "--no-prompt-templates".to_string(),
+            "--no-themes".to_string(),
+            "--no-context-files".to_string(),
         ]);
     } else {
         fixed_argv.extend([
             "--mode".to_string(),
             "json".to_string(),
-            "-ne".to_string(),
             "--no-skills".to_string(),
+            "--no-mcp".to_string(),
+            "--no-prompt-templates".to_string(),
+            "--no-themes".to_string(),
             "--no-prompt-templates".to_string(),
             "--no-context-files".to_string(),
         ]);
@@ -580,8 +586,11 @@ fn worker_launch_plan(
         executable: pinned_path(&pinned_program),
         fixed_argv,
         capability_argv: vec![
-            "--offline".into(), "-ne".into(), "--no-skills".into(),
-            "--no-prompt-templates".into(), "--no-context-files".into(),
+            "--offline".into(),
+            "--no-mcp".into(),
+            "--no-skills".into(),
+            "--no-prompt-templates".into(),
+            "--no-context-files".into(),
         ],
         config_root: config_root.clone(),
         config_identity: pi_config_identity(&config_root),
@@ -633,14 +642,16 @@ fn review_launch_plan(program: &Path, timeout_secs: Option<u64>) -> PiLaunchPlan
         invocation_kind: PiInvocationKind::HermeticReview,
         executable: pinned_path(program),
         fixed_argv: vec![
-            "--mode".into(), "json".into(), "--print".into(), "-ne".into(),
+            "--mode".into(), "json".into(), "--print".into(),
             "--no-tools".into(), "--no-context-files".into(), "--no-skills".into(),
-            "--no-prompt-templates".into(), "--no-session".into(),
+            "--no-mcp".into(), "--no-prompt-templates".into(), "--no-themes".into(),
+            "--no-session".into(),
         ],
         capability_argv: vec![
-            "--offline".into(), "-ne".into(), "--no-tools".into(),
+            "--offline".into(), "--no-mcp".into(), "--no-tools".into(),
             "--no-context-files".into(), "--no-skills".into(),
-            "--no-prompt-templates".into(), "--no-session".into(),
+            "--no-prompt-templates".into(), "--no-themes".into(),
+            "--no-session".into(),
         ],
         config_root: config_root.clone(),
         config_identity: pi_config_identity(&config_root),
@@ -1767,7 +1778,7 @@ mod tests {
         assert_eq!(preflight(&assignment), PiPreflightOutcome::Ready);
         assert_eq!(
             std::fs::read_to_string(&log).unwrap(),
-            "--offline\n-ne\n--no-skills\n--no-prompt-templates\n--no-context-files\n--list-models\nodd+provider:model:alpha/beta\n"
+            "--offline\n--no-mcp\n--no-skills\n--no-prompt-templates\n--no-context-files\n--list-models\nodd+provider:model:alpha/beta\n"
         );
 
         std::fs::write(&fake, "#!/bin/sh\nprintf 'Provider Model\\n'\n").unwrap();

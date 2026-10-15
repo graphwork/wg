@@ -385,7 +385,18 @@ pub fn pi_route_supported(
     let mut command = std::process::Command::new(&pi);
     command.arg("--offline");
     if lane == PiCapabilityLane::HermeticReview {
-        command.arg("-ne");
+        // NOTE: do NOT use `-ne` here. Since pi 1.3.0, `--no-extensions` excludes
+        // models.json-defined providers from the registry, so the probe would
+        // reject routes that the real hermetic spawn (explicit `-e` + targeted
+        // `--no-*` discovery kills, see rpc_spawn_args) resolves fine — and the
+        // spawn itself would silently fall back to a builtin provider.
+        command.args([
+            "--no-mcp",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--no-context-files",
+        ]);
     }
     let output = command
         .arg("--list-models")

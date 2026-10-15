@@ -1142,8 +1142,11 @@ fn pi_one_shot_command_args(
         "--mode".to_string(),
         "json".to_string(),
         "--print".to_string(),
-        "-ne".to_string(),
         "--no-tools".to_string(),
+        "--no-mcp".to_string(),
+        "--no-skills".to_string(),
+        "--no-prompt-templates".to_string(),
+        "--no-themes".to_string(),
         "--no-context-files".to_string(),
         "--no-session".to_string(),
         "--provider".to_string(),
@@ -2598,7 +2601,13 @@ mod tests {
         assert_eq!(max[tidx + 1], "max");
 
         let omitted = pi_one_shot_command_args(&marg, None);
-        for required in ["-ne", "--no-tools", "--no-context-files", "--no-session"] {
+        for required in [
+            "--no-mcp",
+            "--no-tools",
+            "--no-skills",
+            "--no-context-files",
+            "--no-session",
+        ] {
             assert!(
                 omitted.contains(&required.to_string()),
                 "Pi one-shot omitted {required}: {omitted:?}"
@@ -2667,7 +2676,7 @@ printf '%s\n' '{"type":"turn_end","message":{"role":"assistant","content":[{"typ
             Some("openai-codex/gpt-5.6-sol")
         );
         for required in [
-            "-ne",
+            "--no-mcp",
             "--no-tools",
             "--no-context-files",
             "--no-skills",

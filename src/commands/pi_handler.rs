@@ -575,8 +575,19 @@ fn rpc_spawn_args_with_selection(
             process_extension.to_string_lossy().to_string(),
         ]);
     }
+    // NOTE: `-ne`/`--no-extensions` is NOT safe here since pi 1.3.0: it excludes
+    // models.json-defined providers (e.g. lunaroute) from the model registry,
+    // so the spawn would silently fall back to a builtin provider (wrong model).
+    // Hermeticity is preserved by the explicit `-e` paths above plus targeted
+    // discovery kills (mcp/skills/prompt-templates/themes/context).
     if pinned_fixed_argv.is_none() {
-        args.push("-ne".to_string());
+        args.extend([
+            "--no-mcp".to_string(),
+            "--no-skills".to_string(),
+            "--no-prompt-templates".to_string(),
+            "--no-themes".to_string(),
+            "--no-context-files".to_string(),
+        ]);
     }
     args
 }
@@ -1368,7 +1379,16 @@ pub fn run_process_worker(
         );
     }
     let pinned_fixed_argv = if opaque_model.is_some() {
-        let required = ["--mode", "rpc", "--no-approve", "-ne"];
+        let required = [
+            "--mode",
+            "rpc",
+            "--no-approve",
+            "--no-mcp",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--no-context-files",
+        ];
         if pinned_fixed_argv.iter().map(String::as_str).ne(required) {
             anyhow::bail!(
                 "WG-OPAQUE-LAUNCH-PLAN-INCOMPLETE: managed RPC fixed argv does not match the assignment contract"
@@ -1824,11 +1844,19 @@ mod tests {
             .position(|a| a == "-e")
             .expect("`-e` must be present for hermetic plugin load");
         assert_eq!(args[eidx + 1], dist.to_string_lossy());
-        assert!(
-            args.contains(&"-ne".to_string()),
-            "`-ne` must disable all extension discovery: {:?}",
-            args
-        );
+        for hermetic_flag in [
+            "--no-mcp",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-themes",
+            "--no-context-files",
+        ] {
+            assert!(
+                args.contains(&hermetic_flag.to_string()),
+                "`{hermetic_flag}` must disable its discovery surface (never `-ne`: it drops models.json providers): {:?}",
+                args
+            );
+        }
         // Credentials by env ONLY — never on the command line.
         assert!(
             !args
@@ -1864,7 +1892,10 @@ mod tests {
             entries,
             vec![wg.to_str().unwrap(), processes.to_str().unwrap()]
         );
-        assert_eq!(args.iter().filter(|arg| arg.as_str() == "-ne").count(), 1);
+        assert_eq!(
+            args.iter().filter(|arg| arg.as_str() == "--no-mcp").count(),
+            1
+        );
         assert!(args.windows(2).any(|pair| pair == ["--mode", "rpc"]));
         assert!(args.windows(2).any(|pair| pair == ["--thinking", "high"]));
     }
@@ -1917,7 +1948,7 @@ mod tests {
         assert!(args.contains(&"--session-id".to_string()));
         assert!(args.contains(&"--session-dir".to_string()));
         assert!(args.contains(&"-e".to_string()));
-        assert!(args.contains(&"-ne".to_string()));
+        assert!(args.contains(&"--no-skills".to_string()));
     }
 
     #[test]
