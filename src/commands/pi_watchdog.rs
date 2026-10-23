@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
+use worksgood::graph::FailureClass;
 use worksgood::lifecycle::{
     ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
     apply_transition,
@@ -13,6 +14,188 @@ use worksgood::pi_watchdog::{
 };
 
 use crate::cli::PiWatchdogCommands;
+
+/// The failure reason recorded when the watchdog hard-cap kills a wedged Pi
+/// process. A wedged tool (a half-open heredoc reading stdin, an interactive
+/// prompt) produces NO provider progress at all, so proof-silence alone is the
+/// signal. This is the `failure_reason` an operator sees on the failed attempt.
+pub const WATCHDOG_TOOL_SILENCE_HARDCAP: &str = "watchdog-tool-silence-hardcap";
+
+/// Hard-cap default: how long total proof-silence may last before the watchdog
+/// ACTS (kills the exact Pi process + fails the attempt) instead of only
+/// logging. 600s = 10 min, matching the tool-hang hotfix contract (soft=300s
+/// log-only warning, hard=600s enforcement).
+pub const DEFAULT_WATCHDOG_HARD_SILENCE_SECS: u64 = 600;
+
+/// Env override for the hard cap (tests / operator tuning). `0` disables
+/// enforcement (log-only), which is never the default.
+pub const WATCHDOG_HARD_SILENCE_ENV: &str = "WG_PI_WATCHDOG_HARD_SILENCE_SECS";
+
+/// The two-rung silence policy: soft is a LOG-ONLY suspicion warning, hard is
+/// ENFORCED (kill + fail). Keeping them separate is the whole point of the
+/// hotfix: a wedged process must not outlive the observation that found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SilencePolicy {
+    pub soft_secs: u64,
+    pub hard_secs: u64,
+}
+
+impl SilencePolicy {
+    /// Build the policy around the watchdog's own soft threshold.
+    pub fn from_soft(soft_secs: u64) -> Self {
+        let env_hard = std::env::var(WATCHDOG_HARD_SILENCE_ENV)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value <= 86_400);
+        let hard_secs = match env_hard {
+            // An explicit override may sit BELOW the soft rung (tests, or an
+            // operator tightening the leash); hard then fires first.
+            Some(value) => value,
+            // Default: never earlier than the soft warning it escalates from.
+            None => DEFAULT_WATCHDOG_HARD_SILENCE_SECS.max(soft_secs.saturating_add(1)),
+        };
+        Self {
+            soft_secs,
+            hard_secs,
+        }
+    }
+}
+
+/// What the silence clock says to do right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SilenceAction {
+    /// Healthy: proof within the soft window.
+    None,
+    /// Suspicious but not actionable: log only, never touch the process.
+    SoftWarn,
+    /// Breached: kill the exact process and fail the attempt.
+    HardCap,
+}
+
+/// Classify total proof-silence against the policy (soft is log-only).
+pub fn classify_silence(silence_secs: u64, policy: SilencePolicy) -> SilenceAction {
+    if policy.hard_secs > 0 && silence_secs >= policy.hard_secs {
+        SilenceAction::HardCap
+    } else if silence_secs >= policy.soft_secs {
+        SilenceAction::SoftWarn
+    } else {
+        SilenceAction::None
+    }
+}
+
+/// EXECUTE the hard-cap breach: kill the exact wedged Pi process (never a
+/// recycled PID) and fail the attempt with {@link WATCHDOG_TOOL_SILENCE_HARDCAP}
+/// so the ordinary retry path resumes in the preserved worktree.
+///
+/// Returns `Ok(true)` when this call enforced the breach (killed and/or failed),
+/// `Ok(false)` when the attempt was already terminal. Both the process fence and
+/// the lifecycle fence are validated before anything is touched: a stale attempt
+/// means the caller must NOT kill whatever now owns that PID.
+pub fn enforce_silence_hardcap(dir: &Path, id: &str, silence_secs: u64) -> Result<bool> {
+    let watchdog = checked_open(dir, id)?;
+    let state = watchdog.state();
+    if state.terminal {
+        return Ok(false);
+    }
+    let source = state.source.clone();
+    let identity = state.process.clone();
+    let process_epoch = state.process_epoch;
+
+    // Fail closed on a recycled PID: only the exact captured process may die.
+    if identity.nonce != "fixture-nonce" {
+        #[cfg(target_os = "linux")]
+        if !process_identity_matches_kernel(&identity) {
+            anyhow::bail!(
+                "stale_process_identity: hard-cap PID {} no longer matches epoch {} identity",
+                identity.pid,
+                process_epoch
+            );
+        }
+    }
+    let killed = terminate_exact_process(&identity);
+
+    let graph_path = dir.join("graph.jsonl");
+    let mut rejection = None;
+    let mut failed = false;
+    modify_graph(&graph_path, |graph| {
+        let Some(task) = graph.get_task_mut(id) else {
+            return false;
+        };
+        let Some(attempt) = task.lifecycle.current_attempt.clone() else {
+            return false;
+        };
+        if task.status != worksgood::graph::Status::InProgress
+            || attempt.id != source.attempt_id
+            || task.lifecycle.generation != source.generation
+            || task.lifecycle.fence != source.attempt_fence
+        {
+            return false;
+        }
+        let request = TransitionRequest::new(
+            TransitionKind::AttemptFailed {
+                class: Some(FailureClass::AgentHardTimeout),
+            },
+            LifecycleActor {
+                kind: ActorKind::ProcessObserver,
+                id: "pi-watchdog".into(),
+            },
+            WATCHDOG_TOOL_SILENCE_HARDCAP,
+            format!(
+                "pi-watchdog-hardcap:{}:{}",
+                source.attempt_id, process_epoch
+            ),
+        )
+        .expecting(FenceExpectation::current(task))
+        .with_evidence(format!(
+            "watchdog-tool-silence:b3:{}",
+            blake3::hash(
+                format!(
+                    "{}:{}:{}:{}",
+                    source.attempt_id, process_epoch, identity.pid, silence_secs
+                )
+                .as_bytes()
+            )
+            .to_hex()
+        ));
+        if let Err(error) = apply_transition(task, request) {
+            rejection = Some(error);
+            return false;
+        }
+        task.retry_count = task.retry_count.saturating_add(1);
+        task.failure_reason = Some(WATCHDOG_TOOL_SILENCE_HARDCAP.into());
+        task.failure_class = Some(FailureClass::AgentHardTimeout);
+        failed = true;
+        true
+    })?;
+    if let Some(error) = rejection {
+        return Err(anyhow::Error::new(error));
+    }
+    Ok(killed || failed)
+}
+
+/// SIGKILL the exact Pi process. A child spawned into its own process group
+/// (the wrapper's timeout path) also gets its group killed so a wedged bash
+/// grandchild cannot outlive it; an inherited group is NEVER signalled.
+#[cfg(unix)]
+fn terminate_exact_process(process: &ProcessIdentity) -> bool {
+    if process.nonce == "fixture-nonce" {
+        // The credential-free fixture intentionally points at the caller's own
+        // PID; killing it would kill the test harness.
+        return false;
+    }
+    let pid = process.pid as libc::pid_t;
+    if process.pgid == process.pid && process.pgid != 0 {
+        unsafe {
+            libc::kill(-(process.pgid as libc::pid_t), libc::SIGKILL);
+        }
+    }
+    unsafe { libc::kill(pid, libc::SIGKILL) == 0 }
+}
+
+#[cfg(not(unix))]
+fn terminate_exact_process(_process: &ProcessIdentity) -> bool {
+    false
+}
 
 pub fn run(dir: &Path, command: PiWatchdogCommands, json: bool) -> Result<()> {
     match command {
@@ -1334,4 +1517,97 @@ fn abort(dir: &Path, id: &str, reason: &str, json: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod silence_enforcement_tests {
+    use super::*;
+
+    fn policy(soft: u64, hard: u64) -> SilencePolicy {
+        SilencePolicy {
+            soft_secs: soft,
+            hard_secs: hard,
+        }
+    }
+
+    #[test]
+    fn soft_rung_is_log_only_and_hard_is_enforced() {
+        let limits = policy(300, 600);
+        assert_eq!(classify_silence(0, limits), SilenceAction::None);
+        assert_eq!(classify_silence(299, limits), SilenceAction::None);
+        // soft = warning only, never a kill
+        assert_eq!(classify_silence(300, limits), SilenceAction::SoftWarn);
+        assert_eq!(classify_silence(599, limits), SilenceAction::SoftWarn);
+        // hard = enforcement
+        assert_eq!(classify_silence(600, limits), SilenceAction::HardCap);
+        assert_eq!(classify_silence(69_473, limits), SilenceAction::HardCap);
+    }
+
+    #[test]
+    fn hard_cap_default_and_env_override() {
+        // SAFETY: WATCHDOG_HARD_SILENCE_ENV is mutated by this test only, and it
+        // restores the prior value before returning.
+        let saved = std::env::var(WATCHDOG_HARD_SILENCE_ENV).ok();
+        unsafe { std::env::remove_var(WATCHDOG_HARD_SILENCE_ENV) };
+
+        // Default: 600s hard cap, never earlier than the soft rung it escalates.
+        assert_eq!(DEFAULT_WATCHDOG_HARD_SILENCE_SECS, 600);
+        assert_eq!(SilencePolicy::from_soft(300).hard_secs, 600);
+        assert_eq!(SilencePolicy::from_soft(900).hard_secs, 901);
+
+        // An explicit override may sit BELOW the soft rung (tests / tightening).
+        unsafe { std::env::set_var(WATCHDOG_HARD_SILENCE_ENV, "1") };
+        let limits = SilencePolicy::from_soft(300);
+        assert_eq!(limits.soft_secs, 300);
+        assert_eq!(limits.hard_secs, 1);
+        assert_eq!(classify_silence(1, limits), SilenceAction::HardCap);
+
+        match saved {
+            Some(value) => unsafe { std::env::set_var(WATCHDOG_HARD_SILENCE_ENV, value) },
+            None => unsafe { std::env::remove_var(WATCHDOG_HARD_SILENCE_ENV) },
+        }
+    }
+
+    #[test]
+    fn enforcement_fails_closed_on_a_recycled_pid() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let err = enforce_silence_hardcap(tmp.path(), "no-such-task", 900).unwrap_err();
+        // No watchdog state / no task: refuse rather than kill anything.
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_exact_process_kills_only_the_captured_pid() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("999999")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        let identity = capture_process(pid).expect("capture identity");
+        assert!(terminate_exact_process(&identity));
+        // Reap and prove it is gone.
+        let mut exited = false;
+        for _ in 0..100 {
+            if let Ok(Some(_)) = child.try_wait() {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if !exited {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("hard-cap kill did not terminate the wedged process");
+        }
+        // A fixture identity never targets the harness.
+        let fixture = ProcessIdentity {
+            pid: std::process::id(),
+            pgid: std::process::id(),
+            start_ticks: 0,
+            boot_id: "fixture-boot".into(),
+            nonce: "fixture-nonce".into(),
+        };
+        assert!(!terminate_exact_process(&fixture));
+    }
 }

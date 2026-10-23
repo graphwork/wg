@@ -24,6 +24,7 @@ import { installModelBridge } from "./model-bridge.js";
 import { installVizPanel } from "./viz-panel.js";
 import { installFleetView } from "./fleet-view.js";
 import { installCompletionWatcher } from "./completion-watcher.js";
+import { installBashToolTimeout, readBashTimeoutConfig } from "./bash-timeout.js";
 import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
 
 /**
@@ -188,6 +189,11 @@ export default function worksgoodPi(pi: ExtensionAPI): void {
   installVizPanel(pi, backend, env); // /wg-viz on-demand panel (TUI mode only, read-only; mounts NO ambient widget)
   installFleetView(pi, backend, env); // /wg-fleet bottom panel (config-gated, TUI mode only, read-only)
   installCompletionWatcher(pi, backend, env); // /wg-wake + polling watcher: tell the session when tasks finish
+  // Hotfix (tool-hang): pi's bash tool has NO default timeout, so a wedged
+  // stdin read waits forever. Inject a bounded default unless the model asked
+  // for one. Configurable via $WG_PI_BASH_TIMEOUT_SECS or the extension
+  // config file's `bashTimeoutSecs`.
+  installBashToolTimeout(pi, readBashTimeoutConfig(process.env));
 
   // Tear down any session-scoped resources (the future daemon-IPC socket /
   // graph watcher live here once wg-backend upgrades from exec to IPC).
@@ -211,6 +217,16 @@ export type {
 export type { WgEnv, ExecHost } from "./wg-backend.js";
 export { registerWgTools } from "./tools.js";
 export { registerWgCommands, parseModelSpec, WG_INIT_BOOTSTRAP_PROMPT } from "./commands.js";
+export {
+  applyBashTimeout,
+  installBashToolTimeout,
+  parseBashTimeoutConfig,
+  parseBashTimeoutSecs,
+  readBashTimeoutConfig,
+  BASH_TIMEOUT_CONFIG_KEY,
+  BASH_TIMEOUT_ENV,
+  DEFAULT_BASH_TIMEOUT_SECS,
+} from "./bash-timeout.js";
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";
 export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_PANEL_POLL_MS } from "./viz-panel.js";
 export {

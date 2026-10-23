@@ -51,6 +51,7 @@ src/fleet-view.ts     /wg-fleet ambient below-editor fleet widget (config-gated,
 src/fleet-panel.ts    /wg-fleet scrollable ctx.ui.custom() fleet panel (config-gated, TUI mode only)
 src/fleet-panel-model.ts  pure scroll math + bounded transcript tail + tree/counts read-model
 src/fleet-config.ts   extension-config gate (fleetView flag, pi-subagents-style config file)
+src/bash-timeout.ts   tool_call mutator: bounded default timeout for the unbounded `bash` tool
 src/fleet-readmodel.ts  pure fleet line/glyph/colour read-model
 src/fleet-snapshot.ts   read-only agents + viz_snapshot socket client (+ CLI fallback, bounded poller)
 src/model-bridge.ts   registerProvider + model_select write-back
@@ -58,6 +59,32 @@ src/completion-watcher.ts  completion-event wakeups: transition detection + dedu
 src/wg-backend.ts     pi.exec("wg", …) client (daemon-IPC later)
 host/wg-pi-host.mjs   Topology B: embed pi as a library with the plugin loaded
 ```
+
+## Bounded bash tool timeout (tool-hang hotfix)
+
+Pi's built-in `bash` tool has **no default timeout** (`resolveTimeoutMs(undefined)
+=> undefined`), so a model-generated command that reads stdin — a half-open
+heredoc, an interactive prompt — waits forever at 0% CPU. On 2026-10-23 that
+wedged a WG worker for 21 hours.
+
+The plugin registers a `pi.on("tool_call")` handler that **mutates `event.input`
+in place** (the documented pi contract) and injects a bounded default `timeout`
+(seconds) into a `bash` call **only when the model omitted one**. An explicit
+model-provided timeout is always honored; on expiry pi returns an ordinary error
+result, so the model sees the failure and retries with corrected quoting.
+
+Resolution order (first win):
+
+1. `$WG_PI_BASH_TIMEOUT_SECS`
+2. `{"bashTimeoutSecs": 600}` in `~/.pi/agent/extensions/pi-worksgood/config.json`
+3. 600s (10 minutes)
+
+`0` disables the injection. The companion Rust watchdog acts on the same class of
+hang: soft proof-silence (300s) is a log-only warning, hard-cap proof-silence
+(600s, `WG_PI_WATCHDOG_HARD_SILENCE_SECS`) **kills the exact wedged Pi process**
+and fails the attempt with `watchdog-tool-silence-hardcap` so `wg retry` resumes
+in place, and `pi-stream-observe --follow-pid` exits non-zero on prolonged
+no-progress (`WG_PI_OBSERVE_NO_PROGRESS_SECS`, default 900s) instead of spinning.
 
 ## VizView panel data path
 

@@ -2897,6 +2897,15 @@ description = "Installed-binary real tmux/PTY + native-format Fake-Pi flow: the 
 timeout_seconds = 120
 
 [[scenario]]
+name = "pi_tool_hang_watchdog_hardcap"
+script = "scenarios/pi_tool_hang_watchdog_hardcap.sh"
+owners = [
+    "fix-tool-hang",
+]
+description = "Regression for the 2026-10-23 21-hour worker hang: (A) the wg pi plugin's `tool_call` mutator injects a bounded default `bash` timeout when the model omitted one (600s default, explicit values + config/env overrides honored) so a heredoc-reading-stdin command cannot wait forever; (B) a hard-cap-silent Pi attempt (soft=300s log-only, hard=600s enforced) is actually KILLED and failed with reason `watchdog-tool-silence-hardcap`, then `wg retry` resumes in place; (C) `pi-stream-observe --follow-pid` exits non-zero on prolonged no-progress instead of spinning at ~6% CPU forever."
+timeout_seconds = 300
+
+[[scenario]]
 name = "pi_native_activity_session_proof"
 script = "scenarios/pi_native_activity_session_proof.sh"
 owners = ["fix-pi-native-progress-session-proof"]

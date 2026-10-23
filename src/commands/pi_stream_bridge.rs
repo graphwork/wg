@@ -15,7 +15,7 @@
 
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -23,14 +23,131 @@ use anyhow::{Context, Result};
 use worksgood::stream_event::StreamEvent;
 use worksgood::stream_event::{self, StreamWriter};
 
+use crate::commands::pi_watchdog::{
+    SilenceAction, SilencePolicy, classify_silence, enforce_silence_hardcap,
+};
+
 /// Maximum characters of final assistant text to persist as the session
 /// summary — a guard against a pathologically long final message.
 const MAX_SUMMARY_CHARS: usize = 4000;
 
+/// How often the native follower evaluates the watchdog clocks (soft warning /
+/// hard-cap enforcement). The byte-follow loop itself runs far faster.
+const ENFORCEMENT_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Bounded no-progress exit (FIX C of the tool-hang hotfix): the forever-spinning
+/// 6%-CPU observer must not outlive its purpose. If NO bytes have been appended
+/// to the native capture for this long, the follower exits non-zero with a clear
+/// line instead of spinning forever.
+///
+/// Default 900s deliberately sits ABOVE the 600s watchdog hard cap, so the
+/// hard-cap enforcement (kill + fail) is always the first to act; this is the
+/// backstop for the case where enforcement could not run (no watchdog state,
+/// unreadable graph). `0` disables it.
+pub const DEFAULT_OBSERVE_NO_PROGRESS_SECS: u64 = 900;
+
+/// Env override for {@link DEFAULT_OBSERVE_NO_PROGRESS_SECS}.
+pub const OBSERVE_NO_PROGRESS_ENV: &str = "WG_PI_OBSERVE_NO_PROGRESS_SECS";
+
+/// Follower timing knobs (env-resolved in production, explicit in tests).
+#[derive(Debug, Clone, Copy)]
+pub struct ObserveOptions {
+    pub poll_interval: Duration,
+    pub no_progress_limit_secs: u64,
+}
+
+impl ObserveOptions {
+    pub fn from_env() -> Self {
+        Self {
+            poll_interval: Duration::from_millis(50),
+            no_progress_limit_secs: no_progress_limit_from_env(),
+        }
+    }
+}
+
+/// Resolve the no-progress limit: env override, else the 900s default. A
+/// non-numeric/absurd value degrades to the default rather than disabling the
+/// bound by accident.
+pub fn no_progress_limit_from_env() -> u64 {
+    std::env::var(OBSERVE_NO_PROGRESS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value <= 86_400)
+        .unwrap_or(DEFAULT_OBSERVE_NO_PROGRESS_SECS)
+}
+
+/// The watchdog verdict produced inside the follower loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SilenceEnforcement {
+    /// No watchdog state to judge, or proof is fresh.
+    None,
+    /// Soft threshold crossed: LOG ONLY (never touch the process).
+    SoftWarn { silence_secs: u64, soft_secs: u64 },
+    /// Hard cap breached and enforced (process killed, attempt failed).
+    HardCap { silence_secs: u64 },
+}
+
+/// Evaluate the watchdog silence clocks for this agent and, on a hard-cap
+/// breach, EXECUTE the enforcement (kill the exact wedged process + fail the
+/// attempt with `watchdog-tool-silence-hardcap`). The soft rung only warns.
+fn enforce_watchdog_silence(agent_dir: &Path) -> Result<SilenceEnforcement> {
+    let Some(watchdog) = open_watchdog_for_agent(agent_dir) else {
+        return Ok(SilenceEnforcement::None);
+    };
+    let state = watchdog.state();
+    let now = chrono::Utc::now().timestamp();
+    let silence_secs = now.saturating_sub(state.last_meaningful_at).max(0) as u64;
+    let policy = SilencePolicy::from_soft(watchdog.policy().meaningful_silence_secs);
+    let task_id = state.source.task_id.clone();
+    if state.terminal {
+        return Ok(SilenceEnforcement::None);
+    }
+    match classify_silence(silence_secs, policy) {
+        SilenceAction::None => Ok(SilenceEnforcement::None),
+        SilenceAction::SoftWarn => Ok(SilenceEnforcement::SoftWarn {
+            silence_secs,
+            soft_secs: policy.soft_secs,
+        }),
+        SilenceAction::HardCap => {
+            let graph_dir = agent_dir
+                .parent()
+                .and_then(Path::parent)
+                .context("Pi agent dir has no graph root")?;
+            let acted = match enforce_silence_hardcap(graph_dir, &task_id, silence_secs) {
+                Ok(acted) => acted,
+                Err(error) => {
+                    // Never let an enforcement error take the follower down; the
+                    // no-progress backstop still bounds this process.
+                    eprintln!(
+                        "[pi-stream-observe] WARNING: watchdog hard-cap enforcement failed for {}: {}",
+                        task_id, error
+                    );
+                    false
+                }
+            };
+            if acted {
+                return Ok(SilenceEnforcement::HardCap { silence_secs });
+            }
+            // Not actionable (already terminal / stale fence): keep following
+            // so the bounded no-progress exit remains the last resort.
+            Ok(SilenceEnforcement::None)
+        }
+    }
+}
+
 /// Follow the append-only capture while the exact Pi child is alive. Only
 /// bounded projections enter watchdog state; raw bytes remain exclusively in
 /// raw_stream.jsonl/output.log.
+///
+/// The loop is BOUNDED twice over: it exits when the followed pid is gone and
+/// quiet, it evaluates the watchdog hard cap every second (soft = log only,
+/// hard = kill + fail), and it exits non-zero when no bytes have arrived for
+/// {@link ObserveOptions::no_progress_limit_secs}.
 pub fn observe_live(agent_dir: &Path, follow_pid: u32) -> Result<()> {
+    observe_live_with(agent_dir, follow_pid, ObserveOptions::from_env())
+}
+
+pub fn observe_live_with(agent_dir: &Path, follow_pid: u32, options: ObserveOptions) -> Result<()> {
     let raw_path = agent_dir.join(stream_event::RAW_STREAM_FILE_NAME);
     let stream_id = raw_path.to_string_lossy().into_owned();
     let mut cursor = open_watchdog_for_agent(agent_dir)
@@ -38,6 +155,9 @@ pub fn observe_live(agent_dir: &Path, follow_pid: u32) -> Result<()> {
         .unwrap_or(0);
     let mut dead_stable_rounds = 0u8;
     let mut reconcile_needed = true;
+    let mut last_progress = Instant::now();
+    let mut last_enforcement = Instant::now();
+    let mut soft_warned = false;
     loop {
         let before = cursor;
         if raw_path.is_file() {
@@ -108,6 +228,53 @@ pub fn observe_live(agent_dir: &Path, follow_pid: u32) -> Result<()> {
                 }
             }
         }
+        if cursor > before {
+            last_progress = Instant::now();
+            soft_warned = false;
+        }
+        if last_enforcement.elapsed() >= ENFORCEMENT_INTERVAL {
+            last_enforcement = Instant::now();
+            match enforce_watchdog_silence(agent_dir) {
+                Ok(SilenceEnforcement::HardCap { silence_secs }) => {
+                    eprintln!(
+                        "[pi-stream-observe] watchdog hard-cap breach: {}s without proven progress; killed the wedged Pi process and failed the attempt with 'watchdog-tool-silence-hardcap'",
+                        silence_secs
+                    );
+                    return Ok(());
+                }
+                Ok(SilenceEnforcement::SoftWarn {
+                    silence_secs,
+                    soft_secs,
+                }) => {
+                    if !soft_warned {
+                        soft_warned = true;
+                        eprintln!(
+                            "[pi-stream-observe] soft watchdog warning: {}s without proven progress (soft={}s); observation only, process left intact",
+                            silence_secs, soft_secs
+                        );
+                    }
+                }
+                Ok(SilenceEnforcement::None) => {}
+                Err(error) => {
+                    if !soft_warned {
+                        soft_warned = true;
+                        eprintln!(
+                            "[pi-stream-observe] WARNING: watchdog evaluation failed: {error}"
+                        );
+                    }
+                }
+            }
+        }
+        if options.no_progress_limit_secs > 0
+            && last_progress.elapsed() >= Duration::from_secs(options.no_progress_limit_secs)
+        {
+            anyhow::bail!(
+                "pi-stream-observe: no stream progress for {}s (limit {}s, env {}); exiting rather than spinning forever",
+                last_progress.elapsed().as_secs(),
+                options.no_progress_limit_secs,
+                OBSERVE_NO_PROGRESS_ENV
+            );
+        }
         let alive = process_alive(follow_pid);
         if !alive && cursor == before {
             dead_stable_rounds = dead_stable_rounds.saturating_add(1);
@@ -117,7 +284,7 @@ pub fn observe_live(agent_dir: &Path, follow_pid: u32) -> Result<()> {
         } else {
             dead_stable_rounds = 0;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(options.poll_interval);
     }
     if let Some(mut watchdog) = open_watchdog_for_agent(agent_dir)
         && (watchdog.state().process.nonce == "fixture-nonce"
@@ -340,6 +507,91 @@ mod tests {
         // Session summary written from the final assistant text.
         let summary = std::fs::read_to_string(agent_dir.join("session-summary.md")).unwrap();
         assert!(summary.contains("all done, task complete"));
+    }
+
+    #[test]
+    fn test_no_progress_limit_env_resolution() {
+        // SAFETY: these env mutations are confined to this test.
+        unsafe { std::env::remove_var(OBSERVE_NO_PROGRESS_ENV) };
+        assert_eq!(
+            no_progress_limit_from_env(),
+            DEFAULT_OBSERVE_NO_PROGRESS_SECS
+        );
+        // The bounded exit must never fire BEFORE the watchdog hard cap.
+        assert!(DEFAULT_OBSERVE_NO_PROGRESS_SECS > 600);
+        unsafe { std::env::set_var(OBSERVE_NO_PROGRESS_ENV, "1") };
+        assert_eq!(no_progress_limit_from_env(), 1);
+        unsafe { std::env::set_var(OBSERVE_NO_PROGRESS_ENV, "0") };
+        assert_eq!(no_progress_limit_from_env(), 0); // explicit disable
+        unsafe { std::env::set_var(OBSERVE_NO_PROGRESS_ENV, "junk") };
+        assert_eq!(
+            no_progress_limit_from_env(),
+            DEFAULT_OBSERVE_NO_PROGRESS_SECS
+        );
+        unsafe { std::env::remove_var(OBSERVE_NO_PROGRESS_ENV) };
+    }
+
+    /// FIX C: a silent followed process cannot make the observer outlive its
+    /// purpose. The follower exits non-zero with a clear line instead of
+    /// spinning at ~6% CPU forever.
+    #[cfg(unix)]
+    #[test]
+    fn test_observer_exits_on_prolonged_no_progress() {
+        let tmp = TempDir::new().unwrap();
+        let agent_dir = tmp.path().join("agents").join("agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        // No metadata.json => no watchdog state; the no-progress bound alone
+        // must still terminate the follower.
+        let mut child = std::process::Command::new("sleep")
+            .arg("999999")
+            .spawn()
+            .expect("spawn silent child");
+        let started = std::time::Instant::now();
+        let result = observe_live_with(
+            &agent_dir,
+            child.id(),
+            ObserveOptions {
+                poll_interval: Duration::from_millis(10),
+                no_progress_limit_secs: 1,
+            },
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let error = result.expect_err("observer must exit non-zero on no progress");
+        let message = error.to_string();
+        assert!(
+            message.contains("no stream progress"),
+            "unexpected observer exit: {message}"
+        );
+        assert!(message.contains(OBSERVE_NO_PROGRESS_ENV));
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "bounded exit took too long: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A live, quiet child with the bound disabled still exits promptly once the
+    /// pid dies (the pre-existing behaviour must not regress).
+    #[test]
+    fn test_observer_exits_when_pid_is_gone() {
+        let tmp = TempDir::new().unwrap();
+        let agent_dir = tmp.path().join("agents").join("agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        // A PID that cannot be alive.
+        let dead_pid = 4_000_000u32;
+        let result = observe_live_with(
+            &agent_dir,
+            dead_pid,
+            ObserveOptions {
+                poll_interval: Duration::from_millis(5),
+                no_progress_limit_secs: 0,
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "dead-pid follower should exit cleanly: {result:?}"
+        );
     }
 
     #[test]
