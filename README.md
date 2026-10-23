@@ -68,9 +68,12 @@ pi           # open the Pi session; the WorksGood plugin loads silently
 From-source installs (unsupported platforms, Alpine/musl, Windows, contributors)
 are one paragraph in [docs/guides/install.md](docs/guides/install.md).
 
-The plugin is **quiet by default**: it mounts nothing at startup and exposes its
-tools and `/wg` commands without commentary. The first time in a project, run
-the CLI steps above — or just ask, inside the session:
+The plugin is **dormant by default**: it mounts nothing at startup, and the wg
+tools are registered but **inactive**, so a fresh session in any directory shows
+the model **zero** wg tools. The `/wg` commands are always available — they are
+UI affordances, not model-visible tools — so `/wg on` can never lock you out.
+The first time in a project, run the CLI steps above — or just ask, inside the
+session:
 
 ```text
 /wg init     # conversational bootstrap: the agent reports state, then runs
@@ -81,17 +84,30 @@ the CLI steps above — or just ask, inside the session:
 steps; both reach the same project graph and route. Plain language works too —
 ask the agent to "set up worksgood here" and it routes to the same flow.
 
-### Control the plugin
+### Activate WG in a session
 
 ```text
-/wg on       # ensure the plugin (runs `wg pi-plugin install`)
-/wg off      # remove this plugin's settings entry (runs `wg pi-plugin disable`, next launch)
-/wg status   # one compact line: plugin · graph · fleet state
+/wg on       # activate the wg tools in THIS session (+ remember it for this project)
+/wg off      # deactivate them, unmount surfaces, forget the project marker
+/wg status   # one line: session · project · tools · daemon
 ```
 
-`/wg on|off` shell the `wg` binary — `settings.json` is never hand-edited. The
-non-interactive equivalents are `wg pi-plugin install` and
-`wg pi-plugin disable`.
+`/wg on|off` are **session-scoped**: they call `pi.setActiveTools(...)`, which
+changes what the model sees mid-session (pi appends the new tool set before the
+next model request — a one-time provider prompt-cache reprice, noted in the
+confirmation line). They **never** touch `~/.pi/agent/settings.json`, never
+remove the extension entry, and never touch `.wg/` or the daemon. Running agents
+are separate processes and keep running.
+
+Persistence is deliberately small and honest: `/wg on` writes an
+`active\n` marker at `<project>/.wg/session-active` (inside an **existing**
+`.wg/` — it never creates one), so new sessions of a project you booted start
+active. `/wg off` clears the marker, so the project goes dormant for future
+sessions too. A project never booted stays dormant.
+
+To uninstall the plugin itself, use the CLI — **`wg pi-plugin disable`** is the
+only uninstall path (the non-interactive install counterpart is
+`wg pi-plugin install`).
 
 ### The `/wg` surface
 
@@ -101,7 +117,7 @@ non-interactive equivalents are `wg pi-plugin install` and
 /wg show <id>         inspect a task          /wg run <id> load + work a task
 /wg add <title>       create a draft task     /wg done <id> complete a task
 /wg fail <id> <why>   fail after an attempt
-/wg on | off | status control the plugin itself
+/wg on | off | status activate / deactivate this session (and this project)
 ```
 
 Graph views are **on demand only** — there is no always-on widget:
@@ -137,8 +153,11 @@ WG tools natively. The tools it has:
 | `wg_msg_send` / `wg_msg_read` | coordinate with other agents |
 | `wg_run` | load a task into the agent's context and work it |
 
+These tools reach the model **only after `/wg on`** (or in a project already
+booted); a fresh session sees none of them.
+
 And the in-session commands: `/wg init|ready|graph|show|run|add|done|fail`,
-`/wg on|off|status` (plugin control), `/wg-viz` and `/wg-fleet` (on-demand
+`/wg on|off|status` (session activation), `/wg-viz` and `/wg-fleet` (on-demand
 read-only graph views), `/wg-model <provider:id>` (warm in-session model swap),
 and `/wg-wake [on|off]` (completion-event wakeups).
 The graph is the shared medium — artifacts you write are read by other agents,

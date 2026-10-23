@@ -421,9 +421,12 @@ export function installCompletionWatcher(pi, backend, env, options = {}) {
                 console.log(text);
         },
     });
-    pi.on("session_start", (_event, ctx) => {
+    const stop = () => {
         watcher?.stop();
         watcher = null;
+    };
+    const start = (ctx) => {
+        stop();
         // Interactive/rpc sessions only: a WG worker's `json`/`print` session has
         // no conversation to wake and must not be interrupted by graph chatter.
         if (ctx.mode === "json" || ctx.mode === "print")
@@ -432,11 +435,19 @@ export function installCompletionWatcher(pi, backend, env, options = {}) {
             return;
         watcher = new CompletionWatcher((signal) => readTasks(backend, signal), resolveCursorStore(ctx), (wake, message, detail) => deliver(wake, message, detail, ctx), config, (id) => readTaskDetail(backend, id));
         void watcher.start();
+    };
+    pi.on("session_start", (_event, ctx) => {
+        // A surface follows the SESSION state: a dormant session starts nothing.
+        if (options.isActive && !options.isActive()) {
+            stop();
+            return;
+        }
+        start(ctx);
     });
     pi.on("session_shutdown", () => {
-        watcher?.stop();
-        watcher = null;
+        stop();
     });
+    return { start, stop, isRunning: () => watcher !== null };
 }
 function defaultDeliver(pi, wake, message, _detail, ctx) {
     try {

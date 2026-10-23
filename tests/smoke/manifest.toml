@@ -3520,10 +3520,20 @@ description = "tui-fleet-usage-columns: the TUI dashboard agent table gains a co
 timeout_seconds = 300
 
 [[scenario]]
+name = "pi_plugin_session_activation"
+script = "scenarios/pi_plugin_session_activation.sh"
+owners = [
+    "wg-session-activation",
+]
+description = "SESSION-SCOPED WG ACTIVATION (wg-session-activation): the plugin registers all 12 wg_* tools with `exposure: \"direct\", defaultActive: false` and keeps them OUT of the active set, so a fresh pi session in ANY directory shows the model ZERO wg tools — while `/wg` + `/wg-model` stay registered in every state (commands are UI affordances, so `/wg on|off` can never lock you out). `/wg on` calls `pi.setActiveTools([...wg names])` and confirms `WG active in this session`; `/wg off` removes exactly them, unmounts the surfaces, and confirms `WG dormant in this session` — neither touches `~/.pi/agent/settings.json`, the extension entry, `.wg/` presence, or the daemon (`wg pi-plugin disable` stays the CLI-only uninstall; running agents are separate processes). Persistence is a plain-text `active\\n` marker at `<project>/.wg/session-active` INSIDE an existing `.wg/` (never created by the plugin), so a booted project starts active in NEW sessions while a never-booted project stays dormant; `/wg off` clears the marker (session teardown + persistence in one act). `/wg status` reports `session: … · project: … · tools: N wg tools visible · daemon: …`. Credential-free: the REAL `worksgoodPi` factory is loaded with a fake pi that models pi's registerTool exposure/`defaultActive` handling, name-replacing `setActiveTools`, and `getActiveTools`/`getAllTools`, plus a fake ctx driving the real registered `/wg` handler."
+timeout_seconds = 180
+
+[[scenario]]
 name = "pi_plugin_toggle_commands"
 script = "scenarios/pi_plugin_toggle_commands.sh"
 owners = [
     "wg-plugin-toggle",
+    "wg-session-activation",
 ]
-description = "PLUGIN ON/OFF AS COMMANDS: the pi plugin exposes `/wg on` (ensure path = `wg pi-plugin install`), `/wg off` (removes THIS plugin's settings entry via the new `wg pi-plugin disable`), and `/wg status` (one compact truthful line), so a human never hand-edits ~/.pi/agent/settings.json. Human-flow proof: the built plugin's REAL registered wg command handler is driven exactly as pi drives it (fake pi + fake ctx) into an isolated HOME, and it shells the REAL candidate `wg` binary — `on` wires exactly one managed extensions entry, `off` removes exactly that entry while preserving every unrelated extension, `off`/`on` are idempotent (honest no-ops), and `status` is a single `WG · plugin: … · graph: … · fleet: …` line. Completions include on/off/status. Credential-free; SKIPs LOUDLY if the candidate binary lacks `pi-plugin disable`."
+description = "PLUGIN ON/OFF AS COMMANDS, now SESSION-SCOPED (wg-session-activation): the pi plugin exposes `/wg on|off|status` as session activation, not plugin installation. This scenario used to pin the DESTRUCTIVE form (`on` ran `wg pi-plugin install`, `off` removed the settings entry — a catch-22 that cost the NEXT session its `/wg` command). The pinned contract now: `/wg on` activates the wg_* tool family in THIS session via pi.setActiveTools and writes the per-project marker `.wg/session-active`, `/wg off` deactivates them and clears the marker, `/wg status` is one line `session: … · project: … · tools: N wg tools visible · daemon: …`. Human-flow proof: the built plugin's REAL registered wg command handler is driven exactly as pi drives it (fake pi that models setActiveTools name-replacement + fake ctx), and the plugin is asserted NEVER to touch settings.json, NEVER to remove the extension entry, and NEVER to shell `wg pi-plugin install|disable` — that stays the CLI-only uninstall. Completions include on/off/status; both verbs are idempotent and the /wg commands survive every toggle. Credential-free."
 timeout_seconds = 180

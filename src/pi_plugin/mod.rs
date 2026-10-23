@@ -700,8 +700,10 @@ fn upsert_console_settings(settings_path: &Path, dist_entry: &Path) -> Result<Se
 }
 
 /// The outcome of removing the WorksGood plugin from the pi `settings.json`
-/// `extensions` array. Reported by `wg pi-plugin disable` so `/wg off` can
-/// distinguish "disabled" from "was never wired" from "no settings at all".
+/// `extensions` array. Reported by `wg pi-plugin disable`, the CLI-only
+/// uninstall, so it can distinguish "disabled" from "was never wired" from "no
+/// settings at all". (In-session `/wg off` is session-scoped activation and
+/// never reaches this path.)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DisableOutcome {
     /// The settings file existed and was readable (a missing file is a no-op).
@@ -713,7 +715,9 @@ pub struct DisableOutcome {
 }
 
 /// Remove this WorksGood plugin's entry from the global pi `extensions` array so
-/// the next `pi` launch does not load it (the human-facing `/wg off` backend).
+/// the next `pi` launch does not load it. This is the CLI-only uninstall — no
+/// in-session command performs it, because removing the entry would cost the
+/// NEXT session its `/wg` command.
 ///
 /// Surgical and idempotent: only [`is_wg_managed_extension`] entries are
 /// removed, every unrelated extension and every key (including `packages`) is

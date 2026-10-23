@@ -62,13 +62,21 @@ const EXPECTED_TOOLS = [
 ];
 
 describe("pi-worksgood registration entry", () => {
-  it("registers the full wg tool family", () => {
+  it("registers the full wg tool family, every tool INACTIVE at load", () => {
     const pi = makeFakePi();
     worksgoodPi(pi);
     for (const name of EXPECTED_TOOLS) {
       expect(pi.toolNames, `tool ${name} should be registered`).toContain(name);
     }
     expect(pi.registerTool).toHaveBeenCalledTimes(EXPECTED_TOOLS.length);
+    // SESSION-SCOPED ACTIVATION: a fresh session must show the model ZERO wg
+    // tools. `hidden` would be unactivatable, so each tool registers as
+    // `direct` + `defaultActive: false` and `/wg on` opts it in.
+    for (const call of pi.registerTool.mock.calls) {
+      const tool = call[0] as { exposure?: string; defaultActive?: boolean };
+      expect(tool.exposure).toBe("direct");
+      expect(tool.defaultActive).toBe(false);
+    }
   });
 
   it("registers the /wg and /wg-model commands", () => {

@@ -14,15 +14,23 @@
  * `ctx.modelRegistry` and calls `pi.setModel`; the resulting `model_select`
  * event is what model-bridge.ts writes back to WG (plugin-research.md §1.3).
  *
- * `/wg on | off | status` manage the plugin itself from inside the pi CLI
- * (PLUGIN ON/OFF AS COMMANDS): `on` runs the ensure path
- * (`wg pi-plugin install`), `off` removes this plugin's `extensions` entry
- * (`wg pi-plugin disable`), and `status` prints one compact truth line. Both
- * lifecycle verbs shell the `wg` binary — settings.json is never hand-edited by
- * the user, and the TS side never performs JSON surgery on it.
+ * `/wg on | off | status` are the SESSION-SCOPED ACTIVATION verbs (dormant by
+ * default — see `activation.ts`). They are UI affordances, not model-visible
+ * tools, so they exist in every state (`/wg on|off` can never lock you out):
+ *
+ *   /wg on      activate the wg_* tool family in THIS session via
+ *               `pi.setActiveTools` and mark the project active (a marker file
+ *               inside an existing `.wg/`), so new sessions of this project
+ *               start active.
+ *   /wg off     deactivate the wg_* tools, unmount the surfaces, and clear the
+ *               project marker. It NEVER touches settings.json, NEVER removes
+ *               the extension, and NEVER touches `.wg/` or the daemon —
+ *               `wg pi-plugin disable` stays the CLI-only uninstall.
+ *   /wg status  one compact truth line: session · project · tools · daemon.
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { formatActivationStatus, } from "./activation.js";
 export const WG_SUBCOMMANDS = [
     "init",
     "ready",
@@ -118,7 +126,34 @@ export function formatStatusLine(input) {
         : "daemon down";
     return `WG · plugin: ${input.plugin} · graph: ${graphText} · fleet: ${fleetText}`;
 }
-export function registerWgCommands(pi, backend) {
+/** `/wg on|off|status` without an activation controller (older embedders). */
+function notWired(sub) {
+    return `/wg ${sub}: session activation is not wired in this build — reinstall the plugin with \`wg pi-plugin install\`.`;
+}
+/**
+ * The `/wg on` confirmation: one line that says exactly what changed, what was
+ * NOT touched, and the one-time context-repricing cost of a mid-session
+ * tool-set change (pi appends the new tool set before the next model request,
+ * which can invalidate the provider's cached prompt prefix).
+ */
+export function formatOnLine(outcome) {
+    const scope = outcome.project
+        ? `project marked active (${outcome.markerPath})`
+        : "session-only (no .wg/ here — nothing persisted)";
+    return (`WG active in this session · ${outcome.visibleTools} wg tools visible · ${scope} · context re-priced`);
+}
+/**
+ * The `/wg off` confirmation: dormant in this session, project marker cleared,
+ * and the things it deliberately did NOT touch — settings.json, the extension
+ * entry, `.wg/`, and the daemon. Running agents are separate processes.
+ */
+export function formatOffLine(outcome) {
+    return (`WG dormant in this session · ${outcome.visibleTools} wg tools visible · ` +
+        `project marker ${outcome.markerPath ? "cleared" : "absent"} · ` +
+        "settings.json, the extension entry, .wg/ and the daemon untouched — " +
+        "running agents are separate processes and keep running · context re-priced");
+}
+export function registerWgCommands(pi, backend, activation) {
     // Stash the model registry from the live context so /wg-model autocomplete
     // can list available models (getArgumentCompletions has no ctx of its own).
     let modelSpecs = [];
@@ -131,7 +166,7 @@ export function registerWgCommands(pi, backend) {
         }
     });
     pi.registerCommand("wg", {
-        description: "WG task graph: /wg init | ready | graph | show <id> | run <id> | add <title> | done <id> | fail <id> <reason> | on | off | status",
+        description: "WG task graph: /wg init | ready | graph | show <id> | run <id> | add <title> | done <id> | fail <id> <reason> | on | off | status (on/off activate this session's wg tools; they never touch settings.json)",
         getArgumentCompletions: (prefix) => {
             const [sub, rest] = splitFirst(prefix);
             // Completing the subcommand itself (no trailing space yet).
@@ -213,40 +248,24 @@ export function registerWgCommands(pi, backend) {
                     return;
                 }
                 case "on": {
-                    // Enable: run the ensure path (`wg pi-plugin install`). The Rust side
-                    // reports an honest no-op when the cache + settings are already
-                    // current; we never claim a change it did not make.
-                    const r = await backend.piPluginInstall({ signal: ctx.signal });
-                    if (r.code !== 0) {
-                        return emit(ctx, r.stderr.trim() || r.stdout.trim() || "wg pi-plugin install failed", "error");
-                    }
-                    const text = r.stdout.trim();
-                    emit(ctx, text || "wg pi-plugin install reported no output.", "info");
-                    const alreadyCurrent = /already up to date|nothing changed/i.test(text);
-                    emit(ctx, alreadyCurrent
-                        ? "pi-worksgood is already current — no restart needed."
-                        : "restart pi to load the updated plugin.", "info");
+                    if (!activation)
+                        return emit(ctx, notWired("on"), "warning");
+                    const outcome = await activation.activate(ctx);
+                    emit(ctx, formatOnLine(outcome), "info");
                     return;
                 }
                 case "off": {
-                    // Disable: remove THIS plugin's settings entry via `wg pi-plugin
-                    // disable` (atomic, surgical). The Rust side reports whether anything
-                    // was removed and tells the user it lands on the next launch.
-                    const r = await backend.piPluginDisable({ signal: ctx.signal });
-                    if (r.code !== 0) {
-                        return emit(ctx, r.stderr.trim() || r.stdout.trim() || "wg pi-plugin disable failed", "error");
-                    }
-                    emit(ctx, r.stdout.trim() || "pi-worksgood disabled.", "info");
+                    if (!activation)
+                        return emit(ctx, notWired("off"), "warning");
+                    const outcome = await activation.deactivate(ctx);
+                    emit(ctx, formatOffLine(outcome), "info");
                     return;
                 }
                 case "status": {
-                    const [pluginRes, graph, status] = await Promise.all([
-                        backend.piPluginStatus({ signal: ctx.signal }),
-                        backend.graphPresent({ signal: ctx.signal }),
-                        backend.statusJson({ signal: ctx.signal }),
-                    ]);
-                    const plugin = pluginRes.code === 0 ? parsePluginState(pluginRes.stdout) : "unknown";
-                    emit(ctx, formatStatusLine({ plugin, graph, status }), "info");
+                    if (!activation)
+                        return emit(ctx, notWired("status"), "warning");
+                    const state = await activation.status(ctx);
+                    emit(ctx, formatActivationStatus(state), "info");
                     return;
                 }
                 default:

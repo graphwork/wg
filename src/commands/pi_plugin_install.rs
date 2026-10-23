@@ -131,9 +131,14 @@ fn run_install(dev: bool) -> Result<()> {
     Ok(())
 }
 
-/// `wg pi-plugin disable` — the human-facing `/wg off` backend. Removes this
-/// plugin's `extensions` entry from the global pi settings so the next `pi`
-/// launch loads nothing from WorksGood. Idempotent and surgical.
+/// `wg pi-plugin disable` — the CLI-only uninstall. Removes this plugin's
+/// `extensions` entry from the global pi settings so the next `pi` launch loads
+/// nothing from WorksGood. Idempotent and surgical.
+///
+/// This is deliberately NOT wired to any in-session verb: `/wg on|off` are
+/// session-scoped activation (`pi.setActiveTools`) and must never remove the
+/// extension entry, or the next session would lose `/wg` itself (the catch-22
+/// that made the old `/wg off` unshippable).
 fn run_disable() -> Result<()> {
     let settings_path = pi_plugin::status().settings_path;
     let outcome = pi_plugin::disable_console_settings()?;

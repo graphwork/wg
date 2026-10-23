@@ -18,12 +18,47 @@ Topology B the SDK Node host). See
 
 | Surface | What |
 |---|---|
-| **Tools** (LLM/human callable) | `wg_capabilities` (effective trusted/scoped/read-only policy), `wg_ready`, `wg_show`, `wg_add` (visible draft), `wg_publish` (explicit release), `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run` |
-| **Commands** | `/wg init` (conversational bootstrap: the agent inspects state, then runs `wg init` / `wg setup` / `wg pi-plugin install` and reports a short summary), `/wg ready\|graph\|show\|run\|add\|done\|fail`, `/wg-viz` (live work-graph panel), `/wg-fleet` (scrollable fleet view; `/wg-fleet expand\|collapse` toggles the ambient strip), `/wg-model <provider:id>` (warm in-session swap), `/wg-wake [on\|off]` (completion-event wakeups) |
+| **Tools** (LLM/human callable) | `wg_capabilities` (effective trusted/scoped/read-only policy), `wg_ready`, `wg_show`, `wg_add` (visible draft), `wg_publish` (explicit release), `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run` — all registered with `exposure: "direct", defaultActive: false`, so they are INACTIVE until `/wg on` activates this session (or the project is marked active). pi's `hidden` exposure can never be activated, so it is not an option here. |
+| **Commands** | `/wg init` (conversational bootstrap: the agent inspects state, then runs `wg init` / `wg setup` / `wg pi-plugin install` and reports a short summary), `/wg ready\|graph\|show\|run\|add\|done\|fail`, **`/wg on\|off\|status`** (session-scoped activation — see below), `/wg-viz` (live work-graph panel), `/wg-fleet` (scrollable fleet view; `/wg-fleet expand\|collapse` toggles the ambient strip), `/wg-model <provider:id>` (warm in-session swap), `/wg-wake [on\|off]` (completion-event wakeups) |
 | **VizView panel** | `/wg-viz` opens a read-only live work-graph panel via `ctx.ui.custom()` (TUI mode only): dependency tree, keyboard selection, expand/collapse, the TUI HUD's selected-task → detail-lines model, log tail; mouse clicks where the host pi-tui dispatches mouse to custom components. A passive widget (`ctx.ui.setWidget("wg-viz")`) shows a one-line in-progress/ready/blocked/done/failed summary. Data comes from the daemon IPC socket (read-only `viz_snapshot` request, bounded poll with change-guard); when the daemon is unavailable the panel falls back to the read-only `wg viz --all --no-tui` ASCII output and the widget silently clears. **Slice boundary (first slice):** deferred — filters, agency lanes UI, chat surfaces, back-edge arc rendering, scrollback search, and HUD-only detail sections (admission waiting, agency identity, route receipts). Read-only by construction: the panel never mutates graph state. |
 | **FleetView bottom panel** | The pi-subagents-style fleet companion to `/wg-viz`, in two parts. **`/wg-fleet` opens the scrollable view** — a `ctx.ui.custom()` component (TUI mode only) with a counts header, the dependency tree, and real scrolling: **wheel / PgUp / PgDn / Home / End** scroll the tree (the selection is dragged along so it stays visible), **↑/↓** move the selection and scroll it into view, **Enter / → / l** drill into the selected task's detail (reusing the TUI HUD detail-lines model plus the live agent activity and a **bounded** stream tail — `TRANSCRIPT_TAIL_BYTES` 256 KiB / 80 default lines / 500 max / 32 KiB body), and **q / Esc** close. It reads via the daemon's read-only **`GetFleet`** surface (`WgBackend.getFleet`, with its CLI fallback), never mutating graph state. **Config-gated and OFF by default** — opt in with `{"fleetView": true}` in `~/.pi/agent/extensions/pi-worksgood/config.json` (or `WG_PI_FLEET_VIEW=1`). Alongside it, the ambient **multi-line widget mounted below the editor** (`ctx.ui.setWidget("wg-fleet", lines, { placement: "belowEditor" })`) is unchanged: it shows live WG agents (id, task, model, elapsed) plus in-progress/ready/blocked/done/failed task counts with the WG TUI's status glyphs/colours, compact by default and expandable with `/wg-fleet expand\|collapse`. Both degrade silently in print/json/rpc and never mutate graph state. |
 | **Model bridge** | `registerProvider(WG endpoints/keys)` + managed-chat `model_select` → WG `CoordinatorState.model_override` write-back |
 | **Completion wakeups** | A bounded poll of the graph (`wg list --json`, enriched with `wg show <id> --json`) tells the live session when a task reaches a terminal/needs-attention transition. The wake is injected with `pi.sendMessage` (`triggerTurn` when the session is idle; queued as a follow-up when busy) and pinged with `ctx.ui.notify`. A persisted per-session cursor (`<sessionFile>.wg-wake-cursor.json`) makes each transition announce exactly once and lets several sessions attached to one daemon keep independent cursors. Safe defaults: failures always, completions top-level only, `/wg-wake off` mutes a session. Read-only; the daemon-push/event-stream path is the documented follow-up. See [design-pi-completion-wakeups.md](../docs/design-pi-completion-wakeups.md). |
+
+## Session-scoped activation (dormant by default)
+
+The wg tools are **registered but inactive** in every session, in every
+directory: a fresh pi session shows the model **zero** wg tools, so the agent
+does not permanently "perceive" WG whether invited or not. The `/wg` commands
+are UI affordances, not model-visible tools, so they stay available in **every**
+state — `/wg on|off` can never lock you out.
+
+```text
+/wg on      # pi.setActiveTools([...wg names]) + mark this project active
+/wg off     # setActiveTools without the wg names + clear the project marker
+/wg status  # session: active|dormant · project: marked active|dormant · tools: N wg tools visible · daemon: running|stopped
+```
+
+- **Mechanism.** `pi.setActiveTools()` (pi ≥ 1.3, "Activate tools dynamically") —
+the tool set is changed mid-session and pi appends the change before the next
+model request. A toggle can invalidate the provider's cached prompt prefix once,
+so the confirmation line says `context re-priced`.
+- **Registration choice.** Tools register with `exposure: "direct"` +
+`defaultActive: false`. pi's `hidden` exposure means *registered but
+unreachable — activating it has no effect*, so it cannot be switched on later
+and is not usable for an opt-in tool.
+- **Persistence.** `/wg on` writes `active\n` to `<project>/.wg/session-active`
+(inside an **existing** `.wg/`; the plugin never creates or removes `.wg/`), so
+new sessions of that project start active. `/wg off` removes the marker → the
+project is dormant for future sessions too: session teardown and persistence in
+one act. A never-booted project is dormant, and the plugin degrades to a
+session-only activation (with an honest warning) where no `.wg/` exists.
+- **Safety.** Neither verb touches `~/.pi/agent/settings.json`, removes the
+extension entry, or touches `.wg/`/the daemon. Running agents are separate
+processes and are unaffected. **`wg pi-plugin disable` remains the CLI-only
+uninstall.** Surfaces (the config-gated `/wg-fleet` strip, completion wakes)
+follow the session state: `/wg on` mounts them, `/wg off` unmounts them; the
+viz/fleet panels stay on demand.
 
 WG context (`WG_TASK_ID`, `WG_AGENT_ID`, `WG_CHAT_ID`, `WG_CHAT_REF`,
 `WG_STATE_DIR`, `WG_DAEMON_SOCKET`, `WG_PROJECT_DIR`) rides in via environment

@@ -175,21 +175,34 @@ export function installFleetView(pi, backend, env, options = {}) {
             }
         },
     });
-    pi.on("session_start", (_event, ctx) => {
-        if (ctx.mode !== "tui" || !config.enabled)
-            return; // opt-in, TUI only
+    const unmount = (ctx) => {
         if (widgetTimer)
             clearInterval(widgetTimer);
+        widgetTimer = null;
+        // Only touch the UI when something is actually mounted, so a session that
+        // never mounted the strip leaves no trace at all.
+        const hadPayload = Array.isArray(lastPayloadValue) && lastPayloadValue.length > 0;
+        if (ctx && hadPayload)
+            setWidgetLines(ctx, null);
+        lastPayloadValue = undefined;
+    };
+    const mount = async (ctx) => {
+        if (ctx.mode !== "tui" || !config.enabled)
+            return; // opt-in, TUI only
+        unmount();
         lastPayloadValue = undefined;
         activeTheme = themeOf(ctx);
         widgetTimer = setInterval(() => void refresh(ctx), config.pollMs);
-        void refresh(ctx);
+        await refresh(ctx);
+    };
+    pi.on("session_start", (_event, ctx) => {
+        // A surface follows the SESSION state: a dormant session mounts nothing.
+        if (options.isActive && !options.isActive())
+            return;
+        void mount(ctx);
     });
     pi.on("session_shutdown", () => {
-        if (widgetTimer) {
-            clearInterval(widgetTimer);
-            widgetTimer = null;
-        }
+        unmount();
     });
     return {
         config,
@@ -205,6 +218,8 @@ export function installFleetView(pi, backend, env, options = {}) {
         refresh,
         lastPayload: () => lastPayloadValue,
         renderPayload,
+        mount,
+        unmount,
     };
 }
 //# sourceMappingURL=fleet-view.js.map

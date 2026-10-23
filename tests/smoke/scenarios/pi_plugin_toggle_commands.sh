@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
 # Scenario: pi_plugin_toggle_commands
 #
-# Pins PLUGIN ON/OFF AS COMMANDS (wg-plugin-toggle): the pi plugin exposes
-# `/wg on`, `/wg off`, and `/wg status` so a human NEVER hand-edits
-# ~/.pi/agent/settings.json to enable/disable the plugin.
+# Pins PLUGIN ON/OFF AS COMMANDS — now SESSION-SCOPED ACTIVATION
+# (wg-session-activation): the pi plugin exposes `/wg on`, `/wg off`, and
+# `/wg status` so a human never hand-edits ~/.pi/agent/settings.json to get WG
+# in (or out of) a session.
+#
+# This scenario used to pin the DESTRUCTIVE form of these verbs (`on` ran
+# `wg pi-plugin install`, `off` removed the settings entry). That form was a
+# catch-22 — the next session lost `/wg` itself. The contract pinned here is the
+# replacement:
+#
+#   /wg on      activates the wg_* tool family in THIS session via
+#               `pi.setActiveTools` and marks the project active with a marker
+#               file INSIDE an existing .wg/.
+#   /wg off     deactivates the tools, unmounts the surfaces, and clears the
+#               marker — it NEVER touches settings.json, NEVER removes the
+#               extension, and NEVER touches .wg/ or the daemon.
+#   /wg status  one compact truth line: session · project · tools · daemon.
 #
 # Human-flow proof (credential-free): the built plugin's REAL registered `wg`
-# command handler is invoked exactly as pi would invoke it (fake pi + fake ctx),
-# driving the REAL `wg` binary (`pi-plugin install` / `pi-plugin disable`) into
-# an isolated HOME's settings.json. `on` wires exactly one managed entry, `off`
-# removes exactly that entry while preserving every unrelated extension, `status`
-# prints one compact truthful line, and both are idempotent.
-#
-# Candidate binary preferred (WG_SMOKE_CANDIDATE_BIN → $CARGO_TARGET_DIR/debug/wg
-# → PATH `wg`); an older binary without `pi-plugin disable` SKIPs LOUDLY.
+# command handler is invoked exactly as pi would invoke it (fake pi that models
+# pi's name-replacing setActiveTools + fake ctx). `wg pi-plugin disable` stays
+# the CLI-only uninstall and is asserted NOT to be called.
 
 set -u
 
@@ -21,28 +30,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 
 require_wg
-command -v node >/dev/null 2>&1 || loud_skip "MISSING NODE" "node is required for the pi-plugin toggle contract"
+command -v node >/dev/null 2>&1 || loud_skip "MISSING NODE" "node is required for the session-activation contract"
 
 REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null || echo "$HERE/../..")"
 plugin="$REPO_ROOT/worksgood-pi"
 
-if [[ -n "${WG_SMOKE_CANDIDATE_BIN:-}" && -x "$WG_SMOKE_CANDIDATE_BIN" ]]; then
-    WG_BIN="$WG_SMOKE_CANDIDATE_BIN"
-elif [[ -x "${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/wg" ]]; then
-    WG_BIN="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/wg"
-else
-    WG_BIN="$(command -v wg)"
-fi
-
-# The candidate must carry the new `disable` verb. An older installed binary
-# cannot exercise this contract: skip LOUDLY rather than assert the wrong thing.
-if ! "$WG_BIN" pi-plugin disable --help >/dev/null 2>&1; then
-    loud_skip "OLD WG BINARY" \
-        "$WG_BIN lacks 'pi-plugin disable'; run 'wg dev-sync' or pass WG_SMOKE_CANDIDATE_BIN"
-fi
-
 # Require the built plugin artifact (npm test/build produce pi-worksgood/).
-if [ ! -f "$plugin/pi-worksgood/commands.js" ] || [ ! -f "$plugin/pi-worksgood/wg-backend.js" ]; then
+if [ ! -f "$plugin/pi-worksgood/commands.js" ] || [ ! -f "$plugin/pi-worksgood/activation.js" ]; then
     command -v npm >/dev/null 2>&1 || loud_skip "MISSING NPM" "npm needed to build worksgood-pi/pi-worksgood"
     if [ ! -d "$plugin/node_modules" ]; then
         npm --prefix "$plugin" ci >/tmp/pi-worksgood-toggle-npm-ci.log 2>&1 || \
@@ -54,118 +48,157 @@ fi
 
 scratch="$(make_scratch)"
 fake_home="$scratch/home"
-cache="$scratch/cache"
-mkdir -p "$fake_home" "$cache"
+project_dir="$scratch/project"
+mkdir -p "$fake_home" "$project_dir/.wg"
 settings="$fake_home/.pi/agent/settings.json"
 
 log="$scratch/handler.log"
-if ! node --input-type=module - "$WG_BIN" "$plugin" "$fake_home" "$cache" \
+if ! node --input-type=module - "$plugin" "$fake_home" "$project_dir" \
         >"$log" 2>&1 <<'NODE'
-const [wgBin, plugin, fakeHome, cache] = process.argv.slice(2);
+const [plugin, fakeHome, projectDir] = process.argv.slice(2);
 
 const { registerWgCommands } = await import(`${plugin}/pi-worksgood/commands.js`);
+const { registerWgTools, WG_TOOL_NAMES } = await import(`${plugin}/pi-worksgood/tools.js`);
+const { installSessionActivation, activationMarkerPath } = await import(`${plugin}/pi-worksgood/activation.js`);
 const { WgBackend } = await import(`${plugin}/pi-worksgood/wg-backend.js`);
 
-// The human-flow executor: the plugin always shells `wg`; we resolve that to the
-// candidate binary and run it with the isolated HOME/cache, exactly as a console
-// session would (minus pi's own keystroke dispatch, which is pi's code). The
-// child env is MINIMAL (no inherited WG_* worker/admin vars) so the console
-// lifecycle verbs are not refused by the worker gate.
-const childEnv = {
-  PATH: process.env.PATH ?? "",
-  HOME: fakeHome,
-  XDG_CACHE_HOME: cache,
-  TMPDIR: process.env.TMPDIR ?? "/tmp",
-  LANG: process.env.LANG ?? "C",
-};
+const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
+const fs = await import("node:fs/promises");
+const exists = async (p) => { try { await fs.access(p); return true; } catch { return false; } };
+// The settings.json a console pi would load — this contract must never write it.
+const settings = `${fakeHome}/.pi/agent/settings.json`;
+
+// The plugin always shells `wg`; record the argv so "never the plugin
+// lifecycle / never the daemon" is proven, not assumed.
+const wgCalls = [];
 const host = {
-  exec: (command, args, opts) =>
-    new Promise((resolve) => {
-      import("node:child_process").then(({ execFile }) => {
-        execFile(
-          command === "wg" ? wgBin : command,
-          args,
-          { env: childEnv, maxBuffer: 1 << 22, signal: opts?.signal },
-          (err, stdout, stderr) => {
-            resolve({ stdout: stdout ?? "", stderr: stderr ?? "", code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, killed: false });
-          },
-        );
-      });
-    }),
+  exec: async (command, args) => {
+    wgCalls.push([command, ...args].join(" "));
+    return { stdout: "", stderr: "unused in this contract", code: 1, killed: false };
+  },
 };
 const backend = new WgBackend(host, {});
+
+// A fake pi that models pi's ACTUAL active-set contract: setActiveTools REPLACES
+// the set by name, unknown names are ignored, and `defaultActive: false` tools
+// are registered but not activated.
+const tools = [];
+let active = ["read", "bash", "edit", "write"];
 const commands = new Map();
+const handlers = new Map();
 const pi = {
+  registerTool: (tool) => { tools.push(tool.name); },
   registerCommand: (name, opts) => commands.set(name, opts),
-  on: () => {},
+  on: (event, handler) => {
+    const list = handlers.get(event) ?? [];
+    list.push(handler);
+    handlers.set(event, list);
+  },
   sendUserMessage: () => {},
   setModel: async () => true,
+  getActiveTools: () => [...active],
+  getAllTools: () => tools.map((n) => ({ name: n, active: active.includes(n) })),
+  setActiveTools: (names) => {
+    active = names.filter((n) => tools.includes(n) || ["read", "bash", "edit", "write"].includes(n));
+  },
 };
-registerWgCommands(pi, backend);
-const wg = commands.get("wg");
-const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
 
-// 1. Completion surface includes the lifecycle verbs.
-const subs = new Set((wg.getArgumentCompletions?.("") ?? []).map((c) => c.value));
-for (const want of ["on", "off", "status"]) assert(subs.has(want), `completions missing ${want}`);
+registerWgTools(pi, backend);
+const activation = installSessionActivation(pi, backend, {}, {});
+registerWgCommands(pi, backend, activation);
 
-const fs = await import("node:fs/promises");
-const settingsPath = `${fakeHome}/.pi/agent/settings.json`;
 const notes = [];
-const ctx = { hasUI: true, ui: { notify: (t, type) => notes.push({ t, type }) }, signal: undefined };
+const ctx = { hasUI: true, ui: { notify: (t, type) => notes.push({ t, type }) }, signal: undefined, cwd: projectDir, mode: "tui" };
 const last = () => notes[notes.length - 1].t;
 const all = () => notes.map((n) => n.t).join("\n");
+const wgVisible = () => active.filter((n) => n.startsWith("wg_"));
+const wg = commands.get("wg");
 
-// 2. `/wg on` wires exactly one managed entry.
+// 0. The command surface still advertises the verbs, and the tools are dormant.
+const subs = new Set((wg.getArgumentCompletions?.("") ?? []).map((c) => c.value));
+for (const want of ["on", "off", "status"]) assert(subs.has(want), `completions missing ${want}`);
+assert(wgVisible().length === 0, `wg tools must be inactive at load, saw ${wgVisible()}`);
+assert(tools.length === WG_TOOL_NAMES.length, `expected ${WG_TOOL_NAMES.length} registered wg tools, got ${tools.length}`);
+
+// 1. `/wg on` activates exactly the wg family in this session — and touches no
+//    settings.json (the old `on` ran `wg pi-plugin install`).
 await wg.handler("on", ctx);
-let raw = await fs.readFile(settingsPath, "utf8");
-let val = JSON.parse(raw);
-assert(Array.isArray(val.extensions) && val.extensions.length === 1, `on should wire exactly one entry, got ${JSON.stringify(val.extensions)}`);
-assert(val.extensions[0].includes("worksgood-pi"), `wired entry is not the managed path: ${val.extensions[0]}`);
-assert(/restart pi to load the updated plugin/.test(all()), `on did not instruct a restart: ${all()}`);
+assert(wgVisible().length === WG_TOOL_NAMES.length, `on did not activate the wg family: ${wgVisible()}`);
+assert(active.includes("read"), "on must keep the built-in tools active");
+assert(/WG active in this session/.test(last()), `on output is not a confirmation: ${last()}`);
+assert(/context re-priced/.test(last()), `on should note the one-time context repricing: ${last()}`);
+assert(!(await exists(settings)), `on must NOT create/rewrite settings.json: ${settings}`);
+assert(!wgCalls.some((c) => /pi-plugin (install|disable)/.test(c)), `on must not run the plugin lifecycle: ${wgCalls.join(", ")}`);
 
-// 3. Add an unrelated user extension; `/wg off` must remove ONLY ours.
-val.extensions.unshift("/home/u/my-ext/index.ts");
-await fs.writeFile(settingsPath, JSON.stringify(val, null, 2));
+// 2. The per-project marker was written INSIDE the existing .wg/.
+const marker = activationMarkerPath(projectDir);
+assert(await exists(marker), `on must write the project marker at ${marker}`);
+assert((await fs.readFile(marker, "utf8")) === "active\n", "marker contents drifted from the documented 'active\\n'");
+assert(await exists(`${projectDir}/.wg`), "on must never remove .wg/");
+
+// 3. A NEW session of the marked project starts ACTIVE (persistence).
+{
+  let active2 = ["read", "bash", "edit", "write"];
+  const tools2 = [];
+  const h2 = new Map();
+  const pi2 = {
+    registerTool: (t) => tools2.push(t.name),
+    registerCommand: () => {},
+    on: (e, h) => h2.set(e, [...(h2.get(e) ?? []), h]),
+    getActiveTools: () => [...active2],
+    setActiveTools: (names) => { active2 = names.filter((n) => tools2.includes(n) || ["read", "bash", "edit", "write"].includes(n)); },
+    getAllTools: () => tools2.map((n) => ({ name: n, active: active2.includes(n) })),
+  };
+  registerWgTools(pi2, new WgBackend(host, {}));
+  installSessionActivation(pi2, new WgBackend(host, {}), {}, {});
+  const startCtx = { mode: "tui", hasUI: true, cwd: projectDir, ui: { notify: () => {}, setWidget: () => {} }, signal: undefined };
+  for (const handler of h2.get("session_start") ?? []) await handler({}, startCtx);
+  await new Promise((r) => setTimeout(r, 10));
+  const visible2 = active2.filter((n) => n.startsWith("wg_"));
+  assert(visible2.length === WG_TOOL_NAMES.length, `a marked project must start active in a new session, saw ${visible2.length}`);
+}
+
+// 4. `/wg off` deactivates, clears the marker, and touches nothing else.
+const callsBeforeOff = wgCalls.length;
 await wg.handler("off", ctx);
-val = JSON.parse(await fs.readFile(settingsPath, "utf8"));
-assert(val.extensions.length === 1 && val.extensions[0] === "/home/u/my-ext/index.ts",
-  `off did not preserve exactly the unrelated entry: ${JSON.stringify(val.extensions)}`);
-assert(/Disabled pi-worksgood/.test(last()), `off output is not a confirmation: ${last()}`);
+assert(wgVisible().length === 0, `off did not deactivate the wg family: ${wgVisible()}`);
+assert(active.includes("read"), "off must keep the built-in tools active");
+assert(!(await exists(marker)), "off must clear the project marker");
+assert(await exists(`${projectDir}/.wg`), "off must never remove .wg/");
+assert(!(await exists(settings)), "off must never touch settings.json");
+assert(!wgCalls.some((c) => /pi-plugin (disable|install)/.test(c)), `off must not run the plugin lifecycle: ${wgCalls.join(", ")}`);
+assert(wgCalls.length === callsBeforeOff, `off must not shell wg at all, saw: ${wgCalls.slice(callsBeforeOff).join(", ")}`);
+assert(/WG dormant in this session/.test(last()), `off output is not a confirmation: ${last()}`);
+assert(/settings\.json/.test(last()) && /untouched/.test(last()), `off must state what it left alone: ${last()}`);
+assert(/running agents are separate processes/.test(last()), `off must state that running agents are unaffected: ${last()}`);
 
-// 4. `/wg off` is idempotent.
+// 5. `/wg off` is idempotent and never strands `/wg` (the old catch-22).
 await wg.handler("off", ctx);
-assert(/nothing to remove|already disabled/.test(last()), `second off is not an honest no-op: ${last()}`);
+assert(/WG dormant in this session/.test(last()), `second off should stay honestly dormant: ${last()}`);
+assert(commands.has("wg") && commands.has("wg-model"), "the /wg commands must survive every toggle");
+assert(!(await exists(settings)), "repeated off must still never touch settings.json");
 
-// 5. `/wg status` is one compact truthful line.
+// 6. `/wg on` works again after an off (self-referential safety), and
+//    `/wg status` reports the real state in the required shape.
+await wg.handler("on", ctx);
+assert(wgVisible().length === WG_TOOL_NAMES.length, "on after off must reactivate the wg family");
 await wg.handler("status", ctx);
 const statusLine = last();
 assert(!statusLine.includes("\n"), `status is not one line: ${statusLine}`);
-assert(statusLine.startsWith("WG · plugin: "), `status shape wrong: ${statusLine}`);
-assert(/plugin: (current|stale|missing|unknown)/.test(statusLine), `status plugin token missing: ${statusLine}`);
-assert(/graph: (present|absent)/.test(statusLine), `status graph token missing: ${statusLine}`);
-assert(/fleet: /.test(statusLine), `status fleet token missing: ${statusLine}`);
-
-// 6. `/wg on` after an `off` re-wires (a real change), then a SECOND `on` is an
-//    honest no-op and never duplicates the managed entry.
-await wg.handler("on", ctx);
-assert(/restart pi to load the updated plugin/.test(last()), `re-on after off should re-wire + ask for restart: ${last()}`);
-val = JSON.parse(await fs.readFile(settingsPath, "utf8"));
-assert(val.extensions.length === 2, `re-on must not duplicate the managed entry: ${JSON.stringify(val.extensions)}`);
-await wg.handler("on", ctx);
-assert(/already up to date|nothing changed/.test(all()), `second consecutive on is not an honest no-op: ${last()}`);
-assert(/already current/.test(last()), `second consecutive on should say it is already current: ${last()}`);
-val = JSON.parse(await fs.readFile(settingsPath, "utf8"));
-assert(val.extensions.length === 2, `idempotent on must not duplicate the managed entry: ${JSON.stringify(val.extensions)}`);
+assert(/^session: (active|dormant) · project: (marked active|dormant) · tools: \d+ wg tools visible · daemon: (running|stopped|unknown)$/.test(statusLine),
+  `status shape wrong: ${statusLine}`);
+assert(/^session: active/.test(statusLine), `status must report the session as active: ${statusLine}`);
+assert(/project: marked active/.test(statusLine), `status must report the project marker: ${statusLine}`);
+assert(/tools: 12 wg tools visible/.test(statusLine), `status must report the visible tool count: ${statusLine}`);
+assert(/daemon: (stopped|unknown)/.test(statusLine), `the fake wg has no daemon: ${statusLine}`);
 
 console.log("pi_plugin_toggle_commands: handler flow OK");
 NODE
 then
-    loud_fail "pi /wg on|off|status human-flow contract failed: $(tail -60 "$log")"
+    loud_fail "pi /wg on|off|status session-activation human-flow contract failed: $(tail -80 "$log")"
 fi
 
-[ -f "$settings" ] || loud_fail "settings.json was not created at $settings"
 grep -q "handler flow OK" "$log" || loud_fail "handler flow did not complete: $(tail -40 "$log")"
 
-echo "pi_plugin_toggle_commands: PASS (wg=$WG_BIN)"
+echo "pi_plugin_toggle_commands: PASS"
 exit 0
