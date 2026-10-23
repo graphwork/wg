@@ -22,6 +22,7 @@ import { installModelBridge } from "./model-bridge.js";
 import { installVizPanel } from "./viz-panel.js";
 import { installFleetView } from "./fleet-view.js";
 import { installCompletionWatcher } from "./completion-watcher.js";
+import { installSessionActivation } from "./activation.js";
 import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
 /**
  * Compat tripwire (mirrors WG_AGENCY_COMPAT_VERSION): a version-skewed plugin
@@ -169,12 +170,30 @@ export default function worksgoodPi(pi) {
     const env = readWgEnv();
     const backend = new WgBackend(pi, env);
     void assertConsolePluginCurrent(backend); // pi→wg: best-effort self-heal + drift catcher
-    registerWgTools(pi, backend); // wg_capabilities / wg_ready / wg_show / wg_add / wg_publish / wg_done / wg_fail / wg_msg_* / wg_run
-    registerWgCommands(pi, backend); // /wg, /wg-model (+ autocomplete)
-    installModelBridge(pi, backend, process.env); // registerProvider + model_select → CoordinatorState
+    // SESSION-SCOPED ACTIVATION (dormant by default): every wg_* tool is
+    // registered-but-INACTIVE (tools.ts `defaultActive: false`), the /wg commands
+    // stay registered in every state, and the first session_start enforces
+    // dormancy unless this project was booted with /wg on. See activation.ts.
+    const activation = installSessionActivation(pi, backend, env);
+    registerWgTools(pi, backend); // wg_capabilities / wg_ready / wg_show / wg_add / wg_publish / wg_done / wg_fail / wg_msg_* / wg_run — INACTIVE
+    registerWgCommands(pi, backend, activation); // /wg (incl. on|off|status), /wg-model (+ autocomplete)
+    installModelBridge(pi, backend, process.env); // registerProvider + model_select → CoordinatorState (provider plumbing, always on)
     installVizPanel(pi, backend, env); // /wg-viz on-demand panel (TUI mode only, read-only; mounts NO ambient widget)
-    installFleetView(pi, backend, env); // /wg-fleet bottom panel (config-gated, TUI mode only, read-only)
-    installCompletionWatcher(pi, backend, env); // /wg-wake + polling watcher: tell the session when tasks finish
+    const fleetView = installFleetView(pi, backend, env, { isActive: () => activation.isActive() }); // /wg-fleet bottom panel (config-gated, TUI mode only, read-only)
+    const wake = installCompletionWatcher(pi, backend, env, { isActive: () => activation.isActive() }); // /wg-wake + polling watcher: tell the session when tasks finish
+    // Surfaces follow the SESSION state: /wg on mounts them, /wg off unmounts them.
+    activation.setHooks({
+        mount: async (ctx) => {
+            if (ctx)
+                await fleetView.mount(ctx);
+            if (ctx)
+                wake.start(ctx);
+        },
+        unmount: async (ctx) => {
+            wake.stop();
+            fleetView.unmount(ctx);
+        },
+    });
     // Tear down any session-scoped resources (the future daemon-IPC socket /
     // graph watcher live here once wg-backend upgrades from exec to IPC).
     pi.on("session_shutdown", async () => {
@@ -183,8 +202,9 @@ export default function worksgoodPi(pi) {
 }
 // Re-export the building blocks so the SDK host and tests can use them directly.
 export { WgBackend, readWgEnv, canonicalChatId, normalizeGetFleet, buildCliFleet, parseVizJson, normalizeAgentUsage } from "./wg-backend.js";
-export { registerWgTools } from "./tools.js";
+export { registerWgTools, WG_TOOL_NAMES } from "./tools.js";
 export { registerWgCommands, parseModelSpec, WG_INIT_BOOTSTRAP_PROMPT } from "./commands.js";
+export { ACTIVATION_MARKER_CONTENT, ACTIVATION_MARKER_FILE, ACTIVATION_STATE_DIR, DEFAULT_ACTIVATION_IO, WG_TOOL_NAME_SET, activationMarkerPath, activeToolSet, canPersistProjectMarker, clearProjectMarker, dormantToolSet, formatActivationStatus, installSessionActivation, isProjectMarkedActive, markProjectActive, partitionToolNames, projectRootFromDir, resolveProjectRoot, visibleWgToolCount, } from "./activation.js";
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";
 export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_PANEL_POLL_MS } from "./viz-panel.js";
 export { installFleetView, FLEET_WIDGET_KEY, FLEET_POLL_MS, } from "./fleet-view.js";

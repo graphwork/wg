@@ -51,6 +51,12 @@ export interface InstallFleetOptions {
   config?: Partial<FleetViewConfig>;
   /** Bounded poll cadence override. */
   pollMs?: number;
+  /**
+   * Is WG active in this session? The panel is a SURFACE, so it follows the
+   * session state: dormant sessions mount nothing (default: always active, for
+   * standalone use of this installer in tests).
+   */
+  isActive?: () => boolean;
 }
 
 /** The install handle: lets tests/commands drive the panel without a live pi. */
@@ -67,6 +73,10 @@ export interface FleetViewController {
   lastPayload(): string[] | null | undefined;
   /** Pure render of a snapshot to (painted, width-bounded) widget lines. */
   renderPayload(snapshot: FleetSnapshot | null): string[];
+  /** Mount the ambient strip + poller (`/wg on`): config-gated, TUI only. */
+  mount(ctx: ExtensionContext): Promise<void>;
+  /** Unmount the strip + stop the poller (`/wg off`); idempotent. */
+  unmount(ctx?: ExtensionContext): void;
 }
 
 /**
@@ -212,20 +222,33 @@ export function installFleetView(
     },
   });
 
-  pi.on("session_start", (_event, ctx) => {
-    if (ctx.mode !== "tui" || !config.enabled) return; // opt-in, TUI only
+  const unmount = (ctx?: ExtensionContext): void => {
     if (widgetTimer) clearInterval(widgetTimer);
+    widgetTimer = null;
+    // Only touch the UI when something is actually mounted, so a session that
+    // never mounted the strip leaves no trace at all.
+    const hadPayload = Array.isArray(lastPayloadValue) && lastPayloadValue.length > 0;
+    if (ctx && hadPayload) setWidgetLines(ctx, null);
+    lastPayloadValue = undefined;
+  };
+
+  const mount = async (ctx: ExtensionContext): Promise<void> => {
+    if (ctx.mode !== "tui" || !config.enabled) return; // opt-in, TUI only
+    unmount();
     lastPayloadValue = undefined;
     activeTheme = themeOf(ctx);
     widgetTimer = setInterval(() => void refresh(ctx), config.pollMs);
-    void refresh(ctx);
+    await refresh(ctx);
+  };
+
+  pi.on("session_start", (_event, ctx) => {
+    // A surface follows the SESSION state: a dormant session mounts nothing.
+    if (options.isActive && !options.isActive()) return;
+    void mount(ctx);
   });
 
   pi.on("session_shutdown", () => {
-    if (widgetTimer) {
-      clearInterval(widgetTimer);
-      widgetTimer = null;
-    }
+    unmount();
   });
 
   return {
@@ -242,5 +265,7 @@ export function installFleetView(
     refresh,
     lastPayload: () => lastPayloadValue,
     renderPayload,
+    mount,
+    unmount,
   };
 }

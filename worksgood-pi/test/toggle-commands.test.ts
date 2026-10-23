@@ -1,18 +1,25 @@
 /**
- * toggle-commands.test.ts — `/wg on | off | status` (PLUGIN ON/OFF AS COMMANDS).
+ * toggle-commands.test.ts — `/wg on | off | status` (SESSION-SCOPED ACTIVATION).
  *
- * The plugin lifecycle is driven entirely through the `wg` binary: `/wg on`
- * runs the ensure path (`wg pi-plugin install`), `/wg off` removes this
- * plugin's settings entry (`wg pi-plugin disable`), and `/wg status` prints one
- * compact truth line. These tests pin the *command surface* (parsing,
- * completions, honest output, error surfacing) against a mocked backend; the
- * settings.json rewrite itself is pinned by the Rust unit tests in
- * `src/pi_plugin/mod.rs` (`wg pi-plugin disable`).
+ * These verbs used to be plugin-lifecycle verbs (`on` ran `wg pi-plugin install`,
+ * `off` removed the settings entry — a catch-22 that could strand the next
+ * session without `/wg`). They are now the SESSION activators: `on` puts the
+ * wg_* tool family into the active set via `pi.setActiveTools`, `off` takes it
+ * out, `status` prints one truth line. Neither touches settings.json, the
+ * extension entry, `.wg/` presence, or the daemon — `wg pi-plugin disable` stays
+ * the CLI-only uninstall.
+ *
+ * This file pins the COMMAND SURFACE (dispatch, completions, honest output,
+ * self-referential safety). The activation mechanics (active-set deltas,
+ * persistence, load-time dormancy) are pinned in `activation.test.ts`.
  *
  * Tests run against the built `pi-worksgood/` artifact — `npm test` builds first.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, expect, vi, afterEach } from "vitest";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
 import {
   registerWgCommands,
@@ -20,6 +27,10 @@ import {
   formatStatusLine,
   WG_SUBCOMMANDS,
 } from "../pi-worksgood/commands.js";
+// @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
+import { installSessionActivation, activationMarkerPath } from "../pi-worksgood/activation.js";
+// @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
+import { registerWgTools } from "../pi-worksgood/tools.js";
 
 interface Registered {
   description?: string;
@@ -27,20 +38,42 @@ interface Registered {
   handler: (args: string, ctx: unknown) => Promise<void>;
 }
 
-function makePi(): { pi: any; commands: Map<string, Registered> } {
+const cleanups: string[] = [];
+afterEach(() => {
+  for (const dir of cleanups.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+function makePi(): { pi: any; commands: Map<string, Registered>; tools: string[] } {
   const commands = new Map<string, Registered>();
+  const tools: string[] = [];
+  let active = ["read", "bash", "edit", "write"];
   const pi = {
+    registerTool: vi.fn((tool: { name: string }) => tools.push(tool.name)),
     registerCommand: vi.fn((name: string, opts: Registered) => commands.set(name, opts)),
     on: vi.fn(),
     sendUserMessage: vi.fn(),
     setModel: vi.fn(async () => true),
+    getActiveTools: vi.fn(() => [...active]),
+    getAllTools: vi.fn(() => tools.map((name) => ({ name, active: active.includes(name) }))),
+    // pi ignores unknown names, so only registered/built-in names can be active.
+    setActiveTools: vi.fn((names: string[]) => {
+      active = names.filter((n) => tools.includes(n) || ["read", "bash", "edit", "write"].includes(n));
+    }),
   };
-  return { pi, commands };
+  return { pi, commands, tools };
 }
 
-function makeCtx(): { ctx: any; notify: ReturnType<typeof vi.fn> } {
+function makeCtx(cwd?: string): { ctx: any; notify: ReturnType<typeof vi.fn> } {
   const notify = vi.fn();
-  return { ctx: { hasUI: true, ui: { notify }, signal: undefined }, notify };
+  return { ctx: { hasUI: true, ui: { notify }, signal: undefined, cwd }, notify };
+}
+
+/** A real temp project dir; `withWg: false` leaves `.wg/` absent. */
+function project(withWg = true): string {
+  const dir = mkdtempSync(join(tmpdir(), "wg-toggle-"));
+  cleanups.push(dir);
+  if (withWg) mkdirSync(join(dir, ".wg"));
+  return dir;
 }
 
 const OK = (stdout: string) => ({ stdout, stderr: "", code: 0, killed: false });
@@ -48,13 +81,9 @@ const ERR = (stderr: string) => ({ stdout: "", stderr, code: 1, killed: false })
 
 function baseBackend(overrides: Record<string, unknown> = {}): any {
   return {
-    piPluginInstall: vi.fn(async () => OK("Installed pi-worksgood (npm: @worksgood/pi, compat 0.3.0).")),
+    piPluginInstall: vi.fn(async () => OK("Installed pi-worksgood.")),
     piPluginStatus: vi.fn(async () => OK("  cache state:      current (matches this binary's embedded build)")),
-    piPluginDisable: vi.fn(async () =>
-      OK(
-        "Disabled pi-worksgood — removed 1 managed extension entry from /home/u/.pi/agent/settings.json.",
-      ),
-    ),
+    piPluginDisable: vi.fn(async () => OK("Disabled pi-worksgood — removed 1 managed extension entry.")),
     graphPresent: vi.fn(async () => true),
     statusJson: vi.fn(async () => ({
       service: { running: true },
@@ -71,6 +100,15 @@ function baseBackend(overrides: Record<string, unknown> = {}): any {
   };
 }
 
+function wire(overrides: Record<string, unknown> = {}, cwd = project()) {
+  const backend = baseBackend(overrides);
+  const { pi, commands, tools } = makePi();
+  registerWgTools(pi, backend);
+  const activation = installSessionActivation(pi, backend, {}, {});
+  registerWgCommands(pi, backend, activation);
+  return { backend, pi, commands, activation, cwd, tools };
+}
+
 describe("/wg subcommand surface", () => {
   it("includes on/off/status alongside the task verbs", () => {
     for (const sub of ["on", "off", "status"]) {
@@ -79,8 +117,7 @@ describe("/wg subcommand surface", () => {
   });
 
   it("completes on/off/status from the empty prefix and by prefix", () => {
-    const { pi, commands } = makePi();
-    registerWgCommands(pi, baseBackend());
+    const { commands } = wire();
     const wg = commands.get("wg");
     expect(wg?.getArgumentCompletions).toBeTypeOf("function");
 
@@ -97,140 +134,142 @@ describe("/wg subcommand surface", () => {
     expect(s).toEqual(["show", "status"]);
   });
 
-  it("advertises the lifecycle verbs in the command description", () => {
-    const { pi, commands } = makePi();
-    registerWgCommands(pi, baseBackend());
+  it("advertises the activation verbs and their non-destructive contract", () => {
+    const { commands } = wire();
     const desc = commands.get("wg")?.description ?? "";
     for (const word of ["on", "off", "status"]) {
       expect(desc).toContain(word);
     }
+    expect(desc).toContain("settings.json");
+  });
+
+  it("keeps /wg registered in every state (self-referential safety)", async () => {
+    const { commands, pi } = wire();
+    const wg = commands.get("wg")!;
+    const { ctx } = makeCtx();
+
+    // dormant → on → off → on: /wg never disappears, and no path disables the
+    // extension or edits settings.json.
+    await wg.handler("status", ctx);
+    await wg.handler("on", ctx);
+    await wg.handler("off", ctx);
+    await wg.handler("on", ctx);
+    expect(commands.has("wg")).toBe(true);
+    expect(commands.has("wg-model")).toBe(true);
+    expect(pi.registerCommand).toHaveBeenCalledWith("wg", expect.any(Object));
+    // The wg tools are still registered; only their ACTIVE membership changed.
+    expect(pi.getAllTools).toBeTypeOf("function");
   });
 });
 
 describe("/wg on", () => {
-  it("reports a real install and asks for a restart", async () => {
-    const backend = baseBackend();
-    const { pi, commands } = makePi();
-    registerWgCommands(pi, backend);
-    const { ctx, notify } = makeCtx();
+  it("activates the wg tool family and says so in one line", async () => {
+    const { commands, pi, backend, cwd } = wire();
+    const { ctx, notify } = makeCtx(cwd);
 
     await commands.get("wg")!.handler("on", ctx);
 
-    expect(backend.piPluginInstall).toHaveBeenCalledTimes(1);
-    const texts = notify.mock.calls.map((c) => c[0]);
-    expect(texts[0]).toContain("Installed pi-worksgood");
-    expect(texts[1]).toBe("restart pi to load the updated plugin.");
+    expect(pi.setActiveTools).toHaveBeenCalledTimes(1);
+    const names = pi.setActiveTools.mock.calls[0][0] as string[];
+    expect(names).toEqual(expect.arrayContaining(["read", "wg_ready", "wg_done"]));
+
+    const line = notify.mock.calls[0][0] as string;
+    expect(line).toContain("WG active in this session");
+    expect(line).toContain("wg tools visible");
+    expect(line).toContain("context re-priced");
+    // The old lifecycle behavior is gone: it never installs/rewrites anything.
+    expect(backend.piPluginInstall).not.toHaveBeenCalled();
+    expect(backend.piPluginDisable).not.toHaveBeenCalled();
   });
 
-  it("is an honest no-op when the plugin is already current", async () => {
-    const backend = baseBackend({
-      piPluginInstall: vi.fn(async () =>
-        OK("pi-worksgood is already up to date — nothing changed (compat 0.3.0)."),
-      ),
-    });
-    const { pi, commands } = makePi();
-    registerWgCommands(pi, backend);
-    const { ctx, notify } = makeCtx();
+  it("is a session-only activation when the project has no .wg/", async () => {
+    const dir = project(false);
+    const { commands } = wire({}, dir);
+    const { ctx, notify } = makeCtx(dir);
 
-    // Twice: idempotence is the honest no-op, not a second mutation.
-    await commands.get("wg")!.handler("on", ctx);
     await commands.get("wg")!.handler("on", ctx);
 
-    expect(backend.piPluginInstall).toHaveBeenCalledTimes(2);
-    const texts = notify.mock.calls.map((c) => c[0]);
-    expect(texts.filter((t) => t.includes("already up to date"))).toHaveLength(2);
-    expect(texts.filter((t) => t === "pi-worksgood is already current — no restart needed.")).toHaveLength(2);
+    const line = notify.mock.calls[0][0] as string;
+    expect(line).toContain("session-only");
+    // Never initializes WG presence just to record a marker.
+    expect(existsSync(join(dir, ".wg"))).toBe(false);
   });
 
-  it("surfaces a failure instead of silently succeeding", async () => {
-    const backend = baseBackend({
-      piPluginInstall: vi.fn(async () => ERR("worker_control.admin_operation_refused: outside trusted local graph coordination")),
-    });
-    const { pi, commands } = makePi();
-    registerWgCommands(pi, backend);
-    const { ctx, notify } = makeCtx();
+  it("writes the per-project marker inside an existing .wg/", async () => {
+    const dir = project();
+    const { commands } = wire({}, dir);
+    const { ctx, notify } = makeCtx(dir);
 
     await commands.get("wg")!.handler("on", ctx);
-    expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify.mock.calls[0][0]).toContain("admin_operation_refused");
-    expect(notify.mock.calls[0][1]).toBe("error");
+
+    const marker = activationMarkerPath(dir);
+    expect(existsSync(marker)).toBe(true);
+    expect(readFileSync(marker, "utf8")).toBe("active\n");
+    expect(notify.mock.calls[0][0]).toContain("project marked active");
+    // The marker lives INSIDE .wg/ — never mutating its presence.
+    expect(existsSync(join(dir, ".wg"))).toBe(true);
   });
 });
 
 describe("/wg off", () => {
-  it("removes via the wg verb and reports the outcome (next-launch semantics)", async () => {
-    const backend = baseBackend();
-    const { pi, commands } = makePi();
-    registerWgCommands(pi, backend);
-    const { ctx, notify } = makeCtx();
+  it("deactivates, clears the marker, and touches nothing else", async () => {
+    const dir = project();
+    const { commands, pi, backend } = wire({}, dir);
+    const { ctx, notify } = makeCtx(dir);
+
+    await commands.get("wg")!.handler("on", ctx);
+    const marker = activationMarkerPath(dir);
+    expect(existsSync(marker)).toBe(true);
+    pi.setActiveTools.mockClear();
 
     await commands.get("wg")!.handler("off", ctx);
-    expect(backend.piPluginDisable).toHaveBeenCalledTimes(1);
-    const text = notify.mock.calls[0][0];
-    expect(text).toContain("Disabled pi-worksgood");
-    expect(text).toContain("removed 1 managed extension entry");
-  });
 
-  it("surfaces a permissions failure instead of silently succeeding", async () => {
-    const backend = baseBackend({
-      piPluginDisable: vi.fn(async () =>
-        ERR('write pi settings "/home/u/.pi/agent/settings.json" (check permissions on "/home/u/.pi/agent")'),
-      ),
-    });
-    const { pi, commands } = makePi();
-    registerWgCommands(pi, backend);
-    const { ctx, notify } = makeCtx();
+    const names = pi.setActiveTools.mock.calls[0][0] as string[];
+    expect(names).toContain("read");
+    expect(names).not.toContain("wg_ready");
+    expect(names.some((n: string) => n.startsWith("wg_"))).toBe(false);
 
-    await commands.get("wg")!.handler("off", ctx);
-    expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify.mock.calls[0][0]).toContain("check permissions");
-    expect(notify.mock.calls[0][1]).toBe("error");
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(join(dir, ".wg"))).toBe(true);
+
+    const line = notify.mock.calls.at(-1)![0] as string;
+    expect(line).toContain("WG dormant in this session");
+    expect(line).toContain("project marker cleared");
+    expect(line).toContain("settings.json");
+    expect(line).toContain("untouched");
+
+    // NEVER the plugin lifecycle: no settings remove, no extension removal.
+    expect(backend.piPluginDisable).not.toHaveBeenCalled();
+    expect(backend.piPluginInstall).not.toHaveBeenCalled();
   });
 });
 
 describe("/wg status", () => {
-  it("prints one compact truthful line when everything is healthy", async () => {
-    const backend = baseBackend();
-    const { pi, commands } = makePi();
-    registerWgCommands(pi, backend);
-    const { ctx, notify } = makeCtx();
+  it("prints the four required fields on one line", async () => {
+    const dir = project();
+    const { commands } = wire({}, dir);
+    const { ctx, notify } = makeCtx(dir);
 
     await commands.get("wg")!.handler("status", ctx);
-
-    expect(notify).toHaveBeenCalledTimes(1);
     const line = notify.mock.calls[0][0] as string;
-    expect(line.startsWith("WG · plugin: current · graph: present")).toBe(true);
-    expect(line).toContain("3 in-progress, 1 ready, 178 done");
-    expect(line).toContain("fleet: service up (2 agents)");
-    expect(line.split("\n")).toHaveLength(1);
+    expect(line).toBe("session: dormant · project: dormant · tools: 0 wg tools visible · daemon: running");
+
+    await commands.get("wg")!.handler("on", ctx);
+    await commands.get("wg")!.handler("status", ctx);
+    const active = notify.mock.calls.at(-1)![0] as string;
+    expect(active).toBe("session: active · project: marked active · tools: 12 wg tools visible · daemon: running");
   });
 
-  it("reports missing plugin + absent graph + daemon down", async () => {
-    const backend = baseBackend({
-      piPluginStatus: vi.fn(async () => OK("  cache state:      MISSING — run `wg pi-plugin install`")),
-      graphPresent: vi.fn(async () => false),
-      statusJson: vi.fn(async () => ({ service: { running: false }, agents: { alive: 0 }, tasks: {} })),
-    });
-    const { pi, commands } = makePi();
-    registerWgCommands(pi, backend);
-    const { ctx, notify } = makeCtx();
+  it("reports daemon down and unknown honestly", async () => {
+    const down = wire({ statusJson: vi.fn(async () => ({ service: { running: false } })) });
+    const { ctx, notify } = makeCtx(project());
+    await down.commands.get("wg")!.handler("status", ctx);
+    expect(notify.mock.calls[0][0]).toContain("daemon: stopped");
 
-    await commands.get("wg")!.handler("status", ctx);
-
-    const line = notify.mock.calls[0][0] as string;
-    expect(line).toContain("plugin: missing");
-    expect(line).toContain("graph: absent");
-    expect(line).toContain("fleet: daemon down");
-  });
-
-  it("degrades to plugin: unknown when wg pi-plugin status fails", async () => {
-    const backend = baseBackend({ piPluginStatus: vi.fn(async () => ERR("boom")) });
-    const { pi, commands } = makePi();
-    registerWgCommands(pi, backend);
-    const { ctx, notify } = makeCtx();
-
-    await commands.get("wg")!.handler("status", ctx);
-    expect((notify.mock.calls[0][0] as string)).toContain("plugin: unknown");
+    const broken = wire({ statusJson: vi.fn(async () => { throw new Error("no daemon"); }) });
+    const second = makeCtx(project());
+    await broken.commands.get("wg")!.handler("status", second.ctx);
+    expect(second.notify.mock.calls[0][0]).toContain("daemon: unknown");
   });
 });
 

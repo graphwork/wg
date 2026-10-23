@@ -467,6 +467,22 @@ export interface InstallCompletionWatcherOptions {
     detail: TaskDetail | null,
     ctx: ExtensionContext,
   ) => void | Promise<void>;
+  /**
+   * Is WG active in this session? Completion wakes are an ambient SURFACE, so a
+   * dormant session starts no watcher (default: always active, for standalone
+   * use of this installer in tests).
+   */
+  isActive?: () => boolean;
+}
+
+/** The install handle: lets `/wg on|off` start/stop the session's watcher. */
+export interface CompletionWatcherHandle {
+  /** Start polling for this session (idempotent; no-op in json/print modes). */
+  start(ctx: ExtensionContext): void;
+  /** Stop polling (idempotent). */
+  stop(): void;
+  /** Is a watcher currently polling? */
+  isRunning(): boolean;
 }
 
 /**
@@ -479,7 +495,7 @@ export function installCompletionWatcher(
   backend: Pick<WgBackend, "runJson">,
   env: WgEnv,
   options: InstallCompletionWatcherOptions = {},
-): void {
+): CompletionWatcherHandle {
   void env; // the backend already carries the project dir; kept for parity
   const config: CompletionWakeConfig = {
     ...readCompletionWakeConfig(process.env),
@@ -511,9 +527,13 @@ export function installCompletionWatcher(
     },
   });
 
-  pi.on("session_start", (_event, ctx) => {
+  const stop = (): void => {
     watcher?.stop();
     watcher = null;
+  };
+
+  const start = (ctx: ExtensionContext): void => {
+    stop();
     // Interactive/rpc sessions only: a WG worker's `json`/`print` session has
     // no conversation to wake and must not be interrupted by graph chatter.
     if (ctx.mode === "json" || ctx.mode === "print") return;
@@ -526,12 +546,22 @@ export function installCompletionWatcher(
       (id) => readTaskDetail(backend, id),
     );
     void watcher.start();
+  };
+
+  pi.on("session_start", (_event, ctx) => {
+    // A surface follows the SESSION state: a dormant session starts nothing.
+    if (options.isActive && !options.isActive()) {
+      stop();
+      return;
+    }
+    start(ctx);
   });
 
   pi.on("session_shutdown", () => {
-    watcher?.stop();
-    watcher = null;
+    stop();
   });
+
+  return { start, stop, isRunning: () => watcher !== null };
 }
 
 function defaultDeliver(

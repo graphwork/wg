@@ -17,7 +17,8 @@ import {
   type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
-import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "@earendil-works/pi-ai";
+import type { AgentToolResult, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ExecResult } from "@earendil-works/pi-coding-agent";
 import type { WgBackend } from "./wg-backend.js";
 
@@ -66,14 +67,58 @@ async function fromExec(command: string, r: ExecResult): Promise<AgentToolResult
 }
 
 /**
- * Register the wg tool family on a pi extension API.
+ * The wg tool family (the task's contract), in registration order:
+ * `wg_capabilities`, `wg_ready`, `wg_show`, `wg_add`, `wg_publish`, `wg_done`,
+ * `wg_fail`, `wg_wait`, `wg_landing_turn`, `wg_msg_send`, `wg_msg_read`,
+ * `wg_run`.
  *
- * Tool names (the task's contract): `wg_capabilities`, `wg_ready`, `wg_show`,
- * `wg_add`, `wg_publish`, `wg_done`, `wg_fail`, `wg_wait`, `wg_landing_turn`,
- * `wg_msg_send`, `wg_msg_read`, `wg_run`.
+ * This list IS the `/wg on` active-set delta (see `activation.ts`), so it lives
+ * next to the registrations that must stay in lock-step with it.
+ */
+export const WG_TOOL_NAMES: readonly string[] = [
+  "wg_capabilities",
+  "wg_ready",
+  "wg_show",
+  "wg_add",
+  "wg_publish",
+  "wg_done",
+  "wg_fail",
+  "wg_wait",
+  "wg_landing_turn",
+  "wg_msg_send",
+  "wg_msg_read",
+  "wg_run",
+];
+
+/**
+ * Register ONE wg tool as **registered but inactive**.
+ *
+ * SESSION-SCOPED ACTIVATION (plugin-research / the operator's dormant-by-default
+ * requirement): pi's `hidden` exposure means "registered but unreachable —
+ * activating it has no effect", so it cannot be switched on later. `direct` +
+ * `defaultActive: false` is the exposure that keeps the tool declarable while
+ * leaving it OUT of the active set until `pi.setActiveTools()` names it (/wg on).
+ */
+function registerInactive<TParams extends TSchema, TDetails>(
+  pi: ExtensionAPI,
+  tool: ToolDefinition<TParams, TDetails>,
+): void {
+  // `exposure` / `defaultActive` are part of pi's tool contract (ToolExposure
+  // docs, pi >= 1.3) but are not yet in this package's pinned dev type surface,
+  // so the two fields ride through one narrow cast rather than polluting every
+  // tool literal. On an older pi that ignores them, dormancy is still enforced
+  // by `activation.ts` (the first session_start strips the wg tools from the
+  // active set), so the failure mode is "starts active, immediately dormant".
+  const dormant = { exposure: "direct", defaultActive: false } as Record<string, unknown>;
+  (pi.registerTool as (definition: unknown) => void)({ ...tool, ...dormant });
+}
+
+/**
+ * Register the wg tool family on a pi extension API — every tool INACTIVE.
+ * `/wg on` (activation.ts) is what puts them in front of the model.
  */
 export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_capabilities",
     label: "WG: worker capabilities",
     description:
@@ -84,7 +129,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_ready",
     label: "WG: ready tasks",
     description: "List WG tasks that are ready to be worked on (no unmet dependencies).",
@@ -94,7 +139,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_show",
     label: "WG: show task",
     description: "Show a WG task's details, status, dependencies, artifacts and logs.",
@@ -106,7 +151,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_add",
     label: "WG: add task",
     description:
@@ -128,7 +173,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_publish",
     label: "WG: publish task",
     description: "Release one visible draft for dispatch (`wg publish <id> --only`).",
@@ -140,7 +185,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_done",
     label: "WG: mark done",
     description: "Mark a WG task complete (runs the smoke gate for owned scenarios).",
@@ -152,7 +197,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_fail",
     label: "WG: mark failed",
     description: "Mark a WG task failed. Use only after a genuine attempt; include what blocked you.",
@@ -165,7 +210,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_wait",
     label: "WG: wait / park task",
     description:
@@ -182,7 +227,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_landing_turn",
     label: "WG: landing turn",
     description:
@@ -219,7 +264,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_msg_send",
     label: "WG: send message",
     description: "Send a message to a WG task's inbox (coordination / replies to other agents).",
@@ -232,7 +277,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_msg_read",
     label: "WG: read messages",
     description: "Read messages for a WG task (optionally scoped to a specific agent id).",
@@ -245,7 +290,7 @@ export function registerWgTools(pi: ExtensionAPI, backend: WgBackend): void {
     },
   });
 
-  pi.registerTool({
+  registerInactive(pi, {
     name: "wg_run",
     label: "WG: run task",
     description:
