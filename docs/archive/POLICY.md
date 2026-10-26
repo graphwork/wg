@@ -242,6 +242,11 @@ scripts/gen-key-docs.py   # renders docs/KEY_DOCS.md + the census/archive pointe
 - `scripts/gen-key-docs.py --check` re-renders and fails on drift, so a doc
   added without being registered is a one-command `--check` away from being
   noticed (CI can wire this exactly like the `pi-worksgood` embed-staleness job).
+- The census is live from `git ls-files` (index state), so **run the generator in
+  the same commit that adds, moves, or archives a doc** — `git add` first, then
+  `scripts/gen-key-docs.py`, then commit both. Forgetting is caught, not
+  punished: `tests/smoke/scenarios/doc_archive_policy.sh` fails the
+  `doc-archive-policy` smoke gate with the exact drift diff.
 
 ## 10. Restoring a doc
 

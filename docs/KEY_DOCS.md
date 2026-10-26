@@ -9,7 +9,7 @@ end accounts for the rest of the tree. Archive/keep rules live in
 `scripts/doc-archive-audit.sh`.
 
 - curated docs: **71**
-- tracked markdown in the repo: **780**
+- tracked markdown in the repo: **788**
 - regenerate: `scripts/gen-key-docs.py` · verify: `scripts/gen-key-docs.py --check`
 
 ---
@@ -149,12 +149,12 @@ last time. Counts are live from `git ls-files`.
 
 | Directory | Markdown files | What it holds |
 |---|---:|---|
-| `docs/archive/` | 109 | Archived: root reports, historical research, audits, superseded designs |
+| `docs/archive/` | 110 | Archived: root reports, historical research, audits, superseded designs |
 | `docs/reports/` | 96 | Dated reports and closeouts (wave-2 archive candidates) |
 | `docs/research/` | 121 | Research notes and studies |
 | `docs/audit/` | 23 | Dated audit trees |
 | `docs/plans/` | 13 | Implementation plans for work in flight |
-| `docs/design/` | 82 | Additional design docs (subset curated above) |
+| `docs/design/` | 83 | Additional design docs (subset curated above) |
 | `docs/designs/` | 7 | Earlier design drafts |
 | `docs/prod-audit/` | 7 | Production-readiness audits |
 | `docs/studies/` | 7 | Study documents |
