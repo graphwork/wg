@@ -1,376 +1,176 @@
 # Key Documentation Files
 
-Canonical list of all key documentation files and their purpose. Used as the reference for future doc-sync runs.
+**Generated — do not hand-edit.** This file is rendered from
+`docs/key-docs.tsv` by `scripts/gen-key-docs.py`.
 
-Last updated: 2026-04-29 (verified by doc-sync-audit, fan-out of 12 per-zone audits)
+The curated zones below are the docs a reader is expected to reach; the census at the
+end accounts for the rest of the tree. Archive/keep rules live in
+`docs/archive/POLICY.md`; the gate for moving a doc is
+`scripts/doc-archive-audit.sh`.
+
+- curated docs: **71**
+- tracked markdown in the repo: **780**
+- regenerate: `scripts/gen-key-docs.py` · verify: `scripts/gen-key-docs.py --check`
 
 ---
 
-## User-Facing Documentation
+## Start here (`core`)
+
+The entry points and the policy that governs the doc tree.
 
 | File | Purpose | Audience |
-|------|---------|----------|
+|---|---|---|
 | `README.md` | Project overview, install, setup, usage patterns, feature summary | Everyone (entry point) |
-| `docs/quickstart-pi-openrouter.md` | Verified pushbutton quickstart: install WG + Pi, OpenRouter auth, free-model discovery, `pi-worksgood` install, route selection, TUI | New users (canonical quickstart) |
-| `.claude/skills/wg/SKILL.md` | Claude Code skill definition — teaches AI agents to use wg | AI agents (Claude Code) |
-| `docs/COMMANDS.md` | Complete CLI command reference with examples | Users, agents |
+| `AGENTS.md` | Layer-2 project guide for this repo: build/dev loop, cargo-install rule, service configuration, profiles/secrets. Universal role contract comes from `wg agent-guide`. Byte-identical twin of `CLAUDE.md` | AI agents (Codex, Cursor, Claude Code) |
+| `CLAUDE.md` | Same bytes as `AGENTS.md`; exists because Claude Code looks for this filename. Divergence is a bug (guard-tested) | AI agents (Claude Code) |
+| `docs/KEY_DOCS.md` | This file. Generated from `docs/key-docs.tsv` — do not hand-edit | Everyone |
+| `docs/archive/POLICY.md` | Documentation archive policy: keep/archive rule, the grep-before-archive gate, archive layout and waves | Contributors |
+| `docs/survey/survey-synthesis-subtraction-plan.md` | The ranked subtraction plan that the archive waves execute; also the do-not-cut list | Operators |
+| `worksgood.toml` | This repo's project-local route/configuration document (model plane, tiers, reasoning) | Operators, contributors |
+
+## Rules for AI agents (`agent`)
+
+Read before claiming or dispatching work.
+
+| File | Purpose | Audience |
+|---|---|---|
 | `docs/AGENT-GUIDE.md` | How spawned agents should think about task graphs: patterns, structures, retry/kill mechanics, anti-patterns | AI agents, advanced users |
-| `docs/AGENT-SERVICE.md` | Service daemon architecture: dispatcher tick, dispatch cycle, agent lifecycle, model-spec handler routing | Operators, contributors |
-| `docs/AGENCY.md` | Agency system: roles, tradeoffs, evaluation, evolution, skill system | Users setting up agency |
-| `docs/LOGGING.md` | Logging and provenance system: operation log, agent archives, rotation | Operators, integrators |
-| `docs/DEV.md` | Development notes: build, test, reusable functions, common pitfalls | Contributors |
+| `docs/agent-git-hygiene.md` | Git hygiene rules for agents sharing one repo (surgical staging, no stash, no force-push) | AI agents, operators |
 | `docs/WORKTREE-ISOLATION.md` | Worktree-based isolation for concurrent agents | Operators, contributors |
-| `docs/COORDINATOR_ENTITY.md` | Design: coordinator (now "chat agent") as visible entity | Contributors |
-| `docs/models.md` | Model, endpoint, and API key management guide (companion: `docs/config-ux-design.md` for config UX) | Users, agents |
-| `docs/config-canonical.md` | Canonical config-key audit: what to keep, what's stale, what each key does | Operators, contributors |
-| `docs/config-ux-design.md` | Config UX design: `wg config init` / `wg setup`, named profiles, secrets, migration strategy | Users, operators, contributors |
+| `docs/design/agents-md-slimming.md` | Proposal (unapplied patch) to move the spark-stage narrative out of the always-loaded AGENTS.md/CLAUDE.md | Contributors |
+
+## Using `wg` (`user`)
+
+Install, configure a route, run the graph.
+
+| File | Purpose | Audience |
+|---|---|---|
+| `docs/README.md` | Documentation overview: core concepts, quick start, storage format, JSON output | Users, contributors |
+| `docs/quickstart-pi-openrouter.md` | Verified pushbutton quickstart: install, OpenRouter auth, free-model discovery, plugin install, route selection (canonical quickstart) | New users |
+| `docs/COMMANDS.md` | Complete CLI command reference with examples | Users, agents |
+| `docs/models.md` | Model, endpoint and API-key management (companion: `docs/config-ux-design.md`) | Users, agents |
+| `docs/config-precedence.md` | Config precedence: which layer wins (worksgood.toml vs global vs flags) | Users, operators |
+| `docs/config-ux-design.md` | Config UX: `wg config init` / `wg setup`, named profiles, secrets, migration strategy | Users, operators, contributors |
+| `docs/AGENCY.md` | Agency system: roles, tradeoffs, evaluation, evolution, skills | Users setting up agency |
+| `docs/guides/install.md` | Install paths: operator `cargo install`, npm, `wg dev-sync` dev loop | Users, operators |
+| `docs/guides/openrouter-setup.md` | OpenRouter provider setup | Users, operators |
+| `docs/guides/server-setup.md` | Server setup guide | Operators |
+| `docs/guides/frontier-build.md` | Frontier build profile | Operators |
+| `docs/guides/standalone-nex.md` | The standalone `nex` binary | Advanced users |
+| `docs/guides/executor-arena.md` | External executor adapter matrix, OpenRouter env setup, init templates | Operators |
+| `docs/manual/README.md` | Manual build instructions (Typst source → Markdown) | Contributors |
+| `docs/manual/wg-manual.md` | Full assembled manual (derived from the Typst source) | Deep readers |
+
+## Running it (`operator`)
+
+Daemon, lifecycle, recovery, security, logging.
+
+| File | Purpose | Audience |
+|---|---|---|
+| `docs/AGENT-SERVICE.md` | Service daemon architecture: dispatcher tick, dispatch cycle, agent lifecycle, handler routing | Operators, contributors |
+| `docs/AGENT-LIFECYCLE.md` | Hardened agent lifecycle: spawn → work → complete → die, target-dir reaper, dispatcher persistence | Operators, contributors |
+| `docs/ops/runbook.md` | Operator runbook: stand-up, verify, teardown | Operators |
+| `docs/ops/completion-validation-evidence.md` | The completion-evidence contract a fail-closed `wg done` enforces | Operators, contributors |
+| `docs/ops/maze-free-recovery.md` | Recovery when the graph is stuck | Operators |
+| `docs/ops/pi-evaluation-rollout.md` | Pi evaluation rollout | Operators |
+| `docs/ops/review-projection-recovery.md` | Recovery for the completion-review projection | Operators |
+| `docs/ops/scored-evaluation.md` | Scored evaluation | Operators |
+| `docs/LOGGING.md` | Logging and provenance: operation log, agent archives, rotation | Operators, integrators |
+| `docs/SECURITY.md` | Security guide: pre-commit hooks, GitGuardian, secret management | Operators, contributors |
+| `docs/DEV.md` | Development notes: build, test, reusable functions, common pitfalls | Contributors |
+| `docs/config-canonical.md` | Canonical config-key audit: what to keep, what is stale, what each key does | Operators, contributors |
 | `docs/MODEL_REGISTRY.md` | Model provider registry with quality tiers | Contributors |
-| `docs/AGENCY_AUDIT.md` | Agency audit | Contributors, operators |
-| `docs/AGENT-LIFECYCLE.md` | Hardened agent lifecycle: spawn, work, complete, die — full state machine + target-dir reaper + dispatcher persistence | Operators, contributors |
-| `docs/SECURITY.md` | Security guide: pre-commit hooks, GitGuardian, secret management (companion: `wg secret`) | Operators, contributors |
-| `docs/agent-git-hygiene.md` | Git hygiene rules for multi-agent shared repos | Agents, operators |
-| `docs/guides/openrouter-setup.md` | OpenRouter provider setup guide | Users, operators |
-| `docs/guides/executor-arena.md` | External executor adapter matrix, OpenRouter env setup, init templates, and source links | Users, operators |
-| `docs/guides/server-setup.md` | Server setup guide | Users, operators |
+| `docs/AGENCY_AUDIT.md` | Agency system audit | Contributors, operators |
+| `docs/README-windows.md` | Windows-specific notes | Users on Windows, contributors |
 
-## Embedded Documentation
+## Design of record (`design`)
+
+Why a shipping behaviour is shaped the way it is.
 
 | File | Purpose | Audience |
-|------|---------|----------|
-| `src/commands/quickstart.rs` | Quickstart text shown by `wg quickstart` — onboarding cheat sheet | AI agents, new users |
-| `src/text/agent_guide.md` | Universal role contract bundled into the `wg` binary — emitted by `wg agent-guide`. Defines chat agent / dispatcher / worker agent roles, validation requirement, smoke gate, cycle handling, git hygiene, worktree isolation. | AI agents (any project) |
-| `CLAUDE.md` | Project-level Claude Code instructions (wg repo: layer-2, project-specific) | AI agents |
-| `AGENTS.md` | AI coding-assistant contract for non-Claude tools (GitHub Copilot, Cursor, Claude Code without skill) | AI agents |
-| `~/.claude/CLAUDE.md` | Global Claude Code instructions (may not exist) | AI agents |
+|---|---|---|
+| `docs/design-handler-first-model-spec.md` | Handler-first model specs: why the leading token of a model spec is always a handler | Contributors |
+| `docs/design-project-local-pi-config.md` | Project-local Pi config: `worksgood.toml` as the sole project authority | Contributors |
+| `docs/design-two-tier-pi-profile.md` | Two-tier (strong/weak) Pi profile projection | Contributors |
+| `docs/design-pi-plugin-install.md` | The idempotent `ensure-pi-plugin` primitive and the embedded plugin cache | Contributors |
+| `docs/design-retire-model-registry.md` | Why the model registry was retired in favour of the Pi catalog | Contributors |
+| `docs/design-cow-worktrees.md` | Copy-on-write worktrees for agent isolation | Contributors |
+| `docs/build-artifact-storage.md` | Build artifact storage / target-cache layout | Contributors |
+| `docs/automatic-task-archival.md` | Automatic task-archival behaviour in the graph | Contributors |
 
-## Manual (Typst)
+## Decisions of record (ADR) (`adr`)
+
+Ratified decisions. Never archived because a feature went quiet.
 
 | File | Purpose | Audience |
-|------|---------|----------|
-| `docs/manual/01-overview.typ` | System overview: graph, agency, core loop, agency loop | Deep readers |
-| `docs/manual/02-task-graph.typ` | Task graph: nodes, status, dependencies, cycles, readiness, analysis | Deep readers |
-| `docs/manual/03-agency.typ` | Agency model: roles, tradeoffs, agents, content-hash IDs, skills, trust, federation | Deep readers |
-| `docs/manual/04-coordination.typ` | Coordination & execution: daemon, tick, dispatch, wrapper, IPC, watch, custom executors | Deep readers |
-| `docs/manual/05-evolution.typ` | Evolution & improvement: evaluation, performance, strategies, lineage, autopoiesis | Deep readers |
-| `docs/manual/wg-manual.typ` | Manual entry point (imports all chapters) | Deep readers |
-| `docs/manual/wg-manual.md` | Full assembled manual (Markdown, derived from Typst) | Deep readers |
-| `docs/manual/01-overview.md` | System overview (Markdown, derived from Typst) | Deep readers |
-| `docs/manual/02-task-graph.md` | Task graph chapter (Markdown, derived from Typst) | Deep readers |
-| `docs/manual/03-agency.md` | Agency chapter (Markdown, derived from Typst) | Deep readers |
-| `docs/manual/04-coordination.md` | Coordination chapter (Markdown, derived from Typst) | Deep readers |
-| `docs/manual/05-evolution.md` | Evolution chapter (Markdown, derived from Typst) | Deep readers |
-| `docs/manual/README.md` | Manual build instructions | Contributors |
-| `docs/manual/PLAN.md` | Manual chapter planning notes | Contributors |
-| `docs/manual/UPDATE-SPEC.md` | Spec for manual updates | Contributors |
+|---|---|---|
+| `docs/ADR-actor-vs-agent-identity.md` | ADR: actor vs agent identity | Contributors |
+| `docs/ADR-fed-000-acceptance-brief.md` | ADR series brief: WG-Fed acceptance criteria | Contributors |
+| `docs/ADR-fed-001-identity-key-model.md` | ADR-fed-001: identity and key model | Contributors |
+| `docs/ADR-fed-002-transport.md` | ADR-fed-002: transport rungs (dumb store, node inbox) | Contributors |
+| `docs/ADR-fed-003-custody-delegation-recovery.md` | ADR-fed-003: custody, delegation (UCAN), recovery | Contributors |
+| `docs/ADR-fed-004-loadable-state-safety.md` | ADR-fed-004: loadable-state safety (S-5 pipeline) | Contributors |
+| `docs/ADR-content-safety-001-review-gate.md` | ADR-CS-001: the inbound-content review gate | Contributors |
+| `docs/ADR-content-safety-002-reviewer-hardening.md` | ADR-CS-002: reviewer hardening (no-scope, spotlight, quorum) | Contributors |
+| `docs/ADR-content-safety-003-verdict-audit-revoke.md` | ADR-CS-003: verdict audit, digest-pinned consumption, revoke | Contributors |
+| `docs/ADR-exec-000-acceptance-brief.md` | ADR series brief: WG-Exec acceptance criteria | Contributors |
+| `docs/ADR-exec-e1-placement.md` | ADR-exec-E1: placement matcher | Contributors |
+| `docs/ADR-exec-e2-confidentiality.md` | ADR-exec-E2: confidentiality / attested providers | Contributors |
+| `docs/ADR-exec-e3-capability-lease.md` | ADR-exec-E3: capability envelope and lease fencing | Contributors |
+| `docs/ADR-exec-e4-verification.md` | ADR-exec-E4: disjoint verification of a remote result | Contributors |
 
-## Report Documents
+## Spark-stage subsystems (`spark`)
 
-| File | Purpose | Status |
-|------|---------|--------|
-| `docs/reports/spark-v3-retrospective.md` | SPARK v3 retrospective: 9-day cycle analysis | Current |
-| `docs/reports/autopoietic-validation.md` | Capstone synthesis: autopoietic validation | Current |
-| `docs/reports/validate-core-dispatch.md` | Dispatch validation report | Current |
-| `docs/reports/validate-safety-resilience.md` | Safety and resilience validation report | Current |
-| `docs/reports/validate-agency-pipeline.md` | Agency pipeline validation report | Current |
-| `docs/reports/validate-tui-observability.md` | TUI and observability validation report | Current |
-| `docs/reports/self-hosting-integration-validation.md` | Self-hosting integration validation | Current |
-| `docs/reports/messaging-research-report.md` | Messaging system research report | Current |
-| `docs/reports/amplifier-research-report.md` | Amplifier research report | Current |
-| `docs/reports/openrouter-research.md` | OpenRouter integration research | Current |
-| `docs/reports/openrouter-validation.md` | OpenRouter validation report | Current |
-| `docs/reports/openrouter-design.md` | OpenRouter design report | Current |
-| `docs/reports/or-audit-results.md` | OpenRouter audit results | Current |
-| `docs/reports/or-agent-model-design.md` | OpenRouter agent model design | Current |
-| `docs/reports/or-integration-report.md` | OpenRouter integration report | Current |
+Live, smoke-pinned, off the daily path. Read before touching that code.
 
-## Design Documents
+| File | Purpose | Audience |
+|---|---|---|
+| `docs/spark/README.md` | Index + reading rules for the spark-stage subsystem docs | Contributors |
+| `docs/spark/wg-fed.md` | WG-Fed (Waves 3–6): `wgid:` identity, sigchain, transport, portable state, encryption=ACL, UCAN delegation | Contributors |
+| `docs/spark/wg-review.md` | WG-Review: `wg review` inbound-content review gate | Contributors |
+| `docs/spark/wg-exec.md` | WG-Exec: `wg provider` remote placement, lease fence, disjoint re-run | Contributors |
+| `docs/spark/e2e-family-team.md` | The three sparks composing across two FS-independent instances | Contributors |
+| `docs/spark/wg-pilot.md` | WG-Pilot: one-command family-team stand-up (`wg pilot up/status/down`) | Operators |
 
-| File | Purpose | Status |
-|------|---------|--------|
-| `docs/design/trace-function-protocol.md` | Three-layer function protocol (static/generative/adaptive) | Implemented |
-| `docs/design/agency-federation.md` | Agency federation: scan/pull/push/remote/merge | Implemented (except global store) |
-| `docs/design/cycle-aware-graph.md` | Cycle-aware graph design | Implemented |
-| `docs/design/loop-convergence.md` | Loop convergence design | Implemented |
-| `docs/design/cross-repo-communication.md` | Cross-repo peer communication | Implemented |
-| `docs/design/provenance-system.md` | Provenance system design | Implemented |
-| `docs/design/spec-patterns-vocab.md` | Pattern vocabulary spec (referenced by AGENT-GUIDE.md) | Reference |
-| `docs/design/spec-cycle-integration.md` | Cycle integration spec | Implemented |
-| `docs/design/spec-edge-rename.md` | Edge rename spec (blocked_by → after) | Implemented |
-| `docs/design/func-rename-spec.md` | Function rename spec (trace → func) | Implemented |
-| `docs/design/doc-sync-system.md` | Doc sync system design | Reference |
-| `docs/design/smooth-integration.md` | Smooth integration design | Reference |
-| `docs/design/vx-integration-response.md` | Veracity exchange integration | Design |
-| `docs/design/spec-vx-integration-impl.md` | VX integration implementation spec | Design |
-| `docs/design/outbound-edge-viz.md` | Outbound edge visualization design | Implemented |
-| `docs/design/reopen-on-new-dep.md` | Reopen on new dependency design | Implemented |
-| `docs/design/cycle-delay-semantics.md` | Cycle delay semantics design | Implemented |
-| `docs/design/agent-isolation-decision.md` | Agent isolation architecture decision | Implemented |
-| `docs/design/agent-isolation-implementation.md` | Agent isolation implementation plan | Implemented |
-| `docs/design/agent-lifecycle.md` | Agent lifecycle state machine design | Implemented |
-| `docs/design/agent-message-queue.md` | Agent message queue design | Implemented |
-| `docs/design/automatic-task-placement.md` | Automatic task placement design | Implemented |
-| `docs/design/blog-setup-recommendation.md` | Blog/website setup recommendation | Reference |
-| `docs/design/coordinator-add-remove-modal.md` | TUI coordinator add/remove modal design | Implemented |
-| `docs/design/coordinator-agent-prompt.md` | Coordinator agent prompt design | Implemented |
-| `docs/design/coordinator-as-regular-agent.md` | Coordinator as regular agent refactor | Implemented |
-| `docs/design/coordinator-chat-protocol.md` | Coordinator chat protocol design | Implemented |
-| `docs/design/cycle-edge-viz.md` | Cycle edge visualization design | Implemented |
-| `docs/design/dangling-dependency-resolution.md` | Dangling dependency resolution design | Implemented |
-| `docs/design/design-deliberation-synthesis.md` | Deliberation pattern synthesis | Reference |
-| `docs/design/evolver-fanout.md` | Evolution fan-out design | Implemented |
-| `docs/design/executor-weight-tiers.md` | Executor weight tiers (exec-mode) design | Implemented |
-| `docs/design/generic-executor-design.md` | Generic executor design | Implemented |
-| `docs/design/liveness-detection.md` | Agent liveness detection design | Implemented |
-| `docs/design/mandatory-validation.md` | Mandatory validation gates design | Implemented |
-| `docs/design/message-discipline-design.md` | Message discipline design | Implemented |
-| `docs/design/model-cost-tracking.md` | Model cost tracking design | Implemented |
-| `docs/design/model-endpoint-key-ux.md` | Model/endpoint/key UX design | Implemented |
-| `docs/design/native-executor.md` | Native executor design | Design |
-| `docs/design/node-specific-chat-design.md` | Per-node chat design | Implemented |
-| `docs/design/self-hosting-architecture.md` | Self-hosting architecture design | Reference |
-| `docs/design/sleep-aware-liveness.md` | Sleep-aware liveness detection design | Implemented |
-| `docs/design/trace-functions.md` | Trace functions design (predecessor to func-rename) | Implemented |
-| `docs/design/tui-multi-panel.md` | TUI multi-panel layout design | Implemented |
-| `docs/design/unified-lifecycle-state-machine.md` | Unified lifecycle state machine design | Implemented |
-| `docs/design/wg-wait-design.md` | `wg wait` command design | Implemented |
-| `docs/design/agent-roundtable-cycle.md` | Agent roundtable cycle design | Design |
-| `docs/design/client-implementation-plan.md` | Client implementation plan | Design |
-| `docs/design/demo-medley-catalog.md` | Demo/screencast medley catalog | Reference |
-| `docs/design/federation-architecture.md` | Federation architecture design | Design |
-| `docs/design/hero-screencast-scenarios.md` | Hero screencast scenarios | Reference |
-| `docs/design/hero-screencast-storyboard-v2.md` | Hero screencast storyboard v2 | Reference |
-| `docs/design/heroview-screencast-v2-script.md` | Heroview screencast v2 script | Reference |
-| `docs/design/live-sync-and-liveness.md` | Live sync and liveness design | Design |
-| `docs/design/multi-user-platform-architecture.md` | Multi-user platform architecture | Design |
-| `docs/design/provider-model-naming.md` | Provider/model naming conventions | Design |
-| `docs/design/screencast-freshness-pipeline.md` | Screencast freshness pipeline design | Design |
-| `docs/design/screencast-interaction-flow.md` | Screencast interaction flow design | Reference |
-| `docs/design/screencast-repertoire.md` | Screencast repertoire catalog | Reference |
-| `docs/design/terminal-wrapping-strategy.md` | Terminal wrapping strategy design | Design |
-| `docs/design/tui-inspector-tri-state.md` | TUI inspector tri-state design | Implemented |
-| `docs/design/tui-multiplexing-concurrent-access.md` | TUI multiplexing concurrent access | Design |
-| `docs/design/bare-coordinator.md` | Bare coordinator (minimal coordinator) design | Design |
-| `docs/design/coordinator-id-assignment.md` | Coordinator ID assignment design | Implemented |
-| `docs/design/design-autopoietic-task-agency.md` | Autopoietic task agency design | Design |
-| `docs/design/native-graph-iteration.md` | Native graph iteration design | Design |
-| `docs/design/phantom-edge-prevention.md` | Phantom edge prevention design | Implemented |
-| `docs/design/safe-coordinator-cycle.md` | Safe coordinator cycle design | Implemented |
-| `docs/design-shell-executor.md` | Shell executor design | Implemented |
-| `docs/designs/chat-message-ordering-and-delivery.md` | Chat message ordering and delivery | Implemented |
-| `docs/designs/failed-dep-triage.md` | Failed dependency triage design | Implemented |
-| `docs/designs/quality-pass.md` | Quality pass design | Design |
-| `docs/designs/tui-iteration-history-and-viz-selfloop.md` | TUI iteration history and viz self-loop | Implemented |
-| `docs/designs/README.md` | Designs directory README (audience: contributors) | Reference |
-| `docs/design/sessions-as-identity.md` | Unified handler/session model: claude, codex, nex as a common "session" abstraction | Design |
-| `docs/design/sessions-as-identity-rollout.md` | Staged rollout plan for sessions-as-identity | Design |
-| `docs/design/native-executor-run-loop.md` | Nex unified run loop + interruptibility + compaction design | Design |
-| `docs/design/nex-as-coordinator.md` | Nex = task = evaluate = coordinate unification design | Design |
-| `docs/design/nex-executor-improvements.md` | wg nex executor improvements toward self-bootstrapping | Design |
-| `docs/design/nex-web-access-status-2026-04-16.md` | Nex web access status + next steps (snapshot 2026-04-16) | Reference |
-| `docs/design/verify-deprecation-plan.md` | --verify deprecation plan (now errors at runtime; use ## Validation) | Implemented |
-| `docs/design/llm-verification-gate.md` | LLM-based verification gate design (replaces --verify) | Design |
-| `docs/design/model-config-propagation.md` | Model/config propagation from seed tasks to subgraphs | Design |
-| `docs/design/pdf-binary-failure-handling.md` | PDF/binary attachment failure handling design | Implemented |
-| `docs/design/chat-agent-persistence.md` | Chat agent persistence: tmux wrapper vs codex fix vs custom detach | Design |
-| `docs/design/external-executor-class.md` | External executor class: claude, codex, amplifier as uniform family | Design |
-| `docs/design/unified-path-forward.md` | Unified path forward plan (post-tool-fragmentation hardening) | Reference |
-| `docs/design/tool-scoping-for-agents-research.md` | Tool scoping for native-executor agents research | Research |
-| `docs/design-actor-driven-cleanup.md` | Actor-driven worktree cleanup: status-as-cleanup-intent design | Design |
-| `docs/design-cow-worktrees.md` | Copy-on-write worktrees for agent isolation | Design |
-| `docs/design-merge-task.md` | .merge-* tasks: visible, retryable, batchable merge surface | Design |
-| `docs/design-agency-tasks-on-claude.md` | Migrate .evaluate/.flip/.assign tasks to claude CLI path | Reference |
-| `docs/design-named-profiles.md` | Named profiles for runtime model/endpoint switching | Implemented (`wg profile`) |
-| `docs/archival-design.md` | Archival behavior + cross-graph overlay design | Design |
+## Bundled / generated (`embedded`)
 
-## Research Documents
+Content shipped inside the binary or derived from another source.
 
-| File | Purpose | Status |
-|------|---------|--------|
-| `docs/research/arena-evaluation/spec.md` | FLIP-style backward-inference evaluation research | Research (not shipped) |
-| `docs/research/arena-evaluation/arena-evaluation-report.typ` | Arena evaluation research report | Research |
-| `docs/research/arena-evaluation/context-selection.md` | Arena eval: context selection design | Research |
-| `docs/research/arena-evaluation/model-selection.md` | Arena eval: model selection design | Research |
-| `docs/research/arena-evaluation/evolution-input.md` | Arena eval: evolution input design | Research |
-| `docs/research/arena-evaluation/eval-integration.md` | Arena eval: evaluation integration design | Research |
-| `docs/research/amplifier-integration-proposal.md` | Amplifier executor integration | Research |
-| `docs/research/amplifier-architecture.md` | Amplifier architecture deep dive | Research |
-| `docs/research/amplifier-executor-gap.md` | Amplifier executor gap analysis | Research |
-| `docs/research/amplifier-context-transfer.md` | Amplifier context transfer research | Research |
-| `docs/research/logging-gaps.md` | Logging gap analysis | Research |
-| `docs/research/logging-veracity-gap-analysis.md` | Logging veracity gap analysis | Research |
-| `docs/research/cyclic-processes.md` | Cyclic processes research | Research |
-| `docs/research/cycle-detection-algorithms.md` | Cycle detection algorithm survey | Research |
-| `docs/research/file-locking-audit.md` | File locking audit | Research |
-| `docs/research/veracity-exchange-integration.md` | Veracity exchange integration research | Research |
-| `docs/research/veracity-exchange-deep-dive.md` | Veracity exchange deep dive | Research |
-| `docs/research/agent-context-awareness.md` | Agent context awareness research | Research |
-| `docs/research/agent-context-scopes.md` | Configurable agent context scopes design | Implemented (shipped in `wg add --context-scope`) |
-| `docs/research/organizational-patterns.typ` | Organizational patterns research (Typst) | Research |
-| `docs/research/organizational-patterns.md` | Organizational patterns research (Markdown) | Research |
-| `docs/research/flip-pipeline-ordering.md` | FLIP pipeline ordering research | Research |
-| `docs/research/gitbutler-virtual-branches.md` | GitButler virtual branches research | Research |
-| `docs/research/git-worktrees-agent-isolation.md` | Git worktrees for agent isolation | Research |
-| `docs/research/human-in-the-loop-channels.md` | Human-in-the-loop communication channels | Research |
-| `docs/research/validation-current-mechanisms.md` | Validation: current mechanisms survey | Research |
-| `docs/research/validation-graph-structure.md` | Validation: graph structure analysis | Research |
-| `docs/research/validation-cycles.md` | Validation: cycle handling analysis | Research |
-| `docs/research/validation-evaluation-quality.md` | Validation: evaluation quality | Research |
-| `docs/research/validation-agent-self-checks.md` | Validation: agent self-check mechanisms | Research |
-| `docs/research/validation-teaching-agents.md` | Validation: teaching agents validation skills | Research |
-| `docs/research/validation-synthesis.md` | Validation: synthesis and recommendations | Research |
-| `docs/research/a2a-protocol-applicability.md` | A2A protocol applicability analysis | Research |
-| `docs/research/agency-pipeline-lifecycle.md` | Agency pipeline lifecycle research | Research |
-| `docs/research/agency-research.md` | Agency system research | Research |
-| `docs/research/agent-askuser-cross-executor-human-input.md` | Cross-executor human input research | Research |
-| `docs/research/checkpointing-systems-analysis.md` | Checkpointing systems analysis | Research |
-| `docs/research/communication-topology.md` | Communication topology research | Research |
-| `docs/research/compaction-regimes.md` | Compaction regimes research | Research |
-| `docs/research/compaction-timing-data-availability.md` | Compaction timing and data availability | Research |
-| `docs/research/coordination-model-design.md` | Coordination model design research | Research |
-| `docs/research/coordinator-interruption-mechanisms.md` | Coordinator interruption mechanisms | Research |
-| `docs/research/cycle-topology-analysis.md` | Cycle topology analysis | Research |
-| `docs/research/design-deliberation-consensus.md` | Design deliberation consensus | Research |
-| `docs/research/generic-tool-use-research.md` | Generic tool use research | Research |
-| `docs/research/local-model-integration.md` | Local model integration research | Research |
-| `docs/research/mcp-rust-integration.md` | MCP Rust integration research | Research |
-| `docs/research/message-triggered-resurrection.md` | Message-triggered resurrection research | Implemented |
-| `docs/research/model-provider-audit.md` | Model provider audit | Research |
-| `docs/research/native-executor-tool-gaps.md` | Native executor tool gaps analysis | Research |
-| `docs/research/openrouter-ecosystem-research.md` | OpenRouter ecosystem research | Research |
-| `docs/research/openrouter-integration.md` | OpenRouter integration research | Research |
-| `docs/research/placement-context-research.md` | Placement context research | Research |
-| `docs/research/placement-output-handling.md` | Placement output handling research | Research |
-| `docs/research/realtime-agent-chat.md` | Realtime agent chat research | Research |
-| `docs/research/task-priority-scheduling.md` | Task priority scheduling research | Research |
-| `docs/research/telegram-global-routing.md` | Telegram global routing research | Research |
-| `docs/research/tui-editor-widget-comparison.md` | TUI editor widget comparison | Research |
-| `docs/research/verify-cycle-interaction.md` | Verify/cycle interaction research | Research |
-| `docs/research/web-search-api-comparison.md` | Web search API comparison | Research |
-| `docs/research/agency-bureau-pull-mechanism.md` | Agency bureau pull mechanism research | Research |
-| `docs/research/compaction-metrics-and-visibility.md` | Compaction metrics and visibility | Research |
-| `docs/research/compaction-metrics-visibility.md` | Compaction metrics visibility (alternate) | Research |
-| `docs/research/coordinator-spawn-vs-task-agent-spawn.md` | Coordinator vs task agent spawn comparison | Research |
-| `docs/research/hero-screencast-pacing.md` | Hero screencast pacing research | Research |
-| `docs/research/log-view-scrollbar-research.md` | Log view scrollbar research | Research |
-| `docs/research/multi-user-tui-feasibility.md` | Multi-user TUI feasibility study | Research |
-| `docs/research/native-executor-dual-api-audit.md` | Native executor dual API audit | Research |
-| ~~`docs/research/primitive-pool-sync.md`~~ | ~~Primitive pool sync research~~ | ~~Removed (file no longer exists)~~ |
-| ~~`docs/research/ranked-model-list.md`~~ | ~~Ranked model list research~~ | ~~Removed (file no longer exists)~~ |
-| `docs/research/unified-conversation-layer-design.md` | Unified conversation layer design | Research |
-| `docs/research/primitive-pool-location.md` | Primitive pool location research | Research |
-| `docs/research/agency-primitive-sync-model.md` | Agency primitive sync model research | Research |
-| `docs/research/tui-inspector-panel-resizing.md` | TUI inspector panel resizing research | Research |
-| `docs/research/spiral-cycle-unrolling-gap-analysis.md` | Spiral cycle unrolling gap analysis | Research |
-| `docs/research/iterate-vs-retry-design.md` | Iterate vs retry design research | Research |
-| `docs/research/openrouter-leaderboard-api.md` | OpenRouter leaderboard API research | Research |
-| `docs/research/profile-research.md` | Provider profile research | Research |
-| `docs/research/wg-config-profiles.md` | Config profiles research | Research |
-| `docs/research/evolve-yaml-cache-paths.md` | Evolve YAML cache paths research | Research |
-| `docs/research/config-structure-and-setup.md` | Config structure and setup research | Research |
-| `docs/research/stuck-detection-research.md` | Stuck detection research | Research |
-| `docs/research/thinking-token-patterns.md` | Thinking token patterns research | Research |
-| `docs/research/tb-autopoietic-integration.md` | TB autopoietic integration research | Research |
-| `docs/research/litellm-executor-fallback-analysis.md` | LiteLLM executor fallback analysis | Research |
-| `docs/research/supervisor-agent-loop.md` | Supervisor agent loop research | Research |
-| `docs/research/phantom-edge-analysis.md` | Phantom edge analysis research | Research |
-| `docs/research/shell-executor-and-retry-patterns.md` | Shell executor and retry patterns research | Research |
-| `docs/research/native-executor-compact-messages-pattern.md` | Native executor compact messages pattern | Research |
-| `docs/research/existing-design-documents-journal-compaction.md` | Existing design docs on journal compaction | Research |
-| `docs/research/README.md` | Research directory README (audience: contributors) | Reference |
-| `docs/research/agent-lifecycle-and-kill-mechanics.md` | Agent lifecycle and kill mechanics research | Research |
-| `docs/research/agent-wg-awareness.md` | Agent self-discovery of wg (for nex/Harbor context) | Research |
-| `docs/research/context-window-determination.md` | Context length determination for OAI-compatible endpoints | Research |
-| `docs/research/eval-wait-points.md` | When should agents wait on evaluation before terminating | Research |
-| `docs/research/model-propagation-subgraphs.md` | Model propagation within subgraphs | Research |
-| `docs/research/qwen3-nex-config.md` | Qwen3 endpoint configuration for wg nex | Research |
-| `docs/research/shell-verify-vs-llm-eval-gap.md` | Shell --verify vs LLM agency evaluation gap analysis | Research |
-| `docs/research/thin-wrapper-executors-2026-04.md` | Thin-wrapper executors for wg nex (recommendation: pty-wrap OAI CLI) | Research |
-| `docs/research/tui-detail-audit.md` | TUI 1:Detail view + evaluation visibility audit | Research |
-| `docs/research/tui-evaluation-color-state.md` | TUI evaluation-state coloring research | Research |
-| `docs/research/verify-deprecation-survey.md` | --verify deprecation survey (factual basis for deprecation) | Research |
+| File | Purpose | Audience |
+|---|---|---|
+| `src/text/agent_guide.md` | Universal role contract bundled into the `wg` binary and emitted by `wg agent-guide` (chat agent / dispatcher / worker, validation, smoke gate, cycles) | AI agents (any project) |
+| `src/commands/quickstart.rs` | `wg quickstart` onboarding text — the "read me first" for an agent in a WG project | AI agents, new users |
 
-## Report Documents (additional)
+## Not indexed — historical zones (census)
 
-| File | Purpose | Status |
-|------|---------|--------|
-| `docs/reports/openrouter-model-config-guide.md` | OpenRouter model configuration guide | Current |
-| `docs/reports/per-task-model-override.md` | Per-task model override report | Current |
-| `docs/reports/or-executor-research.md` | OpenRouter executor research | Current |
-| ~~`docs/reports/bug-report-dynamic-model-list-browsing.md`~~ | ~~Bug report: dynamic model list browsing~~ | ~~Removed (file no longer exists)~~ |
-| `docs/reports/native-executor-streaming-investigation.md` | Native executor streaming investigation | Current |
-| `docs/reports/vizview-notification-investigation.md` | VizView notification investigation | Current |
-| `docs/reports/tui-chat-message-interleaving-investigation.md` | TUI chat message interleaving investigation | Current |
-| `docs/reports/cycle-deadlock-investigation.md` | Cycle deadlock investigation | Current |
-| `docs/reports/bug-report-assign-task-not-blocking.md` | Bug report: assign task not blocking | Current |
-| `docs/reports/bug-report-user-board-leak.md` | Bug report: user board leak | Current |
-| `docs/reports/openrouter-new-repo-setup-guide.md` | OpenRouter new repo setup guide | Current |
-| `docs/reports/research-coordinator-chat-ordering.md` | Coordinator chat ordering research | Current |
-| `docs/reports/smoke-test-cycle-lifecycle.md` | Cycle lifecycle smoke test report | Current |
-| `docs/reports/triage-task-naming-investigation.md` | Triage task naming investigation | Current |
+These trees are historical (or not-yet-curated) and are deliberately **not**
+enumerated here: an index that lists 600 stale files is how this file rotted
+last time. Counts are live from `git ls-files`.
 
-## Plan Documents
+| Directory | Markdown files | What it holds |
+|---|---:|---|
+| `docs/archive/` | 109 | Archived: root reports, historical research, audits, superseded designs |
+| `docs/reports/` | 96 | Dated reports and closeouts (wave-2 archive candidates) |
+| `docs/research/` | 121 | Research notes and studies |
+| `docs/audit/` | 23 | Dated audit trees |
+| `docs/plans/` | 13 | Implementation plans for work in flight |
+| `docs/design/` | 82 | Additional design docs (subset curated above) |
+| `docs/designs/` | 7 | Earlier design drafts |
+| `docs/prod-audit/` | 7 | Production-readiness audits |
+| `docs/studies/` | 7 | Study documents |
 
-| File | Purpose |
-|------|---------|
-| `docs/plans/server-side-multi-user-workplan.md` | Server-side multi-user work plan |
-| `docs/plans/tui-liveness-monitoring-workplan.md` | TUI liveness monitoring work plan |
-| ~~`docs/plans/federation-and-distributed-sync.md`~~ | ~~Federation and distributed sync plan~~ | ~~Removed (file no longer exists)~~ |
-| `docs/plans/integrated-multi-user-roadmap.md` | Integrated multi-user roadmap |
-| `docs/plans/fs-watcher-validation.md` | FS watcher validation plan |
-| `docs/plans/coordinator-chat-history-design.md` | Coordinator chat history design plan |
-| `docs/plans/assignment-time-placement-guard.md` | Assignment-time placement guard plan |
-| `docs/plans/model-registry-and-update-trace.md` | Model registry and update trace plan |
-| `docs/plans/provider-profiles.md` | Provider profiles plan |
-| `docs/plans/spiral-unrolling-design.md` | Spiral unrolling design plan |
-| `docs/plans/user-board-design.md` | User board design plan |
-| `docs/plan-of-attack-wg-nex.md` | Plan of attack: wg nex + TerminalBench + Harbor (2026-04-21) |
+To find a specific doc in those trees:
 
-## Other Documentation
+```bash
+git ls-files 'docs/reports/*.md' | xargs grep -l '<topic>'
+scripts/doc-archive-audit.sh docs/reports/<file>.md   # is it safe to archive?
+```
 
-| File | Purpose |
-|------|---------|
-| `docs/README.md` | Docs directory overview |
-| `docs/ADR-actor-vs-agent-identity.md` | Architecture decision record |
-| `docs/REVIEW-SYNTHESIS.md` | Review synthesis |
-| `docs/task-id-namespacing.md` | Task ID namespacing notes |
-| `docs/cycle-support-audit.md` | Cycle support audit |
-| `docs/spec-bugfixes.md` | Bug fix specs |
-| `docs/fix-dag-terminology.md` | DAG terminology fix notes |
-| `docs/design-cyclic-wg.md` | Cyclic wg design |
-| `docs/design-cycle-failure-restart.md` | Cycle failure restart design |
-| `docs/design-bidirectional-agent-communication.md` | Bidirectional agent communication design |
-| `docs/design-pan-executor.md` | Pan-executor design |
-| `docs/design-unified-message-pane.md` | Unified message pane design |
-| `docs/design-verify-first-eval-pipeline.md` | Verify-first evaluation pipeline design |
-| `docs/survey-context-management.md` | Context management survey |
-| `docs/audit/agent-work-integrity.md` | Agent work integrity audit |
-| `docs/doc-sync-audit-2026-04-12.md` | Documentation audit checklist (2026-04-12) |
-| `docs/prompts/selfhost.md` | Self-hosting prompt template |
-| `docs/smoke-test-coordinator-modals.md` | Coordinator modals smoke test spec |
-| `docs/test-specs/trace-replay-test-spec.md` | Test specifications |
-| `docs/terminal-bench/DESIGN-native-executor-improvements.md` | Native executor improvements design (terminal bench) |
-| `docs/terminal-bench/REFERENCE-terminal-bench-campaign.md` | Terminal bench campaign reference |
-| `docs/terminal-bench/REVIEW-doc-analysis.md` | Terminal bench doc analysis review |
-| `docs/terminal-bench/ROADMAP-terminal-bench.md` | Terminal bench roadmap |
+## Adding a doc to this index
 
-## Audit Documents
+1. Add one row to `docs/key-docs.tsv` (`zone`, `path`, `purpose`, `audience`).
+2. Run `scripts/gen-key-docs.py`.
+3. Commit the TSV **and** the regenerated `docs/KEY_DOCS.md` together.
 
-| File | Purpose | Status |
-|------|---------|--------|
-| `docs/audit/doc-sync-apr12-delta-checklist.md` | Documentation audit delta checklist (2026-04-12) | Current |
-| `docs/doc-sync-audit-2026-04-12.md` | Documentation audit checklist (2026-04-12) | Current |
-| `docs/doc-sync-audit-2026-04-29.md` | Documentation audit consolidated report (2026-04-29) | Current |
-| `docs/audit-recovery-docs-2026-04-27.md` | Audit: recovery + outage workflows in agent-visible docs | Current |
-| `docs/audit-unmerged-branches-2026-04-25.md` | Audit: unmerged agent branches (2026-04-25, read-only) | Current |
-| `docs/audit-unmerged-branches-2026-04-26.md` | Audit: unmerged agent branches (2026-04-26, execution + root-cause) | Current |
-| `docs/tui-coordinator-resumption-findings.md` | TUI chat-agent resumption investigation findings | Current |
-| `docs/codex-handler-merge-bug.md` | Bug: wg done silently drops staged-uncommitted worktree changes | Current |
-| `docs/triage-wg-nex-small-model-reports-2026-04-27.md` | Triage: 3 small-model bug reports from wg nex (Qwen3) | Current |
-
-## Archive
-
-| Directory | Purpose |
-|-----------|---------|
-| `docs/archive/research/` | Historical research documents |
-| `docs/archive/reviews/` | Historical review documents |
-| `docs/archive/2026-04-17-rescued/` | Rescued engineering work from accidentally-lost commit eef15157; INDEX.md explains provenance |
+A doc that is not canonical does **not** belong in the TSV — it belongs in the
+census, or in `docs/archive/` if `scripts/doc-archive-audit.sh` says so.

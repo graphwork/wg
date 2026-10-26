@@ -1,7 +1,7 @@
 # Fix: Android Firefox font fallback in `wg html`
 
 Task: `fix-android-firefox-wg-html-font-fallback`
-Related context: `bug-wg-html-box-drawing-glyph-alignment.md`,
+Related context: `docs/archive/root-reports/bug-wg-html-box-drawing-glyph-alignment.md`,
 prior CSS-only attempt `fix-wg-html-box-drawing-alignment` (commit `3dea8bb`)
 
 ## Symptom

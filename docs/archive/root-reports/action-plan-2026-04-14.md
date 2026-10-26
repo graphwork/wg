@@ -1,7 +1,7 @@
 # Action Plan: Intense Reliability for Local-Model Agents
 
 **Status:** Active guiding star for native-executor hardening work.
-**Companion doc:** [`issues-2026-04-14.md`](issues-2026-04-14.md) — historical record of problems 1–15 and the post-mortem of the `fix-worktree-fundamental` run.
+**Companion doc:** [`issues-2026-04-14.md`](../2026-04-17-rescued/issues-2026-04-14.md) — historical record of problems 1–15 and the post-mortem of the `fix-worktree-fundamental` run.
 **Started:** 2026-04-14
 
 ---
@@ -261,7 +261,7 @@ If L0 doesn't verify:
 
 ## Related docs and artifacts
 
-- [`issues-2026-04-14.md`](issues-2026-04-14.md) — historical record of Problems 1–15 and the post-mortem
+- [`issues-2026-04-14.md`](../2026-04-17-rescued/issues-2026-04-14.md) — historical record of Problems 1–15 and the post-mortem
 - [`damage-diff-2026-04-14.patch`](damage-diff-2026-04-14.patch) — full diff of the 2185-line deletion incident from earlier tonight
 - `study-damaged-worktree-fix-2026-04-14/` — preserved artifacts from the failed run (stub `liveness.rs`, scaffolded `shared_state.rs`, etc.)
 - Commit [`b36842de`](https://github.com/graphwork/wg/pull/10/commits/b36842de) — the L0 fix

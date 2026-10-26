@@ -1,0 +1,103 @@
+# docs/key-docs.tsv — the curated input for docs/KEY_DOCS.md
+#
+# Format: ZONE <tab> PATH <tab> PURPOSE <tab> AUDIENCE
+# Lines starting with '#' and blank lines are ignored.
+#
+# This is the *only* hand-maintained part of the documentation index. Render it
+# with:
+#
+#     scripts/gen-key-docs.py            # rewrite docs/KEY_DOCS.md
+#     scripts/gen-key-docs.py --check    # fail if docs/KEY_DOCS.md is stale
+#
+# Rules (see docs/archive/POLICY.md §9):
+#   * ZONE is one of: core, agent, user, operator, adr, spark, design, embedded
+#   * every PATH must exist — the generator fails loudly on a missing path, so a
+#     move/archive must update this file in the same commit
+#   * add a row only for a *canonical* doc (docs/archive/POLICY.md §2 K1–K5).
+#     Everything not listed here is accounted for by the generated census.
+#   * purpose: one line, what the doc is for. audience: who should read it.
+
+# --- core: start here -------------------------------------------------------
+core	README.md	Project overview, install, setup, usage patterns, feature summary	Everyone (entry point)
+core	AGENTS.md	Layer-2 project guide for this repo: build/dev loop, cargo-install rule, service configuration, profiles/secrets. Universal role contract comes from `wg agent-guide`. Byte-identical twin of `CLAUDE.md`	AI agents (Codex, Cursor, Claude Code)
+core	CLAUDE.md	Same bytes as `AGENTS.md`; exists because Claude Code looks for this filename. Divergence is a bug (guard-tested)	AI agents (Claude Code)
+core	docs/KEY_DOCS.md	This file. Generated from `docs/key-docs.tsv` — do not hand-edit	Everyone
+core	docs/archive/POLICY.md	Documentation archive policy: keep/archive rule, the grep-before-archive gate, archive layout and waves	Contributors
+core	docs/survey/survey-synthesis-subtraction-plan.md	The ranked subtraction plan that the archive waves execute; also the do-not-cut list	Operators
+core	worksgood.toml	This repo's project-local route/configuration document (model plane, tiers, reasoning)	Operators, contributors
+
+# --- agent: rules for AI agents --------------------------------------------
+agent	docs/AGENT-GUIDE.md	How spawned agents should think about task graphs: patterns, structures, retry/kill mechanics, anti-patterns	AI agents, advanced users
+agent	docs/agent-git-hygiene.md	Git hygiene rules for agents sharing one repo (surgical staging, no stash, no force-push)	AI agents, operators
+agent	docs/WORKTREE-ISOLATION.md	Worktree-based isolation for concurrent agents	Operators, contributors
+agent	docs/design/agents-md-slimming.md	Proposal (unapplied patch) to move the spark-stage narrative out of the always-loaded AGENTS.md/CLAUDE.md	Contributors
+embedded	src/text/agent_guide.md	Universal role contract bundled into the `wg` binary and emitted by `wg agent-guide` (chat agent / dispatcher / worker, validation, smoke gate, cycles)	AI agents (any project)
+embedded	src/commands/quickstart.rs	`wg quickstart` onboarding text — the "read me first" for an agent in a WG project	AI agents, new users
+
+# --- user: using wg --------------------------------------------------------
+user	docs/README.md	Documentation overview: core concepts, quick start, storage format, JSON output	Users, contributors
+user	docs/quickstart-pi-openrouter.md	Verified pushbutton quickstart: install, OpenRouter auth, free-model discovery, plugin install, route selection (canonical quickstart)	New users
+user	docs/COMMANDS.md	Complete CLI command reference with examples	Users, agents
+user	docs/models.md	Model, endpoint and API-key management (companion: `docs/config-ux-design.md`)	Users, agents
+user	docs/config-precedence.md	Config precedence: which layer wins (worksgood.toml vs global vs flags)	Users, operators
+user	docs/config-ux-design.md	Config UX: `wg config init` / `wg setup`, named profiles, secrets, migration strategy	Users, operators, contributors
+user	docs/AGENCY.md	Agency system: roles, tradeoffs, evaluation, evolution, skills	Users setting up agency
+user	docs/guides/install.md	Install paths: operator `cargo install`, npm, `wg dev-sync` dev loop	Users, operators
+user	docs/guides/openrouter-setup.md	OpenRouter provider setup	Users, operators
+user	docs/guides/server-setup.md	Server setup guide	Operators
+user	docs/guides/frontier-build.md	Frontier build profile	Operators
+user	docs/guides/standalone-nex.md	The standalone `nex` binary	Advanced users
+user	docs/guides/executor-arena.md	External executor adapter matrix, OpenRouter env setup, init templates	Operators
+user	docs/manual/README.md	Manual build instructions (Typst source → Markdown)	Contributors
+user	docs/manual/wg-manual.md	Full assembled manual (derived from the Typst source)	Deep readers
+
+# --- operator: running it --------------------------------------------------
+operator	docs/AGENT-SERVICE.md	Service daemon architecture: dispatcher tick, dispatch cycle, agent lifecycle, handler routing	Operators, contributors
+operator	docs/AGENT-LIFECYCLE.md	Hardened agent lifecycle: spawn → work → complete → die, target-dir reaper, dispatcher persistence	Operators, contributors
+operator	docs/ops/runbook.md	Operator runbook: stand-up, verify, teardown	Operators
+operator	docs/ops/completion-validation-evidence.md	The completion-evidence contract a fail-closed `wg done` enforces	Operators, contributors
+operator	docs/ops/maze-free-recovery.md	Recovery when the graph is stuck	Operators
+operator	docs/ops/pi-evaluation-rollout.md	Pi evaluation rollout	Operators
+operator	docs/ops/review-projection-recovery.md	Recovery for the completion-review projection	Operators
+operator	docs/ops/scored-evaluation.md	Scored evaluation	Operators
+operator	docs/LOGGING.md	Logging and provenance: operation log, agent archives, rotation	Operators, integrators
+operator	docs/SECURITY.md	Security guide: pre-commit hooks, GitGuardian, secret management	Operators, contributors
+operator	docs/DEV.md	Development notes: build, test, reusable functions, common pitfalls	Contributors
+operator	docs/config-canonical.md	Canonical config-key audit: what to keep, what is stale, what each key does	Operators, contributors
+operator	docs/MODEL_REGISTRY.md	Model provider registry with quality tiers	Contributors
+operator	docs/AGENCY_AUDIT.md	Agency system audit	Contributors, operators
+operator	docs/README-windows.md	Windows-specific notes	Users on Windows, contributors
+
+# --- design: the design of record for behaviour that ships -----------------
+design	docs/design-handler-first-model-spec.md	Handler-first model specs: why the leading token of a model spec is always a handler	Contributors
+design	docs/design-project-local-pi-config.md	Project-local Pi config: `worksgood.toml` as the sole project authority	Contributors
+design	docs/design-two-tier-pi-profile.md	Two-tier (strong/weak) Pi profile projection	Contributors
+design	docs/design-pi-plugin-install.md	The idempotent `ensure-pi-plugin` primitive and the embedded plugin cache	Contributors
+design	docs/design-retire-model-registry.md	Why the model registry was retired in favour of the Pi catalog	Contributors
+design	docs/design-cow-worktrees.md	Copy-on-write worktrees for agent isolation	Contributors
+design	docs/build-artifact-storage.md	Build artifact storage / target-cache layout	Contributors
+design	docs/automatic-task-archival.md	Automatic task-archival behaviour in the graph	Contributors
+
+# --- adr: decisions of record ---------------------------------------------
+adr	docs/ADR-actor-vs-agent-identity.md	ADR: actor vs agent identity	Contributors
+adr	docs/ADR-fed-000-acceptance-brief.md	ADR series brief: WG-Fed acceptance criteria	Contributors
+adr	docs/ADR-fed-001-identity-key-model.md	ADR-fed-001: identity and key model	Contributors
+adr	docs/ADR-fed-002-transport.md	ADR-fed-002: transport rungs (dumb store, node inbox)	Contributors
+adr	docs/ADR-fed-003-custody-delegation-recovery.md	ADR-fed-003: custody, delegation (UCAN), recovery	Contributors
+adr	docs/ADR-fed-004-loadable-state-safety.md	ADR-fed-004: loadable-state safety (S-5 pipeline)	Contributors
+adr	docs/ADR-content-safety-001-review-gate.md	ADR-CS-001: the inbound-content review gate	Contributors
+adr	docs/ADR-content-safety-002-reviewer-hardening.md	ADR-CS-002: reviewer hardening (no-scope, spotlight, quorum)	Contributors
+adr	docs/ADR-content-safety-003-verdict-audit-revoke.md	ADR-CS-003: verdict audit, digest-pinned consumption, revoke	Contributors
+adr	docs/ADR-exec-000-acceptance-brief.md	ADR series brief: WG-Exec acceptance criteria	Contributors
+adr	docs/ADR-exec-e1-placement.md	ADR-exec-E1: placement matcher	Contributors
+adr	docs/ADR-exec-e2-confidentiality.md	ADR-exec-E2: confidentiality / attested providers	Contributors
+adr	docs/ADR-exec-e3-capability-lease.md	ADR-exec-E3: capability envelope and lease fencing	Contributors
+adr	docs/ADR-exec-e4-verification.md	ADR-exec-E4: disjoint verification of a remote result	Contributors
+
+# --- spark: spark-stage subsystems (off the daily path, still live) -------
+spark	docs/spark/README.md	Index + reading rules for the spark-stage subsystem docs	Contributors
+spark	docs/spark/wg-fed.md	WG-Fed (Waves 3–6): `wgid:` identity, sigchain, transport, portable state, encryption=ACL, UCAN delegation	Contributors
+spark	docs/spark/wg-review.md	WG-Review: `wg review` inbound-content review gate	Contributors
+spark	docs/spark/wg-exec.md	WG-Exec: `wg provider` remote placement, lease fence, disjoint re-run	Contributors
+spark	docs/spark/e2e-family-team.md	The three sparks composing across two FS-independent instances	Contributors
+spark	docs/spark/wg-pilot.md	WG-Pilot: one-command family-team stand-up (`wg pilot up/status/down`)	Operators

@@ -8,6 +8,8 @@ WG (`wg`) is a task coordination system designed for both humans and AI agents. 
 - [Quick Start](#quick-start)
   - [First-Time Setup](#first-time-setup)
 - [Command Reference](./COMMANDS.md)
+- [Key Documentation Files](./KEY_DOCS.md) — generated index of the canonical docs
+- [Documentation Archive Policy](./archive/POLICY.md) — keep/archive rule and the archive gate
 - [Agent Guide](./AGENT-GUIDE.md)
 - [Storage Format](#storage-format)
 - [JSON Output](#json-output)
