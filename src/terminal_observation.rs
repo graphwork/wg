@@ -16,8 +16,8 @@ use crate::completion_review::{
 use crate::completion_task::{
     ReviewEvidence, load_exact_review_pair, load_review_evidence, load_submission_bytes,
 };
+use crate::content_addr::canonical_json;
 use crate::graph::{CompletionContract, CompletionDisposition, Status, Task, TokenUsage};
-use crate::identity::canonical_json;
 use crate::lifecycle::{ActorKind, AttemptDisposition, LifecycleEvent};
 use crate::parser::load_graph;
 use crate::simple_land::ReviewVerdict;

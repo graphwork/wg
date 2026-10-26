@@ -42,8 +42,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::content_addr::{content_cid, signing_digest};
 use crate::identity::sigchain::{AuthorizedKeys, KeyRole, KeyStatus};
-use crate::identity::{ALG_ED25519, ENVELOPE_V, content_cid, keys, signing_digest};
+use crate::identity::{ALG_ED25519, ENVELOPE_V, keys};
 
 pub use crate::graph::TrustLevel;
 pub use bundle::SealedBundle;

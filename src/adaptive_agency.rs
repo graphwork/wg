@@ -8,7 +8,7 @@
 //! into a source lifecycle transition.
 
 use crate::completion_review::{ReviewFinding, ReviewUsage, ReviewerKind};
-use crate::identity::canonical_json;
+use crate::content_addr::canonical_json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

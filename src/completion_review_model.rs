@@ -140,7 +140,7 @@ impl<'a> ExactModelReviewer<'a> {
             .expect("FLIP construction requires comparison dispatch");
         let blind_input = build_flip_blind_input(bundle);
         let outputs = blind_input.outputs.clone();
-        let blind_bytes = crate::identity::canonical_json(
+        let blind_bytes = crate::content_addr::canonical_json(
             &serde_json::to_value(&blind_input).expect("blind input serializes"),
         );
         let blind_object = self.persist_flip_bytes(
@@ -179,7 +179,7 @@ impl<'a> ExactModelReviewer<'a> {
             "phase-I exact raw response",
         )?;
         let hypothesis = parse_latent_hypothesis(&inference.text)?;
-        let hypothesis_bytes = crate::identity::canonical_json(
+        let hypothesis_bytes = crate::content_addr::canonical_json(
             &serde_json::to_value(&hypothesis).map_err(|error| ReviewerUnavailable {
                 code: "flip.invalid_hypothesis".into(),
                 message: error.to_string(),
@@ -234,7 +234,7 @@ impl<'a> ExactModelReviewer<'a> {
             hypothesis_object.content_digest.clone(),
             hypothesis,
         );
-        let comparison_bytes = crate::identity::canonical_json(
+        let comparison_bytes = crate::content_addr::canonical_json(
             &serde_json::to_value(&comparison_input).expect("comparison input serializes"),
         );
         let comparison_input_object = self.persist_flip_bytes(
@@ -277,7 +277,7 @@ impl<'a> ExactModelReviewer<'a> {
         )?;
         let mut review = parse_semantic_review(&compared.text)?;
         review.findings = normalized_review_findings(review.findings);
-        let findings_bytes = crate::identity::canonical_json(
+        let findings_bytes = crate::content_addr::canonical_json(
             &serde_json::to_value(&review.findings).expect("findings serialize"),
         );
         let findings_digest = crate::completion_manifest::ContentDigest::of_bytes(&findings_bytes);

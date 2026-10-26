@@ -20,7 +20,8 @@ use x25519_dalek::{PublicKey as XPublicKey, StaticSecret};
 
 use super::keys::{self, Custodian};
 use super::sigchain::{AuthorizedKeys, KeyEntry};
-use super::{ALG_ED25519, ENVELOPE_V, blake3_32, content_cid, signing_digest};
+use super::{ALG_ED25519, ENVELOPE_V};
+use crate::content_addr::{blake3_32, content_cid, signing_digest};
 
 /// A fetchable delivery/state endpoint advertised in an `IdentityRecord`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

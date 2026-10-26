@@ -62,11 +62,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use super::content_cid;
 use super::envelope::{IdentityRecord, payload_cid};
 use super::freshness::FreshnessAttestation;
 use super::sigchain::{self, SigchainLink};
 use super::transport::{API_PREFIX, FedStore, FileStore, Head, sanitize};
+use crate::content_addr::content_cid;
 
 /// Tunable abuse-resistance limits for the node (audit B2/M4). Defaults are generous
 /// for a real deploy; every field is overridable from the environment via

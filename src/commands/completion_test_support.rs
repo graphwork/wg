@@ -11,7 +11,7 @@ use worksgood::completion_review::{
     render_flip_comparison_prompt, render_flip_inference_prompt,
 };
 use worksgood::completion_review_model::{build_flip_blind_input, build_flip_comparison_input};
-use worksgood::identity::canonical_json;
+use worksgood::content_addr::canonical_json;
 use worksgood::simple_land::ReviewVerdict;
 
 /// Test-only stand-in for the exact-call boundary. It writes the same immutable

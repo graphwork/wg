@@ -5,8 +5,8 @@
 //! lifecycle is authoritative even before the explicit migration adds
 //! [`EVALUATION_CUTOVER_TAG`] and normalizes legacy edges.
 
+use crate::content_addr::canonical_json;
 use crate::graph::{Node, Status, Task, WorkGraph};
-use crate::identity::canonical_json;
 
 pub const EVALUATION_CUTOVER_VERSION: u32 = 1;
 pub const EVALUATION_CUTOVER_TAG: &str = "evaluation-cutover:v1:historical-inert";

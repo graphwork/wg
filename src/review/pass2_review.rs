@@ -66,7 +66,7 @@ pub fn spotlight(content: &str) -> String {
     // untrusted" substring) so a forged `---END UNTRUSTED---` in the *payload* is
     // still recognisable as an attacker delimiter (RA-1b), while the genuine
     // reviewer-generated delimiter is not mistaken for one.
-    let nonce = &hex::encode(crate::identity::blake3_32(content.as_bytes()))[..16];
+    let nonce = &hex::encode(crate::content_addr::blake3_32(content.as_bytes()))[..16];
     format!("<<WG-REVIEW-DATA {nonce}>>\n{content}\n<<WG-REVIEW-DATA-CLOSE {nonce}>>")
 }
 

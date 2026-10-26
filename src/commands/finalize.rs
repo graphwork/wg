@@ -1015,7 +1015,7 @@ pub fn run_candidate(dir: &Path, command: CandidateCommands, json: bool) -> Resu
                 "operator": actor,
                 "reason": reason.trim(),
             });
-            let waiver_id = worksgood::identity::content_cid(&waiver_value);
+            let waiver_id = worksgood::content_addr::content_cid(&waiver_value);
             let waiver_dir = store.root().join("waivers");
             std::fs::create_dir_all(&waiver_dir)?;
             worksgood::atomic_file::write_atomic(

@@ -9,7 +9,7 @@ use crate::completion_manifest::{
     ArtifactOutput, ArtifactStoreError, CompletionArtifactStore, ContentDigest, ImmutableLocator,
     IncompleteEvidence, ResolvedReviewBundle,
 };
-use crate::identity::canonical_json;
+use crate::content_addr::canonical_json;
 use crate::service::agency_retry::AgencyRetryStats;
 use crate::simple_land::ReviewVerdict;
 use chrono::Utc;

@@ -363,7 +363,7 @@ pub fn content_cid<T: Serialize>(value: &T) -> Result<String, EvidenceError> {
 }
 
 fn canonical_json(value: &Value) -> Vec<u8> {
-    crate::identity::canonical_json(value)
+    crate::content_addr::canonical_json(value)
 }
 
 fn require(name: &str, value: &str) -> Result<(), EvidenceError> {

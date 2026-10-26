@@ -17,11 +17,11 @@ use worksgood::completion_validation::{
     capture_validation, configured_validation_commands, land_baseline_command,
 };
 use worksgood::config::Config;
+use worksgood::content_addr::canonical_json;
 use worksgood::graph::{
     CompletionBlocker, CompletionBlockerKind, CompletionContract, CompletionDisposition,
     LandingReconciliationState, LogEntry, Status,
 };
-use worksgood::identity::canonical_json;
 use worksgood::parser::{load_graph, modify_graph};
 
 use super::completion_submit::{collect_dependency_outputs, require_source_owner, store};

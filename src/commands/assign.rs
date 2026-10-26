@@ -9,7 +9,7 @@ use worksgood::agency::composition_rules::{
     CompositionRulesOverlay, default_overlay_path, load_composition_rules,
 };
 use worksgood::config::Config;
-use worksgood::identity::canonical_json;
+use worksgood::content_addr::canonical_json;
 use worksgood::parser::{load_graph, modify_graph};
 
 use super::graph_path;

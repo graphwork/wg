@@ -6,8 +6,8 @@
 //! inaccessible, oversized, protected, or digest-mismatched data is classified
 //! as incomplete evidence before semantic review begins.
 
+use crate::content_addr::{blake3_32, canonical_json};
 use crate::control_plane::assert_tree_has_no_control_plane;
-use crate::identity::{blake3_32, canonical_json};
 use crate::simple_land::CompletionContract;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;

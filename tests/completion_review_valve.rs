@@ -18,7 +18,7 @@ use worksgood::completion_review::{
 use worksgood::completion_review_model::{
     build_flip_blind_input, build_flip_comparison_input, render_review_prompt,
 };
-use worksgood::identity::canonical_json;
+use worksgood::content_addr::canonical_json;
 use worksgood::simple_land::{CompletionContract, ReviewVerdict};
 
 const REQUIREMENTS: &[u8] = b"produce reviewed output";

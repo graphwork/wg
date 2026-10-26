@@ -13,8 +13,8 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::content_addr::content_cid;
 use crate::context_scope::ContextScope;
-use crate::identity::content_cid;
 use crate::identity::envelope::SignedEvent;
 use crate::identity::keys::Custodian;
 use crate::identity::sigchain::AuthorizedKeys;

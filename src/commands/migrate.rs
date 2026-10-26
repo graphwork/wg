@@ -1073,7 +1073,8 @@ mod tests {
         let store =
             worksgood::completion_manifest::CompletionArtifactStore::open(wg.join("completion/v3"))
                 .unwrap();
-        let bytes = worksgood::identity::canonical_json(&serde_json::to_value(receipt).unwrap());
+        let bytes =
+            worksgood::content_addr::canonical_json(&serde_json::to_value(receipt).unwrap());
         task.completion_receipt = Some(
             store
                 .put_bytes(&bytes, "application/vnd.worksgood.completion-receipt+json")

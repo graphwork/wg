@@ -106,7 +106,7 @@ impl Head {
     /// authenticate the owner (the directory rung leaves it empty). Idempotent: a
     /// later mutation (e.g. updating `attestation`) must re-`sign`.
     pub fn sign(&mut self, custodian: &super::keys::Custodian, signer_kid: &str) -> Result<()> {
-        let digest = super::signing_digest(&self.to_value());
+        let digest = crate::content_addr::signing_digest(&self.to_value());
         self.sig = hex::encode(custodian.sign_digest(signer_kid, &digest)?);
         Ok(())
     }

@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 
 use crate::atomic_file::write_atomic;
 use crate::config::Config;
-use crate::identity::blake3_32;
+use crate::content_addr::blake3_32;
 use crate::profile::named;
 
 /// Command version recorded in every receipt. Bumped when the on-disk receipt

@@ -39,7 +39,8 @@ use serde_json::Value;
 
 use super::keys::{self, Custodian};
 use super::sigchain::{AuthorizedKeys, KeyRole, KeyStatus};
-use super::{ALG_ED25519, ENVELOPE_V, content_cid, signing_digest};
+use super::{ALG_ED25519, ENVELOPE_V};
+use crate::content_addr::{content_cid, signing_digest};
 
 /// Default Δ for routine "is this key still valid" checks (24 h — tolerant of the
 /// email-speed, both-ends-offline budget). Tunable per ADR-fed-001 §OQ4.

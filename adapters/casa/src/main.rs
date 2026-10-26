@@ -302,7 +302,7 @@ fn ingest(
             .get("content_cid")
             .and_then(|v| v.as_str())
             .context("review result lacks content_cid")?;
-        let exact = worksgood::identity::content_cid(&serde_json::Value::String(body.into()));
+        let exact = worksgood::content_addr::content_cid(&serde_json::Value::String(body.into()));
         if exact != content_cid {
             bail!("digest-pinned input changed after Review");
         }

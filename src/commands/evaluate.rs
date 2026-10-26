@@ -25,7 +25,7 @@ use worksgood::completion_manifest::{
     ContentDigest, ResolvedEvidence, ResolvedOutput, ResolvedPayload, ResolvedReviewBundle,
 };
 use worksgood::config::{Config, DispatchRole};
-use worksgood::identity::canonical_json;
+use worksgood::content_addr::canonical_json;
 use worksgood::json_extract::extract_json;
 use worksgood::parser::load_graph;
 use worksgood::service::llm::{AgencyDispatch, run_exact_agency_dispatch_call};

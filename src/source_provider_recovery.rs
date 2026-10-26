@@ -388,7 +388,7 @@ pub fn goal_requirements_digest(task: &Task) -> String {
     });
     format!(
         "b3:{}",
-        blake3::hash(&crate::identity::canonical_json(&value)).to_hex()
+        blake3::hash(&crate::content_addr::canonical_json(&value)).to_hex()
     )
 }
 
@@ -550,7 +550,7 @@ fn evidence_digest(signal: &FailureSignal) -> String {
     });
     format!(
         "b3:{}",
-        blake3::hash(&crate::identity::canonical_json(&safe)).to_hex()
+        blake3::hash(&crate::content_addr::canonical_json(&safe)).to_hex()
     )
 }
 

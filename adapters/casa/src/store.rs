@@ -118,7 +118,7 @@ impl CasaStore {
             "renderProfile": "casa-calm-v1",
             "text": reply,
         });
-        let id = worksgood::identity::content_cid(&core);
+        let id = worksgood::content_addr::content_cid(&core);
         let intent = DeliveryIntent {
             schema: INTENT_SCHEMA.into(),
             id: id.clone(),

@@ -9,8 +9,8 @@ use crate::completion_manifest::{
     CompletionManifestRef, ContentDigest, ResolvedReviewBundle,
 };
 use crate::completion_review::{ReviewReceipt, ReviewerKind};
+use crate::content_addr::canonical_json;
 use crate::graph::{CompletionContract as GraphContract, Task};
-use crate::identity::canonical_json;
 use crate::simple_land::CompletionContract;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

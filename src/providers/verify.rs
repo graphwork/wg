@@ -180,7 +180,9 @@ pub struct PinnedSpec {
 
 impl PinnedSpec {
     pub fn cid(&self) -> String {
-        crate::identity::content_cid(&serde_json::to_value(self).expect("PinnedSpec serializes"))
+        crate::content_addr::content_cid(
+            &serde_json::to_value(self).expect("PinnedSpec serializes"),
+        )
     }
 }
 

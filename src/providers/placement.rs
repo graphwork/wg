@@ -453,7 +453,7 @@ pub struct RankInput {
 }
 
 fn tiebreak_hash(task_id: &str, wgid: &str) -> [u8; 32] {
-    crate::identity::blake3_32(format!("{task_id}|{wgid}").as_bytes())
+    crate::content_addr::blake3_32(format!("{task_id}|{wgid}").as_bytes())
 }
 
 #[cfg(test)]

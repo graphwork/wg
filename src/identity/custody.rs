@@ -39,7 +39,8 @@ use serde::{Deserialize, Serialize};
 
 use super::keys::{self, Custodian};
 use super::sigchain::{AuthorizedKeys, KeyRole, KeyStatus};
-use super::{ALG_ED25519, ENVELOPE_V, blake3_32, canonical_json, content_cid, signing_digest};
+use super::{ALG_ED25519, ENVELOPE_V};
+use crate::content_addr::{blake3_32, canonical_json, content_cid, signing_digest};
 
 // ── Abilities & scope (the UCAN `{with, can}` attenuation lattice) ──────────────
 

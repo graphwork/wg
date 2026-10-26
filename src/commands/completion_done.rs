@@ -6,11 +6,11 @@ use worksgood::completion_manifest::{OutputRef, ReviewResolver};
 use worksgood::completion_task::{
     load_exact_review_pair, load_review_evidence, load_submission_bytes,
 };
+use worksgood::content_addr::canonical_json;
 use worksgood::graph::{
     CompletionContract, CompletionDisposition, LogEntry, Status, TokenUsage, parse_token_usage,
     parse_wg_tokens,
 };
-use worksgood::identity::canonical_json;
 use worksgood::lifecycle::{
     ActorKind, FenceExpectation, LifecycleActor, TransitionKind, TransitionRequest,
     apply_transition,

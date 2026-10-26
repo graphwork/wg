@@ -34,6 +34,11 @@
 //! - [`state_safety`] — the S-5 load pipeline (ADR-fed-004 §D6): loaded
 //!   `StateSnapshot`s are **untrusted input**, provenance-gated by `trust_level`,
 //!   `model_binding`-enforced, with human-in-loop for cross-trust loads.
+//!
+//! The crypto-free canonical-encoding / content-addressing helpers this wire is
+//! built on (`canonical_json`, `blake3_32`, `content_cid`, `signing_digest`) now
+//! live in [`crate::content_addr`] — they are shared with the always-built
+//! completion-evidence plane and carry no identity semantics.
 
 pub mod custody;
 pub mod dedup;
@@ -47,73 +52,6 @@ pub mod state_safety;
 pub mod transport;
 
 use anyhow::{Result, bail};
-use serde_json::Value;
-
-// ── Canonical encoding + content-addressing ────────────────────────────────────
-//
-// All three wire envelopes (and every sigchain link) are content-addressed by
-// BLAKE3 of their **canonical** (recursively sorted-key) JSON serialization
-// (doc 04 §1.4). Canonicalization is done over `serde_json::Value` so it does not
-// depend on serde_json's map ordering: keys are emitted in sorted order at every
-// level. The signature covers the canonical bytes with the `sig` field removed.
-
-/// Recursively emit `value` as canonical JSON (object keys sorted, compact).
-pub fn canonical_json(value: &Value) -> Vec<u8> {
-    let mut out = Vec::new();
-    write_canonical(value, &mut out);
-    out
-}
-
-fn write_canonical(value: &Value, out: &mut Vec<u8>) {
-    match value {
-        Value::Object(map) => {
-            out.push(b'{');
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            for (i, k) in keys.iter().enumerate() {
-                if i > 0 {
-                    out.push(b',');
-                }
-                // serde_json renders a string Value with correct JSON escaping.
-                out.extend_from_slice(serde_json::to_string(k).unwrap().as_bytes());
-                out.push(b':');
-                write_canonical(&map[*k], out);
-            }
-            out.push(b'}');
-        }
-        Value::Array(arr) => {
-            out.push(b'[');
-            for (i, v) in arr.iter().enumerate() {
-                if i > 0 {
-                    out.push(b',');
-                }
-                write_canonical(v, out);
-            }
-            out.push(b']');
-        }
-        other => out.extend_from_slice(serde_json::to_string(other).unwrap().as_bytes()),
-    }
-}
-
-/// BLAKE3 a byte slice into a raw 32-byte digest.
-pub fn blake3_32(bytes: &[u8]) -> [u8; 32] {
-    *blake3::hash(bytes).as_bytes()
-}
-
-/// Content id of a value: `b3:<hex>` over its canonical serialization (doc 04 §1.4).
-pub fn content_cid(value: &Value) -> String {
-    format!("b3:{}", hex::encode(blake3_32(&canonical_json(value))))
-}
-
-/// The 32-byte digest that a signature covers: the canonical serialization of
-/// `value` with any top-level `sig` field removed. Symmetric across sign/verify.
-pub fn signing_digest(value: &Value) -> [u8; 32] {
-    let mut v = value.clone();
-    if let Value::Object(map) = &mut v {
-        map.remove("sig");
-    }
-    blake3_32(&canonical_json(&v))
-}
 
 /// WG-Fed wire/format compatibility version.
 ///
@@ -229,33 +167,5 @@ mod tests {
     fn compat_rejects_garbage() {
         assert!(check_compat("not-a-version").is_err());
         assert!(check_compat("1").is_err());
-    }
-
-    #[test]
-    fn canonical_json_sorts_keys_recursively() {
-        let a = serde_json::json!({"b": 1, "a": {"y": 2, "x": 3}});
-        let b = serde_json::json!({"a": {"x": 3, "y": 2}, "b": 1});
-        assert_eq!(canonical_json(&a), canonical_json(&b));
-        assert_eq!(canonical_json(&a), br#"{"a":{"x":3,"y":2},"b":1}"#);
-    }
-
-    #[test]
-    fn signing_digest_ignores_sig_field() {
-        let with_sig = serde_json::json!({"from": "alice", "sig": "deadbeef"});
-        let other_sig = serde_json::json!({"from": "alice", "sig": "00000000"});
-        let no_sig = serde_json::json!({"from": "alice"});
-        assert_eq!(signing_digest(&with_sig), signing_digest(&other_sig));
-        assert_eq!(signing_digest(&with_sig), signing_digest(&no_sig));
-    }
-
-    #[test]
-    fn content_cid_is_stable_and_prefixed() {
-        let v = serde_json::json!({"x": 1, "y": [1, 2, 3]});
-        let cid = content_cid(&v);
-        assert!(cid.starts_with("b3:"), "{cid}");
-        assert_eq!(content_cid(&v), cid);
-        // A change in content changes the cid.
-        let v2 = serde_json::json!({"x": 2, "y": [1, 2, 3]});
-        assert_ne!(content_cid(&v2), cid);
     }
 }

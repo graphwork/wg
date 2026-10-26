@@ -7,7 +7,7 @@
 //!
 //! - **D2 — the verdict sigchain.** Every verdict, for every item, at every pass, is
 //!   recorded on a **hash-linked, content-addressed** append-only chain (the WG-Fed
-//!   sigchain substrate, reused via [`crate::identity::content_cid`] — **no** new
+//!   sigchain substrate, reused via [`crate::content_addr::content_cid`] — **no** new
 //!   ledger, **no** `WG_REVIEW_COMPAT_VERSION`). **No SKIP / uncertain verdict is
 //!   ever silently dropped** — the record is what makes every accept/reject a
 //!   *reversible event*.
@@ -32,8 +32,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::{Confidence, ContentClass, PassOutcome, PipelineOutcome, ReasonCode, Verdict};
+use crate::content_addr::content_cid;
 use crate::graph::TrustLevel;
-use crate::identity::content_cid;
 
 /// The provenance leg of a verdict record (ADR-CS3 D2): author + sigchain position
 /// + the content digest that is the consumption pin (D3).

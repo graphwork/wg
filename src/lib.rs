@@ -41,6 +41,7 @@ pub mod concierge;
 pub mod config;
 pub mod config_defaults;
 pub mod config_migrate;
+pub mod content_addr;
 pub mod context_scope;
 pub mod control_plane;
 pub mod cron;

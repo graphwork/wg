@@ -17,9 +17,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::content_addr::{content_cid, signing_digest};
 use crate::identity::keys::verify_sig;
 use crate::identity::sigchain::AuthorizedKeys;
-use crate::identity::{ALG_ED25519, ENVELOPE_V, content_cid, signing_digest};
+use crate::identity::{ALG_ED25519, ENVELOPE_V};
 
 /// The signed lease carried in a `RunGrant` (ADR-E3 D5). Signed by the authorizer; the
 /// epoch is the fencing token a later write must still match.

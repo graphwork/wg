@@ -322,7 +322,7 @@ fn read_and_validate_evidence(
     }
     let value = serde_json::to_value(&evidence)?;
     Ok(RecordedEvidence {
-        evidence_id: crate::identity::content_cid(&value),
+        evidence_id: crate::content_addr::content_cid(&value),
         recorded_at: Utc::now().to_rfc3339(),
         evidence,
     })
@@ -377,7 +377,7 @@ pub fn record_observation(dir: &Path, path: &Path) -> Result<RolloutStatus> {
     validate_common(&evidence)?;
     let value = serde_json::to_value(&evidence)?;
     state.evidence.push(RecordedEvidence {
-        evidence_id: crate::identity::content_cid(&value),
+        evidence_id: crate::content_addr::content_cid(&value),
         recorded_at: Utc::now().to_rfc3339(),
         evidence,
     });

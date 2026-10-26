@@ -39,7 +39,8 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::keys::{self, Custodian};
-use super::{ALG_ED25519, ENVELOPE_V, blake3_32, canonical_json, content_cid, signing_digest};
+use super::{ALG_ED25519, ENVELOPE_V};
+use crate::content_addr::{blake3_32, canonical_json, content_cid, signing_digest};
 
 /// The kind of a sigchain link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

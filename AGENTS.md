@@ -558,7 +558,7 @@ yields no action, and a `Verified` poison that *lands* is caught by the audit/re
 
 It **composes with WG-Fed + WG-Exec and invents no parallel trust system** (ADR-CS1 D5): it
 *reads* `graph::TrustLevel` (`src/graph.rs`) as its depth input, content-addresses verdicts
-with the WG-Fed `identity::content_cid` substrate, and carries **no**
+with the WG-Fed content-addressing substrate (`content_addr::content_cid`), and carries **no**
 `WG_REVIEW_COMPAT_VERSION` — the verdict rides the existing WG-Fed envelopes. The gate
 screens four inbound classes at their **consumption edge** (received ≠ consumed): **IC1**
 task/prompt (the prompt-injection / goal-hijack surface), **IC2** artifact/code on the

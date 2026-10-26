@@ -16,12 +16,12 @@ use crate::completion_review::{
     VerifiedCompletionReviewActivity,
 };
 use crate::completion_task::requirements_digest;
+use crate::content_addr::canonical_json;
 use crate::graph::{
     CompletionContract as GraphCompletionContract, CompletionRepairBoundary,
     CompletionRepairDisposition, CompletionRepairPolicy, CompletionRepairState, Status, Task,
     WorkGraph, parse_delay,
 };
-use crate::identity::canonical_json;
 use crate::simple_land::{CompletionContract, ReviewVerdict};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

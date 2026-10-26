@@ -16,8 +16,8 @@ use worksgood::completion_review::{
     ReviewAttemptObserver, ReviewFailureClass, ReviewFinding, ReviewerKind, StoredReviewReceipt,
 };
 use worksgood::config::{Config, DispatchRole};
+use worksgood::content_addr::canonical_json;
 use worksgood::graph::{Status, Task};
-use worksgood::identity::canonical_json;
 use worksgood::parser::load_graph;
 use worksgood::simple_land::ReviewVerdict;
 

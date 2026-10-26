@@ -12,7 +12,7 @@
 //!
 //! It **composes with WG-Fed and WG-Exec and invents no parallel trust system**
 //! (ADR-CS1 D5): it *reads* [`crate::graph::TrustLevel`] as its depth input, it
-//! content-addresses verdicts with the WG-Fed [`crate::identity::content_cid`]
+//! content-addresses verdicts with the WG-Fed [`crate::content_addr::content_cid`]
 //! substrate, and it carries **no** `WG_REVIEW_COMPAT_VERSION` — the verdict rides
 //! the existing WG-Fed envelopes.
 //!
@@ -347,7 +347,8 @@ fn review_inbound_impl(
     self_sensitivity: Sensitivity,
 ) -> PipelineOutcome {
     // The digest-pin: a verdict is over *these exact bytes* (ADR-CS3 D3 / MUST-2).
-    let content_cid = crate::identity::content_cid(&serde_json::Value::String(content.to_string()));
+    let content_cid =
+        crate::content_addr::content_cid(&serde_json::Value::String(content.to_string()));
 
     let mut trace: Vec<PassOutcome> = Vec::new();
 

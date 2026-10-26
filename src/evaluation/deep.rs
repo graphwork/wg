@@ -981,7 +981,7 @@ fn execute_claimed(
             None,
         ));
     }
-    let hypothesis_bytes = crate::identity::canonical_json(&hypothesis_value);
+    let hypothesis_bytes = crate::content_addr::canonical_json(&hypothesis_value);
     let hypothesis_id = format!(
         "wgcid:v1:blake3:{}",
         blake3::hash(&hypothesis_bytes).to_hex()
