@@ -198,6 +198,28 @@ fn send(operation: WorkerOperation) -> Result<()> {
     render_response(&operation, response)
 }
 
+/// A cross-graph (`--as <identity>`) poll — refused for workers. The `--as` field
+/// exists only with the non-default `federation` feature.
+fn federation_targeted_poll(command: &MsgCommands) -> bool {
+    #[cfg(feature = "federation")]
+    if let MsgCommands::Poll { as_identity, .. } = command {
+        return as_identity.is_some();
+    }
+    let _ = command;
+    false
+}
+
+/// A cross-graph (`--to <wgid>`) send — refused for workers. The `--to` field exists
+/// only with the non-default `federation` feature.
+fn federation_targeted_send(command: &MsgCommands) -> bool {
+    #[cfg(feature = "federation")]
+    if let MsgCommands::Send { to, .. } = command {
+        return to.is_some();
+    }
+    let _ = command;
+    false
+}
+
 /// Return `Ok(None)` outside worker mode, `Ok(Some(()))` when handled.
 pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
     if std::env::var_os("WG_WORKER_CAPABILITY").is_none() {
@@ -217,12 +239,7 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                     | Commands::PiPlugin { .. }
                     | Commands::Skill { .. }
                     | Commands::Upgrade { .. }
-                    | Commands::FedNode { .. }
-                    | Commands::Identity { .. }
                     | Commands::Peer { .. }
-                    | Commands::Provider { .. }
-                    | Commands::Review { .. }
-                    | Commands::Pilot { .. }
                     | Commands::Secret { .. }
                     | Commands::Migrate { .. }
                     | Commands::Recover { .. }
@@ -231,6 +248,21 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                     | Commands::Sweep { .. }
             )
         {
+            // Federation-cluster admin verbs are equally outside trusted local graph
+            // coordination when the cluster is compiled in.
+            #[cfg(feature = "federation")]
+            if matches!(
+                command,
+                Commands::FedNode { .. }
+                    | Commands::Identity { .. }
+                    | Commands::Provider { .. }
+                    | Commands::Review { .. }
+                    | Commands::Pilot { .. }
+            ) {
+                anyhow::bail!(
+                    "worker_control.admin_operation_refused: command is outside trusted local graph coordination"
+                );
+            }
             anyhow::bail!(
                 "worker_control.admin_operation_refused: command is outside trusted local graph coordination"
             );
@@ -311,13 +343,13 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 MsgCommands::Read { task_id, .. } | MsgCommands::List { task_id } => {
                     !task_is_own(task_id)
                 }
-                MsgCommands::Poll {
-                    task_id,
-                    as_identity,
-                    ..
-                } => as_identity.is_some() || task_id.as_deref().is_none_or(|id| !task_is_own(id)),
-                MsgCommands::Send { task_id, to, .. } => {
-                    to.is_some() || task_id.as_deref().is_none_or(|id| !task_is_own(id))
+                MsgCommands::Poll { task_id, .. } => {
+                    federation_targeted_poll(msg_command)
+                        || task_id.as_deref().is_none_or(|id| !task_is_own(id))
+                }
+                MsgCommands::Send { task_id, .. } => {
+                    federation_targeted_send(msg_command)
+                        || task_id.as_deref().is_none_or(|id| !task_is_own(id))
                 }
             } =>
         {
@@ -332,12 +364,8 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 task_matches(task_id)?;
                 Some(WorkerOperation::MessageRead { json })
             }
-            MsgCommands::Poll {
-                task_id,
-                as_identity,
-                ..
-            } => {
-                if as_identity.is_some() {
+            MsgCommands::Poll { task_id, .. } => {
+                if federation_targeted_poll(command) {
                     anyhow::bail!("worker_control.federated_poll_refused");
                 }
                 let task_id = task_id
@@ -350,11 +378,10 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                 task_id,
                 message,
                 stdin,
-                to,
                 priority,
                 ..
             } => {
-                if to.is_some() {
+                if federation_targeted_send(command) {
                     anyhow::bail!("worker_control.cross_graph_send_refused");
                 }
                 let task_id = task_id

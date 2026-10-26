@@ -82,6 +82,10 @@ pub fn run(
     // verdict WITHHOLDS that task — it is NOT written (received ≠ consumed). `--no-review`
     // writes everything unscreened.
     let mut withheld: Vec<(String, String, String)> = Vec::new(); // (orig id, verdict, reason)
+    // The screening pipeline is part of the gated `federation` cluster, so the
+    // screening arm is compiled only with that feature. Without it a default build
+    // imports unscreened (the historical pre-seam behavior) and says so loudly.
+    #[cfg(feature = "federation")]
     let kept: Vec<_> = if review {
         let import_trust = worksgood::trust::resolve_author_trust(dir, &source_tag);
         let cfg = worksgood::config::Config::load_merged(dir).ok();
@@ -129,6 +133,17 @@ pub fn run(
             })
             .collect()
     } else {
+        export.tasks.iter().collect()
+    };
+    #[cfg(not(feature = "federation"))]
+    let kept: Vec<_> = {
+        if review {
+            eprintln!(
+                "warning: inbound content review is not compiled into this binary \
+                 (rebuild with `cargo build --features federation`); imported tasks are \
+                 NOT screened"
+            );
+        }
         export.tasks.iter().collect()
     };
     let imported_count = kept.len();

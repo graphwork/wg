@@ -55,12 +55,14 @@ pub mod execution_assignment;
 pub mod execution_selection;
 pub mod executor;
 pub mod executor_discovery;
+#[cfg(feature = "federation")]
 pub mod federation;
 pub mod finalization;
 pub mod function;
 pub mod function_memory;
 pub mod graph;
 pub mod html;
+#[cfg(feature = "federation")]
 pub mod identity;
 pub mod json_extract;
 pub mod landing_turn;
@@ -98,6 +100,7 @@ pub mod platform_timeout;
 pub mod profile;
 pub mod project_config;
 pub mod provenance;
+#[cfg(feature = "federation")]
 pub mod providers;
 pub mod query;
 pub mod registry {
@@ -105,6 +108,7 @@ pub mod registry {
     pub use crate::service::registry::AgentRegistry as Registry;
     pub use crate::service::registry::AgentStatus;
 }
+#[cfg(feature = "federation")]
 pub mod review;
 pub mod runs;
 pub mod save_transaction;
@@ -126,6 +130,7 @@ pub mod target_cache;
 pub mod telegram_commands;
 pub mod telemetry;
 pub mod terminal_observation;
+#[cfg(feature = "federation")]
 pub mod trust;
 pub mod usage;
 pub mod vendor_history;

@@ -100,19 +100,26 @@ pub enum ExecutorKind {
     /// (`src/providers/`). It is NOT a local subprocess handler — the spawn-task
     /// handler path errors on it; the providers plane (`wg provider …`) owns its
     /// mechanics (the two scoped UCANs, the sealed bundle, the epoch-fenced lease).
+    ///
+    /// Gated: the WG-Exec plane is part of the non-default `federation` feature.
+    #[cfg(feature = "federation")]
     RemoteRunner,
 }
 
 /// Where a spawn runs (ADR-E1 D6, the placement field `plan_spawn` gains). `Local`
 /// reproduces today's same-host spawn **byte-for-byte** (NFR-3, the migration
 /// substrate); `Provider(wgid:)` routes the spawn to a separately-owned remote provider
-/// via the WG-Exec providers plane (driven by the [`ExecutorKind::RemoteRunner`] arm).
+/// via the WG-Exec providers plane (driven by the `ExecutorKind::RemoteRunner` arm).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Placement {
     /// Run on this host, the only behavior before federation.
     #[default]
     Local,
-    /// Run on the named `wgid:` provider over the execution wire.
+    /// Run on the named `wgid:` provider over the execution wire. Gated: the
+    /// WG-Exec plane is part of the non-default `federation` feature, so a default
+    /// build has no remote placement at all and every spawn is `Local` — today's
+    /// same-host behavior, byte-for-byte.
+    #[cfg(feature = "federation")]
     Provider(String),
 }
 
@@ -174,6 +181,7 @@ impl ExecutorKind {
             ExecutorKind::Octomind => "octomind",
             ExecutorKind::Dexto => "dexto",
             ExecutorKind::Pi => "pi",
+            #[cfg(feature = "federation")]
             ExecutorKind::RemoteRunner => "remote-runner",
         }
     }
@@ -194,6 +202,7 @@ impl ExecutorKind {
             "octomind" => Some(ExecutorKind::Octomind),
             "dexto" => Some(ExecutorKind::Dexto),
             "pi" => Some(ExecutorKind::Pi),
+            #[cfg(feature = "federation")]
             "remote-runner" => Some(ExecutorKind::RemoteRunner),
             _ => None,
         }
@@ -368,6 +377,7 @@ pub fn spawn_route_binding_id(route_id: &str) -> String {
 pub fn spawn_plan_binding_id(plan: &SpawnPlan, route_id: &str) -> String {
     let placement = match &plan.placement {
         Placement::Local => "local".to_string(),
+        #[cfg(feature = "federation")]
         Placement::Provider(provider) => format!("provider:{provider}"),
     };
     let material = format!(
@@ -588,11 +598,18 @@ pub fn plan_spawn(
     // typed `remote_provider` metadata. Freeform tags are inert labels and
     // cannot route a task to a provider.
     let placement = placement_from_task(task);
+    #[cfg(feature = "federation")]
     let (executor, executor_source) = match &placement {
         Placement::Provider(wgid) => (
             ExecutorKind::RemoteRunner,
             format!("placement: task remote_provider={wgid} (M5)"),
         ),
+        Placement::Local => (executor, executor_source),
+    };
+    // Default build: `placement_from_task` is always `Local` (no remote plane), so
+    // the resolved executor/source are today's, byte-for-byte.
+    #[cfg(not(feature = "federation"))]
+    let (executor, executor_source) = match &placement {
         Placement::Local => (executor, executor_source),
     };
 
@@ -640,11 +657,20 @@ pub fn plan_spawn(
 /// `remote_provider = "wgid:*"` is placed on that remote provider over the WG-Exec wire;
 /// every other task runs `Local` (today's same-host spawn). Freeform tags are labels only.
 pub fn placement_from_task(task: &Task) -> Placement {
-    task.remote_provider
-        .as_deref()
-        .filter(|w| !w.trim().is_empty())
-        .map(|w| Placement::Provider(w.to_string()))
-        .unwrap_or(Placement::Local)
+    #[cfg(feature = "federation")]
+    {
+        task.remote_provider
+            .as_deref()
+            .filter(|w| !w.trim().is_empty())
+            .map(|w| Placement::Provider(w.to_string()))
+            .unwrap_or(Placement::Local)
+    }
+    #[cfg(not(feature = "federation"))]
+    {
+        // No WG-Exec plane in a default build: every spawn is Local.
+        let _ = task;
+        Placement::Local
+    }
 }
 
 /// Reconcile the resolved executor with the model spec so the handler that
@@ -1922,7 +1948,9 @@ mod tests {
     }
 
     // ── M5: the planner produces Placement::Provider from typed remote_provider metadata ──
+    // (gated: the WG-Exec plane is part of the non-default `federation` feature)
 
+    #[cfg(feature = "federation")]
     #[test]
     fn placement_from_task_reads_remote_provider_metadata() {
         let mut task = base_task("t1");
@@ -1948,6 +1976,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "federation")]
     #[test]
     fn plan_spawn_routes_remote_provider_task_to_remote_runner() {
         let config = Config::default();
@@ -1979,6 +2008,7 @@ mod tests {
         let task = base_task("local-task");
         let plan = plan_spawn(&task, &config, None, Some("opus")).unwrap();
         assert_eq!(plan.placement, Placement::Local);
+        #[cfg(feature = "federation")]
         assert_ne!(plan.executor, ExecutorKind::RemoteRunner);
     }
 
@@ -2025,9 +2055,19 @@ mod tests {
         let reasoning = plan_spawn(&task, &config, None, Some("claude:opus")).unwrap();
         assert_ne!(id, spawn_plan_binding_id(&reasoning, "route-a"));
 
-        let mut placement = base.clone();
-        placement.placement = Placement::Provider("wgid:zBox".to_string());
-        assert_ne!(id, spawn_plan_binding_id(&placement, "route-a"));
+        // Remote placement only exists with the federation feature; the local binding
+        // must stay identical to today's (byte-for-byte) shape.
+        #[cfg(feature = "federation")]
+        {
+            let mut placement = base.clone();
+            placement.placement = Placement::Provider("wgid:zBox".to_string());
+            assert_ne!(id, spawn_plan_binding_id(&placement, "route-a"));
+        }
+        #[cfg(not(feature = "federation"))]
+        {
+            let placement = base.clone();
+            assert_eq!(id, spawn_plan_binding_id(&placement, "route-a"));
+        }
 
         assert_eq!(spawn_route_binding_id("route-a"), "route-a");
         let unsafe_route = "openrouter/provider/model/with/slashes";

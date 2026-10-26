@@ -81,10 +81,11 @@ pub fn canonical_explicit_route(raw: &str) -> Option<String> {
 pub fn handler_qualified_explicit_route(raw: &str) -> Option<String> {
     let prefix = raw.trim().split_once(':')?.0;
     let handler = crate::dispatch::ExecutorKind::from_str(prefix)?;
-    if matches!(
-        handler,
-        crate::dispatch::ExecutorKind::Shell | crate::dispatch::ExecutorKind::RemoteRunner
-    ) {
+    if handler == crate::dispatch::ExecutorKind::Shell {
+        return None;
+    }
+    #[cfg(feature = "federation")]
+    if handler == crate::dispatch::ExecutorKind::RemoteRunner {
         return None;
     }
     canonical_explicit_route(raw)

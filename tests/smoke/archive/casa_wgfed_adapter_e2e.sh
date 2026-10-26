@@ -4,6 +4,8 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 require_wg
+# The federation cluster is behind the non-default `federation` cargo feature.
+require_federation
 command -v casa-adapter >/dev/null 2>&1 || loud_skip "MISSING CASA ADAPTER" "run cargo install --path . --locked"
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING python3" "JSON assertions"
 command -v curl >/dev/null 2>&1 || loud_skip "MISSING curl" "HTTP relay"

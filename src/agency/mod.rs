@@ -3,6 +3,7 @@ pub mod composition_rules;
 pub mod constraint_fidelity;
 mod eval;
 pub mod evolver;
+pub mod federation;
 mod hash;
 pub mod human_binding;
 mod lineage;

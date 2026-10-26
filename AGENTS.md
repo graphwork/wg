@@ -367,6 +367,38 @@ doc comment and `Config::weak_tier_spec()` in `src/service/llm.rs` /
 `src/config.rs`.
 Agency federation compatibility is exposed as `WG_AGENCY_COMPAT_VERSION = "1.2.4"` and import manifests record that compat surface for CSV/hash handshakes.
 
+## The `federation` cargo feature — the WG-Fed/Review/Exec cluster is OPT-IN
+
+Everything from here to the end of this section — WG-Fed waves 3–6 (`src/identity/`),
+WG-Review (`src/review/`), WG-Exec (`src/providers/`), the peer/WG-Fed half of
+`src/federation.rs`, the trust resolver (`src/trust.rs`), and their CLI arms (`wg
+identity`, `wg fed-node`, `wg review`, `wg provider`, `wg pilot`, plus `--to wgid:` /
+`--as <identity>` on `wg msg` and `--remote-provider` on `wg add`) — sits behind the
+**non-default** `federation` cargo feature.
+
+The default `wg` binary does **not** contain it: none of those modules or verbs exist,
+`wg --help` shrinks accordingly, and the crypto deps (`ed25519-dalek`, `x25519-dalek`,
+`bs58`) are not built. The daily loop (dispatch → pi worker → completion/land → TUI →
+plugin) never reaches the cluster, so nothing about it changes.
+
+```
+cargo build                      # default: graph + daily loop, no federation cluster
+cargo build --features federation   # the full surface, including every fed/exec verb
+cargo test --features federation    # the fed/exec integration + unit tests
+```
+
+A default build degrades **fail-closed** where the cluster would have answered:
+`peer/<task>` cross-graph dependencies stay BLOCKED (never silently satisfied),
+`wg func apply --from <peer>` and `wg add <peer>:<task>` error with a message naming the
+feature, and `wg trace import` / merge-resolution say loudly that inbound content review
+is not compiled in. `Placement::Local` is the only placement in a default build, so
+`plan_spawn` is byte-for-byte today's same-host plan.
+
+The 17 fed/exec smoke scenarios keep their `tests/smoke/manifest.toml` entries
+(grow-only) but are `retired = true`; when re-run via `wg done --full-smoke` against a
+binary without the feature they SKIP loudly (exit 77, `FEDERATION FEATURE OFF`) via the
+`require_federation` helper — never FAIL.
+
 ## WG-Fed identity (`wg identity`) — federation Wave 3 spark
 
 WG-Fed is the cross-WG federation substrate (self-certifying key identity +

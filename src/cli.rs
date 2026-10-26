@@ -250,6 +250,8 @@ pub enum Commands {
         provider: Option<String>,
 
         /// Typed remote execution provider (`wgid:`). Freeform tags are labels only and do not route work.
+        /// Requires the `federation` feature (WG-Exec).
+        #[cfg(feature = "federation")]
         #[arg(long = "remote-provider")]
         remote_provider: Option<String>,
 
@@ -2765,6 +2767,7 @@ pub enum Commands {
     ///   wg identity fetch <wgid> --store ./L         # fetch + verify offline
     ///   wg identity send --from bob --to <wgid> --store ./L --body hi
     ///   wg identity poll alice --store ./L           # receive + authenticate
+    #[cfg(feature = "federation")]
     Identity {
         #[command(subcommand)]
         command: IdentityCommands,
@@ -2776,6 +2779,7 @@ pub enum Commands {
     ///
     ///   wg fed-node serve --addr 127.0.0.1:8451   # run the inbox (blocking)
     ///   wg fed-node store-path                     # print the default store dir
+    #[cfg(feature = "federation")]
     #[command(name = "fed-node")]
     FedNode {
         #[command(subcommand)]
@@ -2797,6 +2801,7 @@ pub enum Commands {
     ///   wg review log                                        # the verdict sigchain
     ///   wg review consume --content-file ./artifact         # digest-pinned (MUST-2)
     ///   wg review revoke --cid <b3:…>                        # the audit/revoke leg
+    #[cfg(feature = "federation")]
     Review {
         #[command(subcommand)]
         command: ReviewCommands,
@@ -2823,6 +2828,7 @@ pub enum Commands {
     ///   wg provider run    --as providerP --grant grant.json --store ./L --out result.json
     ///   wg provider accept --result result.json --store ./L
     ///   wg provider verify --result result.json --verifier <Q> --pinned-spec ./spec.json --store ./L
+    #[cfg(feature = "federation")]
     Provider {
         #[command(subcommand)]
         command: ProviderCommands,
@@ -2845,6 +2851,7 @@ pub enum Commands {
     ///   wg pilot status                       # show what's running
     ///   wg pilot down                         # stop nodes (keep identities)
     ///   wg pilot down --wipe-identities       # stop + wipe the rehearsal identities
+    #[cfg(feature = "federation")]
     Pilot {
         #[command(subcommand)]
         command: PilotCommands,
@@ -3800,6 +3807,7 @@ pub enum ModelCommands {
 }
 
 #[derive(Subcommand)]
+#[cfg(feature = "federation")]
 pub enum IdentityCommands {
     /// Mint a new self-certifying identity (root key into `wg secret`).
     New {
@@ -4092,6 +4100,7 @@ pub enum IdentityCommands {
 }
 
 #[derive(Subcommand)]
+#[cfg(feature = "federation")]
 pub enum FedNodeCommands {
     /// Run the node store-and-forward inbox HTTP server (blocking).
     Serve {
@@ -4107,6 +4116,7 @@ pub enum FedNodeCommands {
 }
 
 #[derive(Subcommand)]
+#[cfg(feature = "federation")]
 pub enum PilotCommands {
     /// Stand up the family-team pilot from a filled config and run the live end-to-end
     /// check. With `--dry-run`, stand the whole thing up LOCALLY (two isolated dirs + one
@@ -4177,6 +4187,7 @@ pub enum LearningCommands {
 }
 
 #[derive(Subcommand)]
+#[cfg(feature = "federation")]
 pub enum ReviewCommands {
     /// Screen one inbound item through the review pipeline (Pass 0→2) and record a
     /// verdict. The verdict — accept / quarantine / reject — is the strictest any
@@ -4276,6 +4287,7 @@ pub enum ReviewCommands {
 }
 
 #[derive(Subcommand)]
+#[cfg(feature = "federation")]
 pub enum ProviderCommands {
     /// Enroll (or update) a provider in the authorizer's pool at an authorizer-asserted
     /// trust level + advertised capability. Trust is the authorizer's to set — never
@@ -4769,23 +4781,29 @@ pub enum MsgCommands {
 
         /// Cross-graph recipient: a `wgid:`/`did:key:` address or a `federation.yaml`
         /// peer name. Routes over the WG node store-and-forward inbox (Wave 4).
+        /// Requires the `federation` feature.
+        #[cfg(feature = "federation")]
         #[arg(long)]
         to: Option<String>,
 
         /// Cross-graph message body (alternative to the positional for `--to`).
+        #[cfg(feature = "federation")]
         #[arg(long)]
         body: Option<String>,
 
         /// Cross-graph event kind (default `msg`).
+        #[cfg(feature = "federation")]
         #[arg(long, default_value = "msg")]
         kind: String,
 
         /// Seal the cross-graph body to the recipient's encryption key.
+        #[cfg(feature = "federation")]
         #[arg(long)]
         seal: bool,
 
         /// Override the delivery endpoint (a node/dir URL) instead of resolving it
         /// from `federation.yaml` (cross-graph only).
+        #[cfg(feature = "federation")]
         #[arg(long)]
         store: Option<String>,
     },
@@ -4820,20 +4838,24 @@ pub enum MsgCommands {
 
         /// Poll this graph's node inbox for the given local identity handle
         /// (cross-graph). Uses `federation.yaml`'s `node:` URL unless `--store` set.
+        #[cfg(feature = "federation")]
         #[arg(long = "as")]
         as_identity: Option<String>,
 
         /// Override the node inbox URL (cross-graph only).
+        #[cfg(feature = "federation")]
         #[arg(long)]
         store: Option<String>,
 
         /// Gate accepted cross-graph events on freshness (fail closed on stale):
         /// `routine` or `high-value`.
+        #[cfg(feature = "federation")]
         #[arg(long)]
         require_fresh: Option<String>,
 
         /// (Deprecated — the auto-gate is now ON BY DEFAULT.) Kept so existing scripts
         /// passing `--review` still parse; it is a no-op (screening already runs).
+        #[cfg(feature = "federation")]
         #[arg(long)]
         review: bool,
 
@@ -4842,6 +4864,7 @@ pub enum MsgCommands {
         /// is on by default — it screens each authenticated event (IC4) through the
         /// review pipeline with author-trust DERIVED from the peer/provider trust dial
         /// and WITHHOLDS the body on a non-`accept` verdict (received ≠ consumed).
+        #[cfg(feature = "federation")]
         #[arg(long = "no-review")]
         no_review: bool,
     },
@@ -7532,7 +7555,9 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Key { .. } => "key",
         Commands::Login { .. } => "login",
         Commands::Secret { .. } => "secret",
+        #[cfg(feature = "federation")]
         Commands::Identity { .. } => "identity",
+        #[cfg(feature = "federation")]
         Commands::FedNode { .. } => "fed-node",
         Commands::Nex(_) => "nex",
         Commands::TuiNex { .. } => "tui-nex",
@@ -7554,8 +7579,11 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Openrouter { .. } => "openrouter",
         Commands::ApplyPlacement { .. } => "apply-placement",
         Commands::Session { .. } => "session",
+        #[cfg(feature = "federation")]
         Commands::Review { .. } => "review",
+        #[cfg(feature = "federation")]
         Commands::Provider { .. } => "provider",
+        #[cfg(feature = "federation")]
         Commands::Pilot { .. } => "pilot",
     }
 }
@@ -7656,10 +7684,6 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Key { .. }
             | Commands::Login { .. }
             | Commands::Secret { .. }
-            | Commands::Identity { .. }
-            | Commands::Review { .. }
-            | Commands::Provider { .. }
-            | Commands::Pilot { .. }
             | Commands::TuiDump { .. }
     ) || {
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
@@ -7667,6 +7691,22 @@ pub fn supports_json(cmd: &Commands) -> bool {
             matches!(cmd, Commands::Notify { .. } | Commands::Matrix { .. })
         }
         #[cfg(not(any(feature = "matrix", feature = "matrix-lite")))]
+        {
+            false
+        }
+    } || {
+        // Federation-cluster arms (non-default `federation` feature).
+        #[cfg(feature = "federation")]
+        {
+            matches!(
+                cmd,
+                Commands::Identity { .. }
+                    | Commands::Review { .. }
+                    | Commands::Provider { .. }
+                    | Commands::Pilot { .. }
+            )
+        }
+        #[cfg(not(feature = "federation"))]
         {
             false
         }

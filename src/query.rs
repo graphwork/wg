@@ -412,20 +412,36 @@ pub fn dependency_disposition(
     graph: &WorkGraph,
     workgraph_dir: Option<&Path>,
 ) -> DependencyDisposition {
-    if let Some((peer_name, remote_task_id)) = crate::federation::parse_remote_ref(blocker_id) {
+    if let Some((peer_name, remote_task_id)) =
+        crate::agency::federation::parse_remote_ref(blocker_id)
+    {
         let Some(dir) = workgraph_dir else {
             return DependencyDisposition::Blocked {
                 reason: "remote dependency unresolved".to_string(),
             };
         };
-        let remote = crate::federation::resolve_remote_task_status(peer_name, remote_task_id, dir);
-        return if remote.status == Status::Done {
-            DependencyDisposition::Satisfied
-        } else {
-            DependencyDisposition::Blocked {
-                reason: format!("remote prerequisite status is {}", remote.status),
-            }
-        };
+        // Cross-repo resolution is part of the gated federation cluster. Without it
+        // the reference cannot be resolved at all, so the dependency stays BLOCKED
+        // (fail closed — never dispatch on an unverifiable prerequisite).
+        #[cfg(feature = "federation")]
+        {
+            let remote =
+                crate::federation::resolve_remote_task_status(peer_name, remote_task_id, dir);
+            return if remote.status == Status::Done {
+                DependencyDisposition::Satisfied
+            } else {
+                DependencyDisposition::Blocked {
+                    reason: format!("remote prerequisite status is {}", remote.status),
+                }
+            };
+        }
+        #[cfg(not(feature = "federation"))]
+        {
+            let _ = (peer_name, remote_task_id, dir);
+            return DependencyDisposition::Blocked {
+                reason: "cross-graph dependency needs the `federation` feature".to_string(),
+            };
+        }
     }
 
     let Some(blocker) = graph.get_task(blocker_id) else {
@@ -524,14 +540,25 @@ pub fn is_blocker_satisfied(
     graph: &WorkGraph,
     workgraph_dir: Option<&Path>,
 ) -> bool {
-    if let Some((peer_name, remote_task_id)) = crate::federation::parse_remote_ref(blocker_id) {
+    if let Some((peer_name, remote_task_id)) =
+        crate::agency::federation::parse_remote_ref(blocker_id)
+    {
         // Cross-repo dependency
         let Some(wg_dir) = workgraph_dir else {
             return false; // Can't resolve without WG dir; treat as blocked
         };
-        let remote =
-            crate::federation::resolve_remote_task_status(peer_name, remote_task_id, wg_dir);
-        remote.status.is_dep_satisfied()
+        #[cfg(feature = "federation")]
+        {
+            let remote =
+                crate::federation::resolve_remote_task_status(peer_name, remote_task_id, wg_dir);
+            remote.status.is_dep_satisfied()
+        }
+        #[cfg(not(feature = "federation"))]
+        {
+            // Fail closed: an unresolvable cross-graph prerequisite is never satisfied.
+            let _ = (peer_name, remote_task_id, wg_dir);
+            false
+        }
     } else {
         // Local dependency — non-existent blocker blocks (prevents premature
         // dispatch during burst graph construction).
@@ -864,7 +891,7 @@ pub fn phantom_blockers(task: &Task, graph: &WorkGraph) -> Vec<String> {
     task.after
         .iter()
         .filter(|id| graph.get_task(id).is_none() && graph.get_archived_boundary(id).is_none())
-        .filter(|id| crate::federation::parse_remote_ref(id).is_none())
+        .filter(|id| crate::agency::federation::parse_remote_ref(id).is_none())
         .cloned()
         .collect()
 }

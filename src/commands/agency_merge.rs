@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use worksgood::agency::federation::{self, TransferOptions, TransferSummary};
 use worksgood::agency::{AgencyStore, LocalStore};
-use worksgood::federation::{self, TransferOptions, TransferSummary};
 
 /// Options for the merge command.
 pub struct MergeOptions {

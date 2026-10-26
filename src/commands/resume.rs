@@ -604,7 +604,7 @@ fn validate_task_deps(graph: &WorkGraph, task_id: &str, is_publish: bool) -> Res
     let task = graph.get_task_or_err(task_id)?;
     let mut missing = Vec::new();
     for dep_id in &task.after {
-        if worksgood::federation::parse_remote_ref(dep_id).is_some() {
+        if worksgood::agency::federation::parse_remote_ref(dep_id).is_some() {
             continue;
         }
         if graph.get_node(dep_id).is_none() {
@@ -639,7 +639,7 @@ fn validate_subgraph(graph: &WorkGraph, subgraph: &[String], is_publish: bool) -
 
         // Check for dangling after-dependencies
         for dep_id in &task.after {
-            if worksgood::federation::parse_remote_ref(dep_id).is_some() {
+            if worksgood::agency::federation::parse_remote_ref(dep_id).is_some() {
                 continue;
             }
             if graph.get_node(dep_id).is_none() {

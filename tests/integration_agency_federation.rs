@@ -8,14 +8,14 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
+use worksgood::agency::federation::{
+    self, EntityFilter, FederationConfig, Remote, TransferOptions, TransferSummary,
+};
 use worksgood::agency::{
     self, AgencyStore, Agent, Evaluation, EvaluationRef, Lineage, LocalStore, PerformanceRecord,
     Role, TradeoffConfig,
 };
 use worksgood::config::CLAUDE_OPUS_MODEL_ID;
-use worksgood::federation::{
-    self, EntityFilter, FederationConfig, Remote, TransferOptions, TransferSummary,
-};
 use worksgood::graph::TrustLevel;
 
 // ---------------------------------------------------------------------------

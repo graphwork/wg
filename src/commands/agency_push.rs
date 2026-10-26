@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use worksgood::agency::federation::{self, EntityFilter, TransferOptions};
 use worksgood::agency::{AgencyStore, DesiredOutcome, LocalStore, RoleComponent, TradeoffConfig};
-use worksgood::federation::{self, EntityFilter, TransferOptions};
 
 /// Options for the push command.
 pub struct PushOptions<'a> {

@@ -17,6 +17,8 @@
 //! (objects / inbox / metrics / version / CID-integrity) plus the pure plane decisions
 //! (freshness, review) — the parts the bash smokes own that had no `cargo test` cover.
 
+#![cfg(feature = "federation")]
+
 mod common;
 use common::{addr_of, http_get, metric_value, spawn_node};
 

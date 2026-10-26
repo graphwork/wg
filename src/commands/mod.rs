@@ -66,8 +66,10 @@ pub mod endpoints;
 pub mod evaluate;
 pub mod evolve;
 pub mod exec;
+#[cfg(feature = "federation")]
 pub mod exec_fed_cmd;
 pub mod fail;
+#[cfg(feature = "federation")]
 pub mod fed_node;
 pub mod finalize;
 pub mod forecast;
@@ -79,6 +81,7 @@ pub mod func_make_adaptive;
 pub mod gc;
 pub mod graph;
 pub mod heartbeat;
+#[cfg(feature = "federation")]
 pub mod identity_cmd;
 pub mod impact;
 pub mod incomplete;
@@ -114,6 +117,7 @@ pub mod pi_handler;
 pub mod pi_plugin_install;
 pub mod pi_stream_bridge;
 pub mod pi_watchdog;
+#[cfg(feature = "federation")]
 pub mod pilot_cmd;
 pub mod placement;
 pub mod plan;
@@ -136,6 +140,7 @@ pub mod resource;
 pub mod resources;
 pub mod resume;
 pub mod retry;
+#[cfg(feature = "federation")]
 pub mod review_cmd;
 pub mod role;
 pub mod runs_cmd;

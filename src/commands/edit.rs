@@ -383,7 +383,7 @@ pub fn run_with_reasoning_and_route_clear(
     // Validate add-after dependencies before taking mutable borrow (phantom edge prevention)
     if !allow_phantom {
         for dep in add_after {
-            if worksgood::federation::parse_remote_ref(dep).is_some() {
+            if worksgood::agency::federation::parse_remote_ref(dep).is_some() {
                 continue;
             }
             if graph.get_node(dep).is_none() {

@@ -153,6 +153,9 @@ fn virtual_review_mutation_target(command: &Commands) -> Option<&str> {
         Commands::AddDep { task, dependency } | Commands::RmDep { task, dependency } => {
             vec![task, dependency]
         }
+        // Local message targets only: with the federation feature on, a cross-graph
+        // send/poll (--to / --as) names a remote peer, not a local virtual alias.
+        #[cfg(feature = "federation")]
         Commands::Msg {
             command:
                 MsgCommands::Send {
@@ -163,11 +166,30 @@ fn virtual_review_mutation_target(command: &Commands) -> Option<&str> {
                 | MsgCommands::List { task_id: task }
                 | MsgCommands::Read { task_id: task, .. },
         } => vec![task],
+        #[cfg(not(feature = "federation"))]
+        Commands::Msg {
+            command:
+                MsgCommands::Send {
+                    task_id: Some(task),
+                    ..
+                }
+                | MsgCommands::List { task_id: task }
+                | MsgCommands::Read { task_id: task, .. },
+        } => vec![task],
+        #[cfg(feature = "federation")]
         Commands::Msg {
             command:
                 MsgCommands::Poll {
                     task_id: Some(task),
                     as_identity: None,
+                    ..
+                },
+        } => vec![task],
+        #[cfg(not(feature = "federation"))]
+        Commands::Msg {
+            command:
+                MsgCommands::Poll {
+                    task_id: Some(task),
                     ..
                 },
         } => vec![task],
@@ -1120,6 +1142,7 @@ fn main() -> Result<()> {
             model,
             reasoning,
             provider,
+            #[cfg(feature = "federation")]
             remote_provider,
             verify,
             verify_timeout,
@@ -1238,6 +1261,12 @@ fn main() -> Result<()> {
                     cron.as_deref(),
                 )
             } else {
+                // `--remote-provider` (WG-Exec placement) exists only with the
+                // federation feature; a default build always adds a local task.
+                #[cfg(feature = "federation")]
+                let remote_provider_arg = remote_provider.as_deref();
+                #[cfg(not(feature = "federation"))]
+                let remote_provider_arg = None;
                 commands::add::run_with_remote_provider(
                     &workgraph_dir,
                     &title,
@@ -1255,7 +1284,7 @@ fn main() -> Result<()> {
                     model.as_deref(),
                     reasoning.as_deref(),
                     provider.as_deref(),
-                    remote_provider.as_deref(),
+                    remote_provider_arg,
                     verify.as_deref(),
                     verify_timeout.as_deref(),
                     validation.as_deref(),
@@ -2280,18 +2309,25 @@ fn main() -> Result<()> {
                     from,
                     priority,
                     stdin,
+                    #[cfg(feature = "federation")]
                     to,
+                    #[cfg(feature = "federation")]
                     body,
+                    #[cfg(feature = "federation")]
                     kind,
+                    #[cfg(feature = "federation")]
                     seal,
+                    #[cfg(feature = "federation")]
                     store,
                 } => {
+                    // Cross-graph (key-based) send over the WG node inbox (Wave 4) —
+                    // present only when the federation cluster is compiled in.
+                    #[cfg(feature = "federation")]
                     if let Some(to) = to {
-                        // Cross-graph (key-based) send over the WG node inbox (Wave 4).
                         let body = body
                             .or(message)
                             .ok_or_else(|| anyhow::anyhow!("cross-graph send needs --body"))?;
-                        commands::msg::run_send_fed(
+                        return commands::msg::run_send_fed(
                             &workgraph_dir,
                             &from,
                             &to,
@@ -2300,29 +2336,28 @@ fn main() -> Result<()> {
                             &kind,
                             seal,
                             cli.json,
-                        )
-                    } else {
-                        // Local task/agent message.
-                        let task_id = task_id.ok_or_else(|| {
-                            anyhow::anyhow!("local `wg msg send` needs a <task-id> (or use --to)")
-                        })?;
-                        // Auto-detect sender: if --from is default "user" and WG_TASK_ID
-                        // is set, use the task ID (slug) as the sender identity so agents
-                        // identify by their task name rather than a generic "user" label.
-                        let sender = if from == "user" {
-                            std::env::var("WG_TASK_ID").unwrap_or(from)
-                        } else {
-                            from
-                        };
-                        commands::msg::run_send(
-                            &workgraph_dir,
-                            &task_id,
-                            message.as_deref(),
-                            &sender,
-                            &priority,
-                            stdin,
-                        )
+                        );
                     }
+                    // Local task/agent message.
+                    let task_id = task_id.ok_or_else(|| {
+                        anyhow::anyhow!("local `wg msg send` needs a <task-id> (or use --to)")
+                    })?;
+                    // Auto-detect sender: if --from is default "user" and WG_TASK_ID
+                    // is set, use the task ID (slug) as the sender identity so agents
+                    // identify by their task name rather than a generic "user" label.
+                    let sender = if from == "user" {
+                        std::env::var("WG_TASK_ID").unwrap_or(from)
+                    } else {
+                        from
+                    };
+                    commands::msg::run_send(
+                        &workgraph_dir,
+                        &task_id,
+                        message.as_deref(),
+                        &sender,
+                        &priority,
+                        stdin,
+                    )
                 }
                 MsgCommands::List { task_id } => {
                     commands::msg::run_list(&workgraph_dir, &task_id, cli.json)
@@ -2336,42 +2371,47 @@ fn main() -> Result<()> {
                 MsgCommands::Poll {
                     task_id,
                     agent,
+                    #[cfg(feature = "federation")]
                     as_identity,
+                    #[cfg(feature = "federation")]
                     store,
+                    #[cfg(feature = "federation")]
                     require_fresh,
+                    #[cfg(feature = "federation")]
                     review,
+                    #[cfg(feature = "federation")]
                     no_review,
                 } => {
+                    // Cross-graph node-inbox poll (Wave 4) — the IC4 ingest seam. The
+                    // review auto-gate is ON BY DEFAULT (screening is the default;
+                    // received ≠ consumed); `--no-review` opts out. A non-accept
+                    // verdict withholds the body. `--review` is a redundant no-op.
+                    #[cfg(feature = "federation")]
                     if let Some(as_identity) = as_identity {
-                        // Cross-graph node-inbox poll (Wave 4) — the IC4 ingest seam. The
-                        // review auto-gate is ON BY DEFAULT (screening is the default;
-                        // received ≠ consumed); `--no-review` opts out. A non-accept
-                        // verdict withholds the body. `--review` is a redundant no-op.
                         let do_review = review || !no_review;
-                        commands::msg::run_poll_fed(
+                        return commands::msg::run_poll_fed(
                             &workgraph_dir,
                             &as_identity,
                             store.as_deref(),
                             require_fresh.as_deref(),
                             do_review,
                             cli.json,
-                        )
-                    } else {
-                        // Local task poll has no federation author; the review flags do
-                        // not apply (no screening, no body to withhold).
-                        let task_id = task_id.ok_or_else(|| {
-                            anyhow::anyhow!("local `wg msg poll` needs a <task-id> (or use --as)")
-                        })?;
-                        let agent_id = agent
-                            .or(agent_id_from_env)
-                            .unwrap_or_else(|| "user".to_string());
-                        let has_messages =
-                            commands::msg::run_poll(&workgraph_dir, &task_id, &agent_id, cli.json)?;
-                        if !has_messages {
-                            std::process::exit(1);
-                        }
-                        Ok(())
+                        );
                     }
+                    // Local task poll has no federation author; the review flags do
+                    // not apply (no screening, no body to withhold).
+                    let task_id = task_id.ok_or_else(|| {
+                        anyhow::anyhow!("local `wg msg poll` needs a <task-id> (or use --as)")
+                    })?;
+                    let agent_id = agent
+                        .or(agent_id_from_env)
+                        .unwrap_or_else(|| "user".to_string());
+                    let has_messages =
+                        commands::msg::run_poll(&workgraph_dir, &task_id, &agent_id, cli.json)?;
+                    if !has_messages {
+                        std::process::exit(1);
+                    }
+                    Ok(())
                 }
             }
         }
@@ -4619,6 +4659,7 @@ fn main() -> Result<()> {
                 }
             },
         },
+        #[cfg(feature = "federation")]
         Commands::Identity { command } => match command {
             cli::IdentityCommands::New {
                 name,
@@ -4800,6 +4841,7 @@ fn main() -> Result<()> {
                 )
             }
         },
+        #[cfg(feature = "federation")]
         Commands::FedNode { command } => match command {
             cli::FedNodeCommands::Serve { addr, store } => {
                 commands::fed_node::run_serve(&workgraph_dir, &addr, store.as_deref())
@@ -4807,6 +4849,7 @@ fn main() -> Result<()> {
             cli::FedNodeCommands::StorePath => commands::fed_node::run_store_path(&workgraph_dir),
         },
 
+        #[cfg(feature = "federation")]
         Commands::Review { command } => match command {
             cli::ReviewCommands::Check {
                 class,
@@ -4858,6 +4901,7 @@ fn main() -> Result<()> {
                 cli.json,
             ),
         },
+        #[cfg(feature = "federation")]
         Commands::Provider { command } => match command {
             cli::ProviderCommands::Enroll {
                 provider,
@@ -5044,6 +5088,7 @@ fn main() -> Result<()> {
             }
         },
 
+        #[cfg(feature = "federation")]
         Commands::Pilot { command } => match command {
             cli::PilotCommands::Up {
                 config,

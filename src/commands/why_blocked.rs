@@ -68,7 +68,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         .filter(|rid| {
             graph.get_task(rid).is_none()
                 && graph.get_archived_boundary(rid).is_none()
-                && worksgood::federation::parse_remote_ref(rid).is_none()
+                && worksgood::agency::federation::parse_remote_ref(rid).is_none()
         })
         .cloned()
         .collect();
@@ -113,7 +113,7 @@ fn blocking_node(graph: &WorkGraph, task_id: &str) -> BlockingNode {
             .unwrap_or(Status::Open),
         is_phantom: task.is_none()
             && boundary.is_none()
-            && worksgood::federation::parse_remote_ref(task_id).is_none(),
+            && worksgood::agency::federation::parse_remote_ref(task_id).is_none(),
         failure_reason: task.and_then(|task| task.failure_reason.clone()),
         evaluation_health: task
             .and_then(|task| worksgood::eval_lifecycle::evaluation_health(graph, &task.id)),
@@ -147,18 +147,27 @@ fn build_blocking_tree(
                 continue;
             }
             if let Some((peer_name, remote_task_id)) =
-                worksgood::federation::parse_remote_ref(blocker_id)
+                worksgood::agency::federation::parse_remote_ref(blocker_id)
             {
-                let remote = worksgood::federation::resolve_remote_task_status(
+                // Cross-repo status: resolvable only when the non-default federation
+                // cluster is compiled in; otherwise it reports as still blocking.
+                #[cfg(feature = "federation")]
+                let remote_status = worksgood::federation::resolve_remote_task_status(
                     peer_name,
                     remote_task_id,
                     dir,
-                );
-                if remote.status != Status::Done {
+                )
+                .status;
+                #[cfg(not(feature = "federation"))]
+                let remote_status = {
+                    let _ = (peer_name, remote_task_id);
+                    Status::Open
+                };
+                if remote_status != Status::Done {
                     let child = tree.nodes.len();
                     tree.nodes.push(BlockingNode {
                         id: blocker_id.clone(),
-                        status: remote.status,
+                        status: remote_status,
                         is_phantom: false,
                         failure_reason: None,
                         evaluation_health: None,

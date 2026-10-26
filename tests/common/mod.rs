@@ -10,17 +10,22 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
+// The node helpers are part of the gated federation cluster; a default build keeps the
+// rest of this shared helper module (used by the adaptive_* suites) compiling.
+#[cfg(feature = "federation")]
 use worksgood::identity::node::{self, NodeLimits};
 
 /// Bring up a real in-process node on an ephemeral localhost port; return its base URL and
 /// the temp store dir (kept alive by the returned guard). The accept loop runs on a
 /// detached thread that dies with the test process.
+#[cfg(feature = "federation")]
 pub fn spawn_node() -> (String, tempfile::TempDir) {
     spawn_node_with_limits(NodeLimits::default())
 }
 
 /// Like [`spawn_node`] but with explicit limits (e.g. a low connection bound for a flood
 /// test).
+#[cfg(feature = "federation")]
 pub fn spawn_node_with_limits(limits: NodeLimits) -> (String, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = dir.path().join("store");

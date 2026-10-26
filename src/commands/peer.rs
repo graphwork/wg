@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use worksgood::federation;
+use worksgood::agency::federation;
 
 /// Parse a CLI trust spelling to a [`worksgood::graph::TrustLevel`]; an unrecognized
 /// value is `Unknown` (fail-closed — never silently grant *more* trust). Mirrors

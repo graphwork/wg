@@ -9,6 +9,8 @@
 //! Everything is in-process (no `python3` / `curl` / `tmux`), so these run in CI on a
 //! minimal runner alongside the M29 wire tests.
 
+#![cfg(feature = "federation")]
+
 mod common;
 use common::{addr_of, http_get, http_put, spawn_node};
 

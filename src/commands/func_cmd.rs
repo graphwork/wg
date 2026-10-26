@@ -118,11 +118,11 @@ pub fn run_list(
 
 /// Load functions from all configured peer WG projects.
 fn load_peer_functions(dir: &Path) -> Result<Vec<(String, Vec<TraceFunction>)>> {
-    let config = worksgood::federation::load_federation_config(dir)?;
+    let config = worksgood::agency::federation::load_federation_config(dir)?;
     let mut results = Vec::new();
 
     for name in config.peers.keys() {
-        match worksgood::federation::resolve_peer(name, dir) {
+        match worksgood::agency::federation::resolve_peer(name, dir) {
             Ok(resolved) => {
                 let peer_func_dir = function::functions_dir(&resolved.workgraph_dir);
                 let funcs = function::load_all_functions(&peer_func_dir).unwrap_or_default();
@@ -849,10 +849,10 @@ mod tests {
         save_function(&peer_func, &peer_func_dir).unwrap();
 
         // Configure peer
-        let config = worksgood::federation::FederationConfig {
+        let config = worksgood::agency::federation::FederationConfig {
             peers: std::collections::BTreeMap::from([(
                 "other".to_string(),
-                worksgood::federation::PeerConfig {
+                worksgood::agency::federation::PeerConfig {
                     path: peer_project.to_str().unwrap().to_string(),
                     description: Some("Test peer".to_string()),
                     ..Default::default()
@@ -860,7 +860,7 @@ mod tests {
             )]),
             ..Default::default()
         };
-        worksgood::federation::save_federation_config(&local_wg, &config).unwrap();
+        worksgood::agency::federation::save_federation_config(&local_wg, &config).unwrap();
 
         // List with --include-peers should only show peer/public functions
         assert!(run_list(&local_wg, false, false, true, None).is_ok());
@@ -885,10 +885,10 @@ mod tests {
         save_function(&func, &peer_func_dir).unwrap();
 
         // Configure peer in federation.yaml
-        let config = worksgood::federation::FederationConfig {
+        let config = worksgood::agency::federation::FederationConfig {
             peers: std::collections::BTreeMap::from([(
                 "other".to_string(),
-                worksgood::federation::PeerConfig {
+                worksgood::agency::federation::PeerConfig {
                     path: peer_project.to_str().unwrap().to_string(),
                     description: Some("Test peer".to_string()),
                     ..Default::default()
@@ -896,7 +896,7 @@ mod tests {
             )]),
             ..Default::default()
         };
-        worksgood::federation::save_federation_config(&local_wg, &config).unwrap();
+        worksgood::agency::federation::save_federation_config(&local_wg, &config).unwrap();
 
         // List with --include-peers should find peer functions
         assert!(run_list(&local_wg, false, false, true, None).is_ok());
@@ -923,10 +923,10 @@ mod tests {
         save_function(&sample_function(), &local_wg.join("functions")).unwrap();
 
         // Configure a peer that doesn't exist
-        let config = worksgood::federation::FederationConfig {
+        let config = worksgood::agency::federation::FederationConfig {
             peers: std::collections::BTreeMap::from([(
                 "missing".to_string(),
-                worksgood::federation::PeerConfig {
+                worksgood::agency::federation::PeerConfig {
                     path: "/nonexistent/path".to_string(),
                     description: None,
                     ..Default::default()
@@ -934,7 +934,7 @@ mod tests {
             )]),
             ..Default::default()
         };
-        worksgood::federation::save_federation_config(&local_wg, &config).unwrap();
+        worksgood::agency::federation::save_federation_config(&local_wg, &config).unwrap();
 
         // Should not error, just skip the inaccessible peer
         assert!(run_list(&local_wg, false, false, true, None).is_ok());
@@ -959,10 +959,10 @@ mod tests {
         peer_func.visibility = FunctionVisibility::Peer;
         save_function(&peer_func, &peer_wg.join("functions")).unwrap();
 
-        let config = worksgood::federation::FederationConfig {
+        let config = worksgood::agency::federation::FederationConfig {
             peers: std::collections::BTreeMap::from([(
                 "testpeer".to_string(),
-                worksgood::federation::PeerConfig {
+                worksgood::agency::federation::PeerConfig {
                     path: peer_project.to_str().unwrap().to_string(),
                     description: None,
                     ..Default::default()
@@ -970,7 +970,7 @@ mod tests {
             )]),
             ..Default::default()
         };
-        worksgood::federation::save_federation_config(&local_wg, &config).unwrap();
+        worksgood::agency::federation::save_federation_config(&local_wg, &config).unwrap();
 
         // JSON output should succeed
         assert!(run_list(&local_wg, true, false, true, None).is_ok());

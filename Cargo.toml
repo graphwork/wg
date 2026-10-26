@@ -39,6 +39,9 @@ path = "src/bin/worksgood.rs"
 [[bin]]
 name = "casa-adapter"
 path = "adapters/casa/src/main.rs"
+# The companion adapter is built on the WG-Fed substrate, so it ships only with
+# the (non-default) `federation` feature.
+required-features = ["federation"]
 
 [features]
 default = ["matrix-lite"]
@@ -49,6 +52,12 @@ email = ["dep:lettre"]
 slack = []
 llm-tests = []  # gates tests that call Claude CLI
 test-support = []  # exposes test helpers for cross-crate use
+# The federation cluster (WG-Fed + WG-Review + WG-Exec + the fed CLI arms:
+# `wg identity`, `wg fed-node`, `wg review`, `wg provider`, `wg pilot`, and the
+# key-based half of `wg peer`/`wg msg --to`). NON-DEFAULT: the operator's daily
+# loop (pi dispatch, completion/land, TUI, plugin) never reaches it. Build with
+# `cargo build --features federation` to restore the whole surface.
+federation = ["dep:ed25519-dalek", "dep:x25519-dalek", "dep:bs58"]
 # Compatibility no-op for commands/scripts written during the concierge trial.
 # `worksgood` is now an unconditional default binary; this feature gates nothing.
 worksgood-trial = []
@@ -143,12 +152,17 @@ hex = "0.4.3"
 # sealed envelope AEAD, hkdf = per-message key derivation. bs58 renders the
 # `wgid:`/`did:key` multibase body; getrandom seeds fresh keypairs. All already
 # resolved transitively, so promoting them to direct deps needs no new fetch.
-ed25519-dalek = "2"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+# ed25519 (signing), x25519 (seal key-agreement) and bs58 (the `wgid:`
+# multibase body) are needed ONLY by the gated federation cluster, so they are
+# optional deps pulled in by `--features federation`. blake3 (content-addressing,
+# used by completion/land), chacha20poly1305 + hkdf (the `wg secret` keystore at
+# rest) and getrandom stay unconditional.
+ed25519-dalek = { version = "2", optional = true }
+x25519-dalek = { version = "2", features = ["static_secrets"], optional = true }
 blake3 = "1"
 chacha20poly1305 = "0.10"
 hkdf = "0.12"
-bs58 = "0.5"
+bs58 = { version = "0.5", optional = true }
 getrandom = "0.2"
 
 # PTY-embed: spawn `wg nex` (or any command) as a child of the

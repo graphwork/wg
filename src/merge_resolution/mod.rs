@@ -17,7 +17,9 @@ use std::process::{Command, Output};
 
 use crate::config::{Config, ReasoningLevel, Tier};
 use crate::finalization::{CandidateBinding, CandidateDescriptor, FinalizationStore};
+#[cfg(feature = "federation")]
 use crate::graph::TrustLevel;
+#[cfg(feature = "federation")]
 use crate::review::{ContentClass, Provenance, Sensitivity, Verdict, review_inbound};
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -631,16 +633,35 @@ pub fn classify_candidate(
         String::from_utf8_lossy(&candidate_diff),
         String::from_utf8_lossy(&target_diff)
     );
-    let safety = review_inbound(
-        ContentClass::Ic2Artifact,
-        &review_text,
-        &Provenance {
-            author: Some("local-immutable-candidate".into()),
-            trust: TrustLevel::Verified,
-        },
-        Sensitivity::Low,
-    );
-    let safety_accepted = safety.verdict == Verdict::Accept;
+    // The content-safety screen lives in the gated `review` module. Without it the
+    // lane falls back to the pre-seam behavior (validate + eval gates still apply) and
+    // says so loudly.
+    #[cfg(feature = "federation")]
+    let (safety_accepted, safety_hard_finding) = {
+        let safety = review_inbound(
+            ContentClass::Ic2Artifact,
+            &review_text,
+            &Provenance {
+                author: Some("local-immutable-candidate".into()),
+                trust: TrustLevel::Verified,
+            },
+            Sensitivity::Low,
+        );
+        (
+            safety.verdict == Verdict::Accept,
+            safety.verdict == Verdict::Reject,
+        )
+    };
+    #[cfg(not(feature = "federation"))]
+    let (safety_accepted, safety_hard_finding) = {
+        let _ = &review_text;
+        eprintln!(
+            "warning: content-safety screening is not compiled into this binary \
+             (rebuild with `cargo build --features federation`); candidate artifact is \
+             not screened"
+        );
+        (true, false)
+    };
     let merge = Command::new("git")
         .args([
             "-C",
@@ -703,7 +724,7 @@ pub fn classify_candidate(
         bindings_valid,
         policy_labeled: true,
         safety_accepted,
-        safety_hard_finding: safety.verdict == Verdict::Reject,
+        safety_hard_finding,
         candidate_checked: true,
         candidate_passed: true,
         target_checked: true,
@@ -1236,20 +1257,41 @@ fn fresh_gates(
         ],
     )?;
     let text = String::from_utf8_lossy(&diff);
-    let review = review_inbound(
-        ContentClass::Ic2Artifact,
-        &text,
-        &Provenance {
-            author: Some("strong-merger-output".into()),
-            trust: TrustLevel::Verified,
-        },
-        Sensitivity::High,
-    );
+    #[cfg(feature = "federation")]
+    let (safety_content_cid, safety_tag) = {
+        let review = review_inbound(
+            ContentClass::Ic2Artifact,
+            &text,
+            &Provenance {
+                author: Some("strong-merger-output".into()),
+                trust: TrustLevel::Verified,
+            },
+            Sensitivity::High,
+        );
+        (review.content_cid.clone(), review.verdict.tag().to_string())
+    };
+    #[cfg(not(feature = "federation"))]
+    let (safety_content_cid, safety_tag) = {
+        // No content-safety pipeline in a default build, so the lane keeps the
+        // pre-seam behavior (the receipt CID is prefixed `unscreened:` so the gap is
+        // visible in the audit trail rather than silently identical to a screened pass).
+        let _ = &text;
+        eprintln!(
+            "warning: content-safety screening is not compiled into this binary \
+             (rebuild with `cargo build --features federation`); the resolution artifact \
+             is NOT screened"
+        );
+        (
+            format!(
+                "unscreened:b3:{}",
+                hex::encode(crate::content_addr::blake3_32(text.as_bytes()))
+            ),
+            "accept".to_string(),
+        )
+    };
     let safety_receipt_cid = cid(format!(
         "{}:{}:{}",
-        descriptor.resolution_candidate_id,
-        review.content_cid,
-        review.verdict.tag()
+        descriptor.resolution_candidate_id, safety_content_cid, safety_tag
     )
     .as_bytes());
     let (validation_passed, validation_receipt_cid) = if let Some(check) = integration_check {
@@ -1276,7 +1318,7 @@ fn fresh_gates(
     .as_bytes());
     Ok(FreshGates {
         descriptor_id: descriptor.resolution_candidate_id.clone(),
-        safety_verdict: review.verdict.tag().into(),
+        safety_verdict: safety_tag.clone(),
         safety_receipt_cid,
         validation_passed,
         validation_receipt_cid,

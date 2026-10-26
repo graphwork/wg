@@ -27,6 +27,8 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_helpers.sh"
 require_wg
+# The federation cluster is behind the non-default `federation` cargo feature.
+require_federation
 
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING python3" "needed for JSON + base64"
 

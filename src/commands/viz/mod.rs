@@ -601,19 +601,32 @@ pub fn generate_viz_output_from_graph(
         for task in &tasks_to_show {
             for dep in &task.after {
                 if let Some((peer_name, remote_task_id)) =
-                    worksgood::federation::parse_remote_ref(dep)
+                    worksgood::agency::federation::parse_remote_ref(dep)
                     && seen.insert(dep.clone())
                 {
-                    let remote = worksgood::federation::resolve_remote_task_status(
-                        peer_name,
-                        remote_task_id,
-                        dir,
-                    );
-                    let title = remote.title.unwrap_or_else(|| remote_task_id.to_string());
+                    // Cross-repo nodes render with a resolved status only when the
+                    // non-default federation cluster is compiled in.
+                    #[cfg(feature = "federation")]
+                    let (title, status) = {
+                        let remote = worksgood::federation::resolve_remote_task_status(
+                            peer_name,
+                            remote_task_id,
+                            dir,
+                        );
+                        (
+                            remote.title.unwrap_or_else(|| remote_task_id.to_string()),
+                            remote.status,
+                        )
+                    };
+                    #[cfg(not(feature = "federation"))]
+                    let (title, status) = {
+                        let _ = (peer_name, dir);
+                        (remote_task_id.to_string(), worksgood::graph::Status::Open)
+                    };
                     peers.push(Task {
                         id: dep.clone(),
                         title,
-                        status: remote.status,
+                        status,
                         ..Task::default()
                     });
                 }

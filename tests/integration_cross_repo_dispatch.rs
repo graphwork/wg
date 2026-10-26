@@ -1,3 +1,4 @@
+#![cfg(feature = "federation")]
 #![allow(clippy::field_reassign_with_default)]
 //! Integration tests for cross-repo task dispatch.
 //!

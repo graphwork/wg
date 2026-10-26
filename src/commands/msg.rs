@@ -273,6 +273,7 @@ pub fn run_poll(dir: &Path, task_id: &str, agent_id: &str, json: bool) -> Result
 /// `to` may be a raw `wgid:`/`did:key:` address or a `federation.yaml` peer name. The
 /// delivery endpoint is resolved by the cascade unless `--store` overrides it with an
 /// explicit node/dir URL. Tries each resolved endpoint in fallback-ladder order.
+#[cfg(feature = "federation")]
 #[allow(clippy::too_many_arguments)]
 pub fn run_send_fed(
     workgraph_dir: &Path,
@@ -348,6 +349,7 @@ pub fn run_send_fed(
 /// inbound is screened through the review pipeline with author-trust derived from the
 /// canonical peer/provider trust dial (no `--trust` flag), and a non-`accept` verdict
 /// refuses consumption (the `auto-wire-the` seam, Review-Wave C).
+#[cfg(feature = "federation")]
 pub fn run_poll_fed(
     workgraph_dir: &Path,
     as_identity: &str,
@@ -380,6 +382,7 @@ pub fn run_poll_fed(
 
 /// Normalize a `wgid:`/`did:key:` address to the canonical `wgid:` (for `--store`
 /// overrides where the cascade is bypassed).
+#[cfg(feature = "federation")]
 fn normalize_to_wgid(to: &str) -> Result<String> {
     let pubkey = worksgood::identity::keys::pubkey_from_wgid(to)
         .with_context(|| format!("'{to}' is not a wgid:/did:key: address"))?;

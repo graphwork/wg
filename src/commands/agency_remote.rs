@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use worksgood::agency::AgencyStore;
-use worksgood::federation;
+use worksgood::agency::federation;
 
 /// Add a named remote.
 pub fn run_add(

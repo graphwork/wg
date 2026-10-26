@@ -23,7 +23,7 @@ fn resolve_function_source(
 ) -> Result<TraceFunction> {
     if let Some((peer_name, remote_func_id)) = source.split_once(':') {
         // peer:function-id syntax
-        let resolved = worksgood::federation::resolve_peer(peer_name, workgraph_dir)?;
+        let resolved = worksgood::agency::federation::resolve_peer(peer_name, workgraph_dir)?;
         let peer_func_dir = function::functions_dir(&resolved.workgraph_dir);
         function::find_function_by_prefix(&peer_func_dir, remote_func_id)
             .map_err(|e| anyhow::anyhow!("From peer '{}': {}", peer_name, e))
@@ -34,7 +34,7 @@ fn resolve_function_source(
             .map_err(|e| anyhow::anyhow!("Failed to load function from '{}': {}", source, e))
     } else {
         // Treat as a peer name, with function_id as the function to look up
-        let resolved = worksgood::federation::resolve_peer(source, workgraph_dir)?;
+        let resolved = worksgood::agency::federation::resolve_peer(source, workgraph_dir)?;
         let peer_func_dir = function::functions_dir(&resolved.workgraph_dir);
         function::find_function_by_prefix(&peer_func_dir, function_id)
             .map_err(|e| anyhow::anyhow!("From peer '{}': {}", source, e))
@@ -1501,10 +1501,10 @@ mod tests {
         function::save_function(&sample_function(), &peer_func_dir).unwrap();
 
         // Add peer to federation config
-        let config = worksgood::federation::FederationConfig {
+        let config = worksgood::agency::federation::FederationConfig {
             peers: std::collections::BTreeMap::from([(
                 "mypeer".to_string(),
-                worksgood::federation::PeerConfig {
+                worksgood::agency::federation::PeerConfig {
                     path: peer_project.to_str().unwrap().to_string(),
                     description: None,
                     ..Default::default()
@@ -1512,7 +1512,7 @@ mod tests {
             )]),
             ..Default::default()
         };
-        worksgood::federation::save_federation_config(&local_dir, &config).unwrap();
+        worksgood::agency::federation::save_federation_config(&local_dir, &config).unwrap();
 
         // Instantiate from peer
         run(
@@ -1552,10 +1552,10 @@ mod tests {
         function::save_function(&sample_function(), &peer_func_dir).unwrap();
 
         // Add peer to federation config
-        let config = worksgood::federation::FederationConfig {
+        let config = worksgood::agency::federation::FederationConfig {
             peers: std::collections::BTreeMap::from([(
                 "mypeer".to_string(),
-                worksgood::federation::PeerConfig {
+                worksgood::agency::federation::PeerConfig {
                     path: peer_project.to_str().unwrap().to_string(),
                     description: None,
                     ..Default::default()
@@ -1563,7 +1563,7 @@ mod tests {
             )]),
             ..Default::default()
         };
-        worksgood::federation::save_federation_config(&local_dir, &config).unwrap();
+        worksgood::agency::federation::save_federation_config(&local_dir, &config).unwrap();
 
         // Use --from with just the peer name (function_id is the positional arg)
         run(

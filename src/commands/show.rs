@@ -729,19 +729,27 @@ fn build_details(dir: &Path, id: &str) -> Result<(TaskDetails, Option<(Option<St
         .iter()
         .map(|blocker_id| {
             if let Some((peer_name, remote_task_id)) =
-                worksgood::federation::parse_remote_ref(blocker_id)
+                worksgood::agency::federation::parse_remote_ref(blocker_id)
             {
-                // Cross-repo dependency — resolve via federation
-                let remote = worksgood::federation::resolve_remote_task_status(
+                // Cross-repo dependency — resolve via federation (when the non-default
+                // federation cluster is compiled in; otherwise report it as blocking).
+                #[cfg(feature = "federation")]
+                let remote_status = worksgood::federation::resolve_remote_task_status(
                     peer_name,
                     remote_task_id,
                     dir,
-                );
+                )
+                .status;
+                #[cfg(not(feature = "federation"))]
+                let remote_status = {
+                    let _ = (peer_name, remote_task_id);
+                    worksgood::graph::Status::Open
+                };
                 let disposition =
                     worksgood::query::dependency_disposition(blocker_id, id, &graph, Some(dir));
                 BlockerInfo {
                     id: blocker_id.clone(),
-                    status: remote.status,
+                    status: remote_status,
                     satisfied: disposition.is_satisfied(),
                     blocked_reason: match disposition {
                         worksgood::query::DependencyDisposition::Blocked { reason } => Some(reason),

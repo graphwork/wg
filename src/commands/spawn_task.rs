@@ -336,6 +336,7 @@ pub fn resolve_handler(
             ));
         }
         ExecutorKind::Pi => HandlerSpec::Pi { chat_ref, model },
+        #[cfg(feature = "federation")]
         ExecutorKind::RemoteRunner => {
             return Err(anyhow!(
                 "remote-runner executor is driven by the WG-Exec providers plane \

@@ -653,7 +653,7 @@ pub fn run_with_remote_provider(
             error = Some(anyhow::anyhow!("Task '{}' cannot block itself", task_id));
             return false;
         }
-        if worksgood::federation::parse_remote_ref(blocker_id).is_some() {
+        if worksgood::agency::federation::parse_remote_ref(blocker_id).is_some() {
             // Cross-repo dependency — validated at resolution time, not here
         } else if graph.get_node(blocker_id).is_none() {
             if paused || allow_phantom {
@@ -839,7 +839,7 @@ pub fn run_with_remote_provider(
     // Maintain bidirectional consistency: update `blocks` on referenced blocker tasks
     // (skip cross-repo refs — those live in a different graph)
     for dep in &effective_after {
-        if worksgood::federation::parse_remote_ref(dep).is_some() {
+        if worksgood::agency::federation::parse_remote_ref(dep).is_some() {
             continue; // Cross-repo dep; can't update remote graph's blocks field
         }
         if let Some(blocker) = graph.get_task_mut(dep)
@@ -854,7 +854,7 @@ pub fn run_with_remote_provider(
     // forming a structural cycle that the SCC detector will find.
     if max_iterations.is_some() && !effective_after.is_empty() {
         for dep_id in &effective_after {
-            if worksgood::federation::parse_remote_ref(dep_id).is_some() {
+            if worksgood::agency::federation::parse_remote_ref(dep_id).is_some() {
                 continue; // Skip cross-repo deps
             }
             if let Some(dep_task) = graph.get_task_mut(dep_id)
@@ -1076,7 +1076,75 @@ pub fn run_remote(
     verify_timeout: Option<&str>,
     cron: Option<&str>,
 ) -> Result<()> {
-    use worksgood::federation::{check_peer_service, resolve_peer};
+    #[cfg(feature = "federation")]
+    {
+        return run_remote_via_peer_plane(
+            local_workgraph_dir,
+            peer_ref,
+            title,
+            id,
+            description,
+            after,
+            tags,
+            skills,
+            deliverables,
+            model,
+            reasoning,
+            provider,
+            verify,
+            verify_timeout,
+            cron,
+        );
+    }
+    #[cfg(not(feature = "federation"))]
+    {
+        let _ = (
+            local_workgraph_dir,
+            peer_ref,
+            title,
+            id,
+            description,
+            after,
+            tags,
+            skills,
+            deliverables,
+            model,
+            reasoning,
+            provider,
+            verify,
+            verify_timeout,
+            cron,
+        );
+        anyhow::bail!(
+            "cross-graph `wg add <peer>:<task-id>` routes through the WG-Fed peer plane, \
+             which is not built into this binary; rebuild with \
+             `cargo build --features federation`"
+        )
+    }
+}
+
+#[cfg(feature = "federation")]
+#[allow(clippy::too_many_arguments)]
+fn run_remote_via_peer_plane(
+    local_workgraph_dir: &Path,
+    peer_ref: &str,
+    title: &str,
+    id: Option<&str>,
+    description: Option<&str>,
+    after: &[String],
+    tags: &[String],
+    skills: &[String],
+    deliverables: &[String],
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    provider: Option<&str>,
+    verify: Option<&str>,
+    verify_timeout: Option<&str>,
+    cron: Option<&str>,
+) -> Result<()> {
+    use worksgood::agency::federation::resolve_peer;
+    #[cfg(feature = "federation")]
+    use worksgood::federation::check_peer_service;
 
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
