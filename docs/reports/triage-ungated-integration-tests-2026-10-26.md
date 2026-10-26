@@ -48,7 +48,7 @@ Nothing here is approved work yet; the plan in §5 needs operator sign-off
 |---|---|
 | Targets in scope | **191** `tests/*.rs` + `tests/upgrade/main.rs` (a 192nd target the brief's glob misses) |
 | LOC | **120,432** |
-| `#[test]` functions | **2,640** (2,401 green / 167 red / 91 `#[ignore]`d at runtime) |
+| `#[test]` functions | **2,640** declared; **161** fail at the base revision and **91** are `#[ignore]`d at runtime |
 | CI-gated today | **8** (`lifecycle-formal`: 7 targets; `integration` job: `integration_service`) |
 | Un-gated | **183** (brief said 182/190 — one target has been added since the survey) |
 | Last-touched | 2026-04: 1 · 05: 8 · 06: 72 · 07: 54 · 08: 13 · 09: 41 · 10: 2 |
