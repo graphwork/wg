@@ -10,8 +10,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use super::state::{
     ActivityEventKind, AppearanceChoice, ChoiceDialogState, ColorCapability, ConfigEditKind,
     ConfigSection, ConfirmAction, ContextLane, ControlPanelFocus, CoordinatorArrowHit,
-    CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, ExitPromptState, FocusedPanel,
-    InputMode, InspectorDock, InspectorMode, LayoutControlAction, LayoutControlHit,
+    CoordinatorPlusHit, CoordinatorTabHit, CycleTimingEntry, EndpointTestStatus, ExitPromptState,
+    FocusedPanel, InputMode, InspectorDock, InspectorMode, LayoutControlAction, LayoutControlHit,
     LayoutControlPage, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
     ServiceIdentityHit, SettingsEditScope, SinglePanelView, SortMode, SymbolMode, TabBarEntryKind,
     TaskFormField, TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp,
@@ -10850,6 +10850,19 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
     }
 }
 
+/// Status-bar colour for a cycle-timing indicator.
+///
+/// The status bar used to carry its own `Status -> Color` table (in-progress
+/// green, done cyan — the inverse of the graph-view palette). It now routes
+/// through `state::flash_color_for_status`, the single canonical palette, so a
+/// task can never render in one colour in the graph pane and another in the
+/// status bar. See `crate::status_palette` for the table itself.
+#[cfg_attr(not(test), allow(dead_code))]
+fn cycle_timing_color(status: &worksgood::graph::Status) -> Color {
+    let (r, g, b) = super::state::flash_color_for_status(status);
+    Color::Rgb(r, g, b)
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
     if app.search_active {
@@ -11120,12 +11133,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
             } else {
                 "–".to_string()
             };
-            let color = match ct.status {
-                worksgood::graph::Status::InProgress => Color::Green,
-                worksgood::graph::Status::Open => Color::Yellow,
-                worksgood::graph::Status::Done => Color::Cyan,
-                _ => Color::DarkGray,
-            };
+            let color = cycle_timing_color(&ct.status);
             spans.push(Span::styled(
                 format!(
                     "⟳{}[{}/{}·{}]",
@@ -13383,6 +13391,122 @@ mod tests {
         app.selected_task_idx = selected_task_idx;
         app.recompute_trace();
         app
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Status bar: the cycle-timing indicators use the ONE canonical palette
+    // (state::flash_color_for_status), not a local status→colour table.
+    // ══════════════════════════════════════════════════════════════════════
+
+    fn cycle_timing_entry(id: &str, status: Status) -> CycleTimingEntry {
+        CycleTimingEntry {
+            task_id: id.to_string(),
+            iteration: 1,
+            max_iterations: 3,
+            last_completed_ago_secs: Some(30),
+            next_due_in_secs: Some(60),
+            status,
+        }
+    }
+
+    /// Render the real status bar into a TestBackend and return the foreground
+    /// colour of each `⟳` cycle-timing indicator, in render order.
+    fn rendered_cycle_indicator_colors(statuses: &[Status]) -> Vec<Color> {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (viz, _graph) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        app.cycle_timing = statuses
+            .iter()
+            .enumerate()
+            .map(|(i, s)| cycle_timing_entry(&format!("cyc-{i}"), *s))
+            .collect();
+
+        let width: u16 = 400;
+        let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_status_bar(frame, &app, area);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let mut colors = Vec::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                let cell = &buffer[(x, y)];
+                if cell.symbol() == "⟳" {
+                    colors.push(cell.fg);
+                }
+            }
+        }
+        colors
+    }
+
+    /// Every status rendered in the status bar carries exactly the canonical
+    /// palette RGB — the same value the graph-pane flash uses — and never the
+    /// old inverted status-bar colours (in-progress was `Color::Green`, done was
+    /// `Color::Cyan`).
+    #[test]
+    fn status_bar_cycle_indicators_use_the_canonical_palette() {
+        let statuses = [
+            Status::InProgress,
+            Status::Open,
+            Status::Done,
+            Status::Failed,
+            Status::Blocked,
+            Status::PendingValidation,
+        ];
+        let colors = rendered_cycle_indicator_colors(&statuses);
+        assert_eq!(
+            colors.len(),
+            statuses.len(),
+            "expected one ⟳ indicator per cycle entry, got {colors:?}"
+        );
+        for (status, rendered) in statuses.iter().zip(colors.iter()) {
+            let (r, g, b) = worksgood::status_palette::status_rgb(status);
+            assert_eq!(
+                *rendered,
+                Color::Rgb(r, g, b),
+                "status bar rendered `{status}` off-palette"
+            );
+            assert_eq!(
+                *rendered,
+                cycle_timing_color(status),
+                "status bar bypassed cycle_timing_color for `{status}`"
+            );
+        }
+        // The specific inversion the divergence caused must be gone.
+        assert_ne!(colors[0], Color::Green, "in-progress is no longer green");
+        assert_ne!(colors[2], Color::Cyan, "done is no longer cyan");
+    }
+
+    /// Exhaustive: `cycle_timing_color` agrees with the canonical palette for
+    /// every graph status, so no variant can drift.
+    #[test]
+    fn cycle_timing_color_covers_every_status_through_the_canonical_palette() {
+        for status in [
+            Status::Open,
+            Status::InProgress,
+            Status::Waiting,
+            Status::Done,
+            Status::Blocked,
+            Status::Failed,
+            Status::Abandoned,
+            Status::PendingValidation,
+            Status::PendingEval,
+            Status::FailedPendingEval,
+            Status::Incomplete,
+        ] {
+            let (r, g, b) = worksgood::status_palette::status_rgb(&status);
+            assert_eq!(
+                cycle_timing_color(&status),
+                Color::Rgb(r, g, b),
+                "status bar colour for `{status}` drifted from the canonical palette"
+            );
+        }
     }
 
     /// Parse an ANSI line into a ratatui Line.

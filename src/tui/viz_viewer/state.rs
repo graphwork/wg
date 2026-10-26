@@ -1272,13 +1272,20 @@ impl AnimationMode {
     }
 }
 
-/// Flash color for a given status transition.
+/// Flash color for a given status transition — **the single status→RGB
+/// palette** for the TUI.
 ///
 /// Delegates to the canonical graph-view palette (`crate::status_palette`),
 /// the single source of truth also exported by `wg viz --json` and the daemon's
 /// `GetFleet` tree payload. See that module for the palette-table rationale and
 /// the documented InProgress-vs-`html.rs` divergence.
-fn flash_color_for_status(status: &Status) -> (u8, u8, u8) {
+///
+/// Every TUI surface that colours a task status MUST route through this function
+/// (`render.rs::cycle_timing_color` is the status-bar consumer) so a status can
+/// never carry two different colours in the same frame. Do not add a local
+/// `match Status { … => Color::… }` table anywhere in the TUI; add the colour to
+/// `status_palette` instead.
+pub(crate) fn flash_color_for_status(status: &Status) -> (u8, u8, u8) {
     worksgood::status_palette::status_rgb(status)
 }
 
@@ -1292,6 +1299,85 @@ fn flash_color_for_kind(kind: AnimationKind) -> (u8, u8, u8) {
         AnimationKind::EdgeChange => (100, 180, 200), // teal
         AnimationKind::Revealed => (120, 120, 140), // soft gray-blue
         AnimationKind::AnnotationClick => (255, 180, 220), // bright pink
+    }
+}
+
+#[cfg(test)]
+mod status_palette_tests {
+    use super::*;
+
+    /// Every graph status, so the palette pin below cannot silently skip a
+    /// variant. (A new `Status` variant must be added here too — the palette
+    /// table in `status_palette` is exhaustive, so forgetting one fails to
+    /// compile there first.)
+    const ALL_STATUSES: [Status; 11] = [
+        Status::Open,
+        Status::InProgress,
+        Status::Waiting,
+        Status::Done,
+        Status::Blocked,
+        Status::Failed,
+        Status::Abandoned,
+        Status::PendingValidation,
+        Status::PendingEval,
+        Status::FailedPendingEval,
+        Status::Incomplete,
+    ];
+
+    /// The TUI never invents a status colour: for EVERY status,
+    /// `flash_color_for_status` returns exactly the canonical
+    /// `status_palette` RGB — the same table `wg viz --json`, the daemon's
+    /// `GetFleet` payload, the Pi plugin and the checked-in cross-language
+    /// fixture carry.
+    #[test]
+    fn flash_color_for_status_is_the_canonical_palette_for_every_status() {
+        for status in ALL_STATUSES {
+            assert_eq!(
+                flash_color_for_status(&status),
+                worksgood::status_palette::status_rgb(&status),
+                "flash_color_for_status drifted from the canonical palette for `{status}`"
+            );
+        }
+    }
+
+    /// Pin the canonical RGB values themselves so an accidental re-tint of one
+    /// status (the class of bug that produced the divergent second mapping)
+    /// fails loudly here instead of rendering a different colour in the graph
+    /// pane and the status bar.
+    #[test]
+    fn every_status_keeps_its_canonical_rgb() {
+        let expected = [
+            (Status::Open, (200, 200, 80)),
+            (Status::InProgress, (60, 200, 220)),
+            (Status::Waiting, (60, 160, 220)),
+            (Status::Done, (80, 220, 100)),
+            (Status::Blocked, (180, 120, 60)),
+            (Status::Failed, (220, 60, 60)),
+            (Status::Abandoned, (140, 100, 160)),
+            (Status::PendingValidation, (60, 160, 220)),
+            (Status::PendingEval, (140, 230, 80)),
+            (Status::FailedPendingEval, (210, 130, 70)),
+            (Status::Incomplete, (255, 165, 0)),
+        ];
+        for (status, rgb) in expected {
+            assert_eq!(
+                flash_color_for_status(&status),
+                rgb,
+                "canonical RGB changed for `{status}` — update status_palette, the \
+                 viz `palette` payload consumers, and the pinned fixture together"
+            );
+        }
+    }
+
+    /// The status bar no longer has its own (inverted) table: in-progress is
+    /// the cyan flash, NOT the old status-bar green, and done is green, NOT the
+    /// old status-bar cyan.
+    #[test]
+    fn status_bar_cycle_colors_are_not_the_old_inverted_table() {
+        assert_eq!(flash_color_for_status(&Status::InProgress), (60, 200, 220));
+        assert_ne!(flash_color_for_status(&Status::InProgress), (0, 255, 0));
+        assert_eq!(flash_color_for_status(&Status::Done), (80, 220, 100));
+        assert_ne!(flash_color_for_status(&Status::Done), (0, 255, 255));
     }
 }
 
