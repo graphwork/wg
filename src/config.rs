@@ -10770,6 +10770,56 @@ model = "pi:openrouter:anthropic/claude-opus-4-7"
         assert!(!HANDLER_FIRST_HARD_ERROR);
     }
 
+    /// Worker-route admission derives the handler from the route's leading
+    /// token — nothing else (no stale `executor` field, no default fallback).
+    ///
+    /// The retired smoke corpus (`tests/smoke/archive/README.md`) pinned this
+    /// shared invariant one scenario per handler
+    /// (`explicit_codex_worker`, `explicit_claude_worker`,
+    /// `task_agent_codex_model_routes_to_codex`,
+    /// `native_floor_yields_to_cli_locked_model`, `nex_canonical_prefix`).
+    /// Because the invariant is shared, it is folded into this single unit test
+    /// rather than preserved five times as live handler smokes.
+    #[test]
+    fn worker_route_admission_derives_handler_from_the_route() {
+        for (route, handler, model) in [
+            (
+                "pi:openrouter:z-ai/glm-5.2",
+                "pi",
+                "openrouter:z-ai/glm-5.2",
+            ),
+            ("pi:lunaroute/deepseek-4.1", "pi", "lunaroute:deepseek-4.1"),
+            ("claude:opus", "claude", "opus"),
+            (
+                "claude:future/opaque:model-v9",
+                "claude",
+                "future/opaque:model-v9",
+            ),
+            ("codex:gpt-5.5", "codex", "gpt-5.5"),
+        ] {
+            assert_eq!(
+                parse_supported_execution_route(route).unwrap(),
+                (handler.to_string(), model.to_string()),
+                "route {route} must derive handler {handler}"
+            );
+        }
+
+        // `nex:` (attended-only) and bare provider namespaces are refused as
+        // worker routes: a mis-route must fail loud, never fall back silently.
+        for route in [
+            "nex:openrouter:z-ai/glm-5.2",
+            "openrouter:z-ai/glm-5.2",
+            "opencode:openrouter/x",
+            "opus",
+            "",
+        ] {
+            assert!(
+                parse_supported_execution_route(route).is_err(),
+                "route {route:?} must be refused as a worker route"
+            );
+        }
+    }
+
     #[test]
     fn test_provider_to_native_provider_mapping() {
         assert_eq!(provider_to_native_provider("openrouter"), "openrouter");

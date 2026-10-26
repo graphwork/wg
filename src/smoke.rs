@@ -97,6 +97,36 @@ pub struct Scenario {
     #[serde(default)]
     pub description: String,
     pub timeout_seconds: Option<u64>,
+    /// `retired = true` marks a scenario whose *subject* is a handler/plane the
+    /// daily flow no longer enters (claude/codex/nex/native/opencode worker
+    /// routes, or a WG-Fed / WG-Review / WG-Exec / pilot spark plane).
+    ///
+    /// The manifest is grow-only, so the entry is PRESERVED — it is never
+    /// deleted, and its script is archived (not deleted) under
+    /// `tests/smoke/archive/`. Retirement only changes *default* execution:
+    /// `wg done <task>` never runs a retired scenario (even if the task id is
+    /// still listed in `owners`, which stays as provenance), while
+    /// `wg done --full-smoke` opts every retired scenario back in.
+    #[serde(default)]
+    pub retired: bool,
+    /// Human-readable reason the scenario was retired. Surfaced when
+    /// `--full-smoke` runs the retired corpus so the operator knows why these
+    /// scenarios are not part of the default gate.
+    #[serde(default)]
+    pub retired_reason: Option<String>,
+}
+
+impl Scenario {
+    /// True when the scenario is preserved in the manifest but excluded from
+    /// the default `wg done` gate (see [`Scenario::retired`]).
+    pub fn is_retired(&self) -> bool {
+        self.retired
+    }
+
+    /// True when `task_id` is listed as an owner of this scenario.
+    pub fn is_owned_by(&self, task_id: &str) -> bool {
+        self.owners.iter().any(|o| o == task_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,12 +212,41 @@ impl Manifest {
         Self::load_from(&path)
     }
 
-    /// Return scenarios owned by a specific task id.
+    /// Return the scenarios `wg done <task>` must run: scenarios owned by the
+    /// task id, EXCLUDING retired ones. Retrieval is the default gate, so a
+    /// retired scenario never blocks `wg done` even though it keeps its
+    /// `owners` entry as provenance.
     pub fn scenarios_for_task(&self, task_id: &str) -> Vec<&Scenario> {
         self.scenarios
             .iter()
-            .filter(|s| s.owners.iter().any(|o| o == task_id))
+            .filter(|s| !s.retired && s.is_owned_by(task_id))
             .collect()
+    }
+
+    /// Retired scenarios owned by a task (i.e. what the default gate skips).
+    /// Used to report the skip loudly instead of silently narrowing coverage.
+    pub fn retired_scenarios_for_task(&self, task_id: &str) -> Vec<&Scenario> {
+        self.scenarios
+            .iter()
+            .filter(|s| s.retired && s.is_owned_by(task_id))
+            .collect()
+    }
+
+    /// Every non-retired scenario — the corpus `wg done --full-smoke` would
+    /// run if retirement did not exist.
+    pub fn active_scenarios(&self) -> Vec<&Scenario> {
+        self.scenarios.iter().filter(|s| !s.retired).collect()
+    }
+
+    /// Every retired scenario, in manifest order.
+    pub fn retired_scenarios(&self) -> Vec<&Scenario> {
+        self.scenarios.iter().filter(|s| s.retired).collect()
+    }
+
+    /// Every scenario, retired or not. `wg done --full-smoke` intentionally
+    /// opts retired scenarios back in, so it selects from this collection.
+    pub fn all_scenarios(&self) -> Vec<&Scenario> {
+        self.scenarios.iter().collect()
     }
 }
 
@@ -1515,6 +1574,8 @@ mod tests {
             owners: vec!["explicit-validation".to_string()],
             description: "explicit candidate scenario validation".to_string(),
             timeout_seconds: Some(120),
+            retired: false,
+            retired_reason: None,
         };
         let result = run_scenario(&scenario, script.parent().unwrap_or(source_root));
         assert_eq!(result.outcome, ScenarioOutcome::Pass, "{result:?}");
@@ -1535,6 +1596,8 @@ mod tests {
             owners: vec!["task-a".to_string()],
             description: String::new(),
             timeout_seconds: Some(10),
+            retired: false,
+            retired_reason: None,
         };
         let r = run_scenario(&scenario, td.path());
         assert_eq!(r.outcome, ScenarioOutcome::Pass);
@@ -1554,6 +1617,8 @@ mod tests {
             owners: vec!["task-a".to_string()],
             description: String::new(),
             timeout_seconds: Some(10),
+            retired: false,
+            retired_reason: None,
         };
         let r = run_scenario(&scenario, td.path());
         match r.outcome {
@@ -1584,6 +1649,8 @@ mod tests {
             owners: vec!["task-a".to_string()],
             description: String::new(),
             timeout_seconds: Some(10),
+            retired: false,
+            retired_reason: None,
         };
 
         let result = run_scenario(&scenario, td.path());
@@ -1618,6 +1685,8 @@ mod tests {
             owners: vec!["task-a".to_string()],
             description: String::new(),
             timeout_seconds: Some(10),
+            retired: false,
+            retired_reason: None,
         };
         let r = run_scenario(&scenario, td.path());
         match r.outcome {
@@ -1679,6 +1748,100 @@ script = "b.sh"
         .unwrap();
         let err = Manifest::load_from(&path).unwrap_err().to_string();
         assert!(err.contains("duplicate scenario name 'dup'"));
+    }
+
+    fn retired_manifest(td: &TempDir) -> PathBuf {
+        let path = td.path().join("manifest.toml");
+        fs::write(
+            &path,
+            r#"
+[[scenario]]
+name = "live-owned"
+script = "scenarios/live-owned.sh"
+owners = ["task-a", "smoke-gate-is"]
+
+[[scenario]]
+name = "retired-owned"
+script = "archive/retired-owned.sh"
+owners = ["task-a"]
+retired = true
+retired_reason = "pins a claude worker route the daily pi flow never enters"
+
+[[scenario]]
+name = "retired-other"
+script = "archive/retired-other.sh"
+owners = ["task-b"]
+retired = true
+"#,
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn retired_scenario_is_never_selected_for_wg_done() {
+        let td = TempDir::new().unwrap();
+        let m = Manifest::load_from(&retired_manifest(&td)).unwrap();
+        // The retired scenario keeps its owner entry as provenance, but `wg done`
+        // must not run it: only the live scenario is selected.
+        let owned: Vec<&str> = m
+            .scenarios_for_task("task-a")
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(owned, vec!["live-owned"]);
+        assert!(m.scenarios_for_task("task-b").is_empty());
+        // The skip is explicit, not silent: callers report what was skipped.
+        let skipped: Vec<&str> = m
+            .retired_scenarios_for_task("task-a")
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(skipped, vec!["retired-owned"]);
+        assert_eq!(m.retired_scenarios().len(), 2);
+    }
+
+    #[test]
+    fn manifest_is_grow_only_retired_entries_are_preserved() {
+        let td = TempDir::new().unwrap();
+        let m = Manifest::load_from(&retired_manifest(&td)).unwrap();
+        // Retirement filters the default gate; it never removes entries.
+        assert_eq!(m.all_scenarios().len(), 3);
+        assert_eq!(m.active_scenarios().len(), 1);
+        let retired = m.retired_scenarios();
+        assert_eq!(retired.len(), 2);
+        assert_eq!(
+            retired[0].retired_reason.as_deref(),
+            Some("pins a claude worker route the daily pi flow never enters")
+        );
+        // A retired entry without a reason still parses (reason is advisory).
+        assert!(retired[1].retired_reason.is_none());
+    }
+
+    #[test]
+    fn full_smoke_selection_opts_retired_scenarios_back_in() {
+        let td = TempDir::new().unwrap();
+        let m = Manifest::load_from(&retired_manifest(&td)).unwrap();
+        // `--full-smoke` selects the whole preserved corpus, retired included.
+        let all = m.all_scenarios();
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().any(|s| s.name == "retired-owned"));
+        assert!(all.iter().any(|s| s.name == "retired-other"));
+        assert!(all.iter().all(|s| s.is_retired() == s.retired));
+    }
+
+    #[test]
+    fn unretired_scenarios_default_to_false_and_are_owned() {
+        let td = TempDir::new().unwrap();
+        let m = Manifest::load_from(&retired_manifest(&td)).unwrap();
+        let live = m
+            .scenarios
+            .iter()
+            .find(|s| s.name == "live-owned")
+            .expect("live scenario present");
+        assert!(!live.is_retired());
+        assert!(live.is_owned_by("smoke-gate-is"));
+        assert!(!live.is_owned_by("task-b"));
     }
 
     #[test]
@@ -1778,6 +1941,8 @@ script = "b.sh"
             owners: vec!["test".to_string()],
             description: String::new(),
             timeout_seconds: Some(10),
+            retired: false,
+            retired_reason: None,
         };
         let result = run_scenario(&scenario, td.path());
         assert!(matches!(result.outcome, ScenarioOutcome::Error { .. }));
@@ -1875,6 +2040,8 @@ script = "b.sh"
             owners: vec!["task-a".to_string()],
             description: String::new(),
             timeout_seconds: Some(10),
+            retired: false,
+            retired_reason: None,
         };
         let r = run_scenario(&scenario, td.path());
         assert!(matches!(r.outcome, ScenarioOutcome::Error { .. }));
@@ -1919,6 +2086,8 @@ exit 9
             owners: vec!["test".to_string()],
             description: String::new(),
             timeout_seconds: Some(10),
+            retired: false,
+            retired_reason: None,
         };
         let result = run_scenario(&scenario, td.path());
         assert!(matches!(

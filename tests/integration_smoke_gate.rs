@@ -325,6 +325,8 @@ fn smoke_process_ownership_cleanup_real_entry_point() {
         owners: vec!["fix-smoke-pi-process-leaks".to_string()],
         description: "exercise process ownership through the real Rust harness".to_string(),
         timeout_seconds: Some(180),
+        retired: false,
+        retired_reason: None,
     };
     let report = run_scenarios(&[&scenario], tmp.path());
     assert!(
@@ -360,6 +362,8 @@ fn semantic_rejection_help_real_candidate_cli_flow() {
         owners: vec!["fix-completion-help-after-review".to_string()],
         description: "controlled receipt-backed semantic rejection through the real candidate CLI; not live semantic proof".to_string(),
         timeout_seconds: Some(180),
+        retired: false,
+        retired_reason: None,
     };
     let report = run_scenarios(&[&scenario], tmp.path());
     assert!(
