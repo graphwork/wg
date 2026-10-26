@@ -243,7 +243,7 @@ A repository-wide `rg` snapshot on 2026-07-18 found standalone `wg` in **1,619 f
 | Shell alias between names | Easy for one shell. | Invisible to scripts, Pi, services, Termux, support diagnostics, and package ownership; can mask WireGuard. | No upgrade/migration contract. | Never ship as the mechanism. |
 | `wsg` full CLI | Shortest candidate. | npm already has `wsg@0.0.1`; acronym is used for Web Sustainability Guidelines, Cisco WSG, grippers, and other products. Easy to mistype/forget. | Same migration cost as `worksg`, less product meaning. | Inferior to `worksg`; no-go without separate clearance. |
 | `worksgood` full CLI | Clear brand and current Rust package name. | Less likely to collide but long for frequent agent/human commands; requester rejects it as too long. | Same migration cost as `worksg`. | Not preferred. |
-| `wg pilot up` | Existing turnkey federation command. | Different threat model; creates identities/nodes/peers. | Must remain separate. | Never reuse for local onboarding. |
+| `wg pilot up` | Turnkey federation command — **since removed** (`retire-wg-pilot`, subtraction plan S10). | Different threat model; it created identities/nodes/peers. | Must remain separate (now moot: no such verb). | Never reuse for local onboarding. |
 
 ### Neutral outcome scorecard
 
@@ -428,7 +428,7 @@ CI pre-provisions Pi/auth using Pi-owned mechanisms, then runs the fully explici
 | Optional web package | `pi install npm:pi-web-access@<exact>` / `pi remove` | Show source/version/integrity/full-access warning; install only on explicit opt-in. |
 | Service | Existing `service status/start/reload/restart` primitives | Reuse matching daemon; record whether the transaction started it. Never stack daemons; pin the verified executable identity. |
 | TUI | `<canonical> tui` | Launch only after commit and explicit attended confirmation. Never use the TUI as a setup trigger. |
-| Federation pilot | Existing `pilot` primitive | Out of scope. Link to it after local onboarding; never invoke automatically. |
+| Federation pilot | Turnkey `pilot` wrapper — **removed** by `retire-wg-pilot` | Out of scope; the verb no longer exists. A federation is stood up with the substrate verbs directly (`wg identity` / `wg fed-node` / `wg peer`); never invoke automatically. |
 
 ## Free-model discovery and test design
 

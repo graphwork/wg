@@ -99,7 +99,7 @@ pub struct Scenario {
     pub timeout_seconds: Option<u64>,
     /// `retired = true` marks a scenario whose *subject* is a handler/plane the
     /// daily flow no longer enters (claude/codex/nex/native/opencode worker
-    /// routes, or a WG-Fed / WG-Review / WG-Exec / pilot spark plane).
+    /// routes, or a WG-Fed / WG-Review / WG-Exec spark plane).
     ///
     /// The manifest is grow-only, so the entry is PRESERVED — it is never
     /// deleted, and its script is archived (not deleted) under

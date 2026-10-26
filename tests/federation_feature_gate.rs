@@ -183,5 +183,55 @@ fn fed_scenario_is_not_feature_skipped_with_the_feature_on() {
         status.success(),
         "--features federation must restore `wg identity`"
     );
-    let _ = scenario; // the full dry-run needs external tooling; the probe above is the bound
+
+    // Run the archived script: with the cluster compiled in it must get PAST the feature
+    // gate, and — now that `retire-wg-pilot` deleted the `wg pilot` verb — it must SKIP
+    // loudly (PILOT VERB RETIRED) rather than FAIL. Never the feature banner, never a FAIL.
+    match run_scenario(&scenario, &smoke_dir()).outcome {
+        ScenarioOutcome::Skip { reason } => {
+            assert!(
+                !reason.contains("FEDERATION FEATURE OFF"),
+                "a --features federation build must get past the feature gate, got: {reason}"
+            );
+            assert!(
+                reason.contains("PILOT VERB RETIRED"),
+                "the archived pilot scenario must skip because its verb was retired, got: {reason}"
+            );
+        }
+        ScenarioOutcome::Pass => {
+            panic!("the `wg pilot` verb was retired — the archived scenario must SKIP, not PASS")
+        }
+        other => panic!(
+            "an archived scenario whose subject verb was retired must SKIP loudly, not {other:?}"
+        ),
+    }
+}
+
+/// `retire-wg-pilot` (reduction plan S10) deleted the verb outright: no build — with or
+/// without the `federation` feature — may advertise or accept `wg pilot`.
+#[test]
+fn pilot_verb_is_retired() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_wg"));
+
+    let out = std::process::Command::new(&bin)
+        .args(["pilot", "--help"])
+        .output()
+        .expect("run wg pilot --help");
+    assert!(
+        !out.status.success(),
+        "`wg pilot` must be gone; it still produced help output:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let help = std::process::Command::new(&bin)
+        .arg("--help")
+        .output()
+        .expect("run wg --help");
+    let stdout = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        !stdout
+            .lines()
+            .any(|line| line.trim_start().starts_with("pilot ")),
+        "`wg --help` must not advertise the retired `pilot` verb:\n{stdout}"
+    );
 }

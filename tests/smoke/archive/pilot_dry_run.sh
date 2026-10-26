@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Scenario: pilot_dry_run — ARCHIVED (retired). The `wg pilot` verb it pinned was removed
+# by task `retire-wg-pilot` (subtraction plan S10: "purely demo", shipped no substrate).
+# The script + its grow-only `[[scenario]]` manifest entry are preserved for history; the
+# scenario now SKIPs loudly instead of FAILing, because there is no `wg pilot` to drive.
+# Original header follows.
+#
 # Scenario: pilot_dry_run — the TURNKEY family-team pilot deploy, rehearsed locally.
 #
 # `wg pilot up --dry-run` is the one-command stand-up of the whole family team modelled
@@ -20,6 +26,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_wg
 # The federation cluster is behind the non-default `federation` cargo feature.
 require_federation
+# The subject verb itself is RETIRED (`retire-wg-pilot`): every build — feature or not —
+# no longer has `wg pilot`. SKIP loudly; never FAIL a scenario whose subject was removed
+# on purpose. Restoring `wg pilot` (git revert) makes this body run unchanged again.
+wg pilot --help >/dev/null 2>&1 ||
+    loud_skip "PILOT VERB RETIRED" \
+        'the `wg pilot` verb was removed by task retire-wg-pilot (subtraction plan S10); this scenario is archived for history only'
 
 command -v python3 >/dev/null 2>&1 || loud_skip "MISSING python3" "needed for JSON assertions"
 command -v curl >/dev/null 2>&1 || loud_skip "MISSING curl" "the pilot health-probes the relay node"

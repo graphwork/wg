@@ -852,7 +852,6 @@ fn execute_trusted_graph_cli(
         "peer",
         "provider",
         "review",
-        "pilot",
         "secret",
         // Immutable completion/review internals. Own-task public completion
         // verbs take the typed receipt-backed path before GraphCli is built.

@@ -53,7 +53,7 @@ slack = []
 llm-tests = []  # gates tests that call Claude CLI
 test-support = []  # exposes test helpers for cross-crate use
 # The federation cluster (WG-Fed + WG-Review + WG-Exec + the fed CLI arms:
-# `wg identity`, `wg fed-node`, `wg review`, `wg provider`, `wg pilot`, and the
+# `wg identity`, `wg fed-node`, `wg review`, `wg provider`, and the
 # key-based half of `wg peer`/`wg msg --to`). NON-DEFAULT: the operator's daily
 # loop (pi dispatch, completion/land, TUI, plugin) never reaches it. Build with
 # `cargo build --features federation` to restore the whole surface.

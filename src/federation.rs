@@ -3,7 +3,7 @@
 //! This whole module is gated behind the NON-DEFAULT `federation` cargo feature
 //! (`cargo build --features federation`). The default `wg` binary drops it, along with
 //! `crate::identity`, `crate::review`, `crate::providers`, `crate::trust` and their
-//! CLI arms (`wg identity`, `wg fed-node`, `wg review`, `wg provider`, `wg pilot`,
+//! CLI arms (`wg identity`, `wg fed-node`, `wg review`, `wg provider`,
 //! and the key-based half of `wg peer` / `wg msg --to wgid:`).
 //!
 //! The agency-store transfer half of the historical `crate::federation` module lives

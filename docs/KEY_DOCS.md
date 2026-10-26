@@ -130,7 +130,7 @@ Live, smoke-pinned, off the daily path. Read before touching that code.
 | `docs/spark/wg-review.md` | WG-Review: `wg review` inbound-content review gate | Contributors |
 | `docs/spark/wg-exec.md` | WG-Exec: `wg provider` remote placement, lease fence, disjoint re-run | Contributors |
 | `docs/spark/e2e-family-team.md` | The three sparks composing across two FS-independent instances | Contributors |
-| `docs/spark/wg-pilot.md` | WG-Pilot: one-command family-team stand-up (`wg pilot up/status/down`) | Operators |
+| `docs/spark/wg-pilot.md` | WG-Pilot (**RETIRED** — `wg pilot` deleted by `retire-wg-pilot`; historical design record) | Contributors |
 
 ## Bundled / generated (`embedded`)
 

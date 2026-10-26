@@ -108,8 +108,8 @@ require_wg() {
 }
 
 # ── Federation-cluster feature gate ─────────────────────────────────
-# The WG-Fed / WG-Review / WG-Exec / pilot cluster (and its CLI arms: `wg identity`,
-# `wg fed-node`, `wg review`, `wg provider`, `wg pilot`) lives behind the NON-DEFAULT
+# The WG-Fed / WG-Review / WG-Exec cluster (and its CLI arms: `wg identity`,
+# `wg fed-node`, `wg review`, `wg provider`) lives behind the NON-DEFAULT
 # `federation` cargo feature. A scenario whose subject is that cluster must SKIP
 # loudly — never FAIL — when the binary under test was built without the feature.
 require_federation() {

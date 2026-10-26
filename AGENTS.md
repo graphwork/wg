@@ -372,7 +372,7 @@ Agency federation compatibility is exposed as `WG_AGENCY_COMPAT_VERSION = "1.2.4
 Everything from here to the end of this section — WG-Fed waves 3–6 (`src/identity/`),
 WG-Review (`src/review/`), WG-Exec (`src/providers/`), the peer/WG-Fed half of
 `src/federation.rs`, the trust resolver (`src/trust.rs`), and their CLI arms (`wg
-identity`, `wg fed-node`, `wg review`, `wg provider`, `wg pilot`, plus `--to wgid:` /
+identity`, `wg fed-node`, `wg review`, `wg provider`, plus `--to wgid:` /
 `--as <identity>` on `wg msg` and `--remote-provider` on `wg add`) — sits behind the
 **non-default** `federation` cargo feature.
 
@@ -779,45 +779,21 @@ the exec result work-product is the exec spark's deterministic stub (the
 real weak-tier LLM is a later wave); the e2e proves the **composition + the security bounds at
 every seam**, not the silicon.
 
-## WG-Pilot — turnkey family-team deploy (`wg pilot`, the deploy/UX wrapper)
+## WG-Pilot — RETIRED (`wg pilot` removed)
 
-WG-Pilot is the **one-command stand-up** of the real family-team federation on real
-machines — the deploy/UX wrapper over the verified WG-Fed + WG-Review + WG-Exec substrate
-(`docs/prod-audit/01`). It **ships NO new substrate and no new compat const**: it sequences
-the existing `wg identity` / `wg fed-node` / `wg peer` / `wg msg` / `wg review` /
-`wg provider` verbs and applies the SAFE defaults. It targets the **verified v1 profile** —
-configured-peer, non-confidential-remote, block-don't-triage (no DHT, no TEE, no
-human-in-loop). Cast: humans **Sara** + **Luca** (home host), agents **Bruno** (chef,
-authorizer) + **Nora** (dietitian, disjoint verifier) (chef host), each a `wgid:` identity.
+The turnkey family-team deploy wrapper — `src/commands/pilot_cmd.rs`, `pilot.example.toml`,
+the `Commands::Pilot` CLI arm, its `up`/`status`/`down` subcommands, and its `wg pilot`
+entry in the worker-control + daemon-IPC admin allowlists — has been **removed** (task
+`retire-wg-pilot`, subtraction plan S10). It shipped no substrate: it only sequenced the
+WG-Fed / WG-Review / WG-Exec verbs, held no compat const, and had no daily reachability.
 
-- **`src/commands/pilot_cmd.rs` + `wg pilot` (`Commands::Pilot`)** — `up` / `status` / `down`.
-  From a filled config it mints the 4 identities into `wg secret` custody, starts the
-  `wg fed-node` inbox, wires the configured cross-host peers (`wg peer add --wgid --endpoint`)
-  with **split trust** (family Verified, everyone else Unknown), applies the **fail-closed /
-  slack-bounded-leash / confidential-refuse / configured-peer** defaults (an explicitly-unsafe
-  knob is **refused loudly before anything is stood up** — `resolve_safe_defaults`), optionally
-  wires each agent's Telegram bot (`[telegram.bots.<name>]`, the multi-bot feature), and runs a
-  **live end-to-end check** (task crosses the wall → content-review gate blocks an Unknown
-  injection while the Verified task is consumable → borrowed-box exec under two scoped UCANs,
-  no root/no blanket write → signed result accepted + attributed, wrong-signed rejected →
-  confidential-to-non-attested REFUSED). Orchestration is by spawning `wg` itself
-  (`current_exe`) per role with an isolated `$HOME` keystore + `--dir` graph (the smoke
-  `wgrun` pattern). `down` SIGTERMs the node + clears state and is **idempotent**;
-  `--wipe-identities` also wipes the rehearsal keystore (real deploys keep custodied roots).
-- **`pilot.example.toml`** — the operator-supplied bits ONLY (host bind/endpoint, OpenRouter
-  key path, optional Telegram tokens, trust defaults); everything else defaults SAFE. Kept in
-  lock-step with the parser by a unit test (`shipped_example_template_parses_and_is_safe`).
-- **`wg pilot up --dry-run`** — the smoke-tested rehearsal: models BOTH hosts locally as two
-  FS-isolated dirs sharing one relay node and runs the whole family-team live check
-  credential-free. Real multi-host `wg pilot up --config pilot.toml` runs once per host
-  (`[pilot].role = home|chef`), wiring pre-exchanged `[[peers]]` wgids + probing peer health.
-- **Operator README** — `docs/ops/runbook.md` §6 (what you provide vs automated, the one
-  command, verify, teardown).
-
-The end-to-end proof is pinned by `tests/smoke/scenarios/pilot_dry_run.sh`
-(`owners = [pilot-deploy]`): one command stands up the pilot and the live family-team check
-passes (`check_passed=true`, 4 identities minted, relay `/health` reachable) → the SAFE
-defaults are applied (no unsafe knob on by default) → teardown stops the node (recorded pid
-gone) and is idempotent → an explicitly-unsafe config is refused before stand-up. **Spark
-boundary**: the dry-run worker + Pass-2 reviewer are deterministic/credential-free; the
-live-model tier + full cross-host silicon ride the same wiring in a real deploy.
+- There is **no `wg pilot` verb in any build** (`--features federation` included); like the
+  rest of the cluster it is gone from `wg --help` and out of the admin verb lists.
+- The design record is preserved at `docs/spark/wg-pilot.md` (historical, not a contract).
+- The `pilot_dry_run` smoke scenario is **archived, not deleted**:
+  `tests/smoke/archive/pilot_dry_run.sh` with its grow-only `[[scenario]]` manifest entry
+  (`retired = true`). The archived script now SKIPs loudly — the verb it pinned no longer
+  exists.
+- To stand up a federation, sequence the substrate verbs directly (`wg identity`,
+  `wg fed-node`, `wg peer`, `wg msg`, `wg review`, `wg provider`); see
+  `docs/ops/runbook.md` §1–§5.

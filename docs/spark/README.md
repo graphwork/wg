@@ -17,7 +17,7 @@ was moved verbatim, and the slimming rationale + the exact patch live in
 | [`wg-review.md`](wg-review.md) | WG-Review: the inbound-content review gate | `wg review` | — (rides WG-Fed envelopes) | `content_safety_spark` |
 | [`wg-exec.md`](wg-exec.md) | WG-Exec: remote placement, lease fencing, disjoint verification | `wg provider` | `WG_EXEC_COMPAT_VERSION` | `exec_spark_borrowed_box` |
 | [`e2e-family-team.md`](e2e-family-team.md) | The three sparks composing across two isolated instances | — | — | `e2e_family_team` |
-| [`wg-pilot.md`](wg-pilot.md) | Turnkey family-team deploy (deploy/UX wrapper) | `wg pilot` | — | `pilot_dry_run` |
+| [`wg-pilot.md`](wg-pilot.md) | Turnkey family-team deploy (deploy/UX wrapper) — **RETIRED**: the `wg pilot` verb is deleted (`retire-wg-pilot`, S10); doc is historical | — (removed) | — | `pilot_dry_run` (archived) |
 
 ## Reading rules
 

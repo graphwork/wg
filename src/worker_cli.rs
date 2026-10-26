@@ -257,7 +257,6 @@ pub fn maybe_run(command: &Commands, json: bool) -> Result<Option<()>> {
                     | Commands::Identity { .. }
                     | Commands::Provider { .. }
                     | Commands::Review { .. }
-                    | Commands::Pilot { .. }
             ) {
                 anyhow::bail!(
                     "worker_control.admin_operation_refused: command is outside trusted local graph coordination"

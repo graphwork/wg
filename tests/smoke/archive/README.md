@@ -140,6 +140,17 @@ only smoke-pinned, which is why retiring the scenarios does not lose them.
    provenance trail for `--full-smoke`.
 3. Do NOT delete the script, the manifest entry, or the owner list.
 
+## When the *subject verb* is retired too
+
+`pilot_dry_run` is the one archived scenario whose subject was **removed**, not just
+retired: task `retire-wg-pilot` (reduction plan S10) deleted `wg pilot`
+(`src/commands/pilot_cmd.rs`, `pilot.example.toml`, `Commands::Pilot`). Its manifest entry
+and script are still here (grow-only history), and the script now guards its body with a
+loud `loud_skip "PILOT VERB RETIRED"` (exit 77) when `wg pilot --help` fails, so
+`--full-smoke` records a SKIP instead of a FAIL. Restoring the verb (`git revert`) makes
+the unchanged body run again. Follow this pattern for any future verb removal: archive,
+keep the manifest entry, and SKIP loudly on the missing subject.
+
 ## Why the scripts still work from here
 
 `tests/smoke/archive/` is the **same directory depth** as
