@@ -7,19 +7,12 @@ pub mod chat_startup;
 pub mod chat_tab_state;
 pub mod event;
 pub mod file_browser;
-#[allow(dead_code)]
-pub mod file_browser_render;
 pub mod log_render;
 pub mod render;
 pub mod screen_dump;
 pub mod snapshot_engine;
 pub mod state;
 pub mod trace;
-
-// Retired multi-handler launcher regression suite; Pi-only launcher coverage lives
-// with the current state/render tests.
-#[cfg(all(test, any()))]
-mod editor_tests;
 
 #[cfg(test)]
 mod scroll_mode_tests;
