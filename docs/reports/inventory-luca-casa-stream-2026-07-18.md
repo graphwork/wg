@@ -3,7 +3,7 @@
 **Snapshot:** 2026-07-18 09:07–09:16 UTC<br>
 **Upstream:** [`graphwork/wg`](https://github.com/graphwork/wg), `origin/main` = [`528b8ee0`](https://github.com/graphwork/wg/commit/528b8ee0258bc48c6fd11ad9b87562610a276526)<br>
 **Fork:** [`lucapinello/workgraph`](https://github.com/lucapinello/workgraph), `luca/integration/casa-pinello` = [`64f2cba8`](https://github.com/lucapinello/workgraph/commit/64f2cba83bf91e4e0203f09957e655ff635226ed)<br>
-**Prior snapshot:** [`inventory-luca-casa-stream-2026-07-16.md`](./inventory-luca-casa-stream-2026-07-16.md)
+**Prior snapshot:** [`inventory-luca-casa-stream-2026-07-16.md`](../archive/reports/inventory-luca-casa-stream-2026-07-16.md)
 
 This is a read-only refresh. It did not merge, rebase, cherry-pick, review, comment on, or otherwise mutate a source branch, PR, or production graph. GitHub CLI calls were made with `GH_BROWSER` and `BROWSER` unset. PR #57 was read once at its known exact head; the unchanged head was not polled repeatedly.
 

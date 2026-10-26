@@ -57,7 +57,7 @@ Evidence strength used in compact tables: **E1** exact executed candidate behavi
 
 ### 1.1 What WorksGood is at the audited snapshot
 
-**`[INFERENCE]` (high confidence)** WorksGood is best described as a **local-first durable work-and-evidence system**. Its stable center is a file-backed task graph. An attended TUI/chat layer and an optional service daemon operate that graph; bounded worker attempts invoke model handlers; immutable candidate/review/publication evidence derives ordinary successful completion; agency, federation, content review, and remote-compute protocols add distinct identity, learning, and cross-instance planes. This description follows the durable types and dispatch paths rather than the broader “work OS” slogan (`src/graph.rs:379-529,689-1035`; `src/lifecycle.rs:66-213`; `src/service/registry.rs:37-90`; `src/commands/completion_done.rs:29-294`; [`19`](19-conceptual-model-and-vocabulary.md), `CONCEPT-001..010`). A falsifier would show that another persisted object, rather than task/evidence state, is the common authority for the ordinary user journey.
+**`[INFERENCE]` (high confidence)** WorksGood is best described as a **local-first durable work-and-evidence system**. Its stable center is a file-backed task graph. An attended TUI/chat layer and an optional service daemon operate that graph; bounded worker attempts invoke model handlers; immutable candidate/review/publication evidence derives ordinary successful completion; agency, federation, content review, and remote-compute protocols add distinct identity, learning, and cross-instance planes. This description follows the durable types and dispatch paths rather than the broader “work OS” slogan (`src/graph.rs:379-529,689-1035`; `src/lifecycle.rs:66-213`; `src/service/registry.rs:37-90`; `src/commands/completion_done.rs:29-294`; [`19`](../../archive/audit/2026-08-08-worksgood-system/19-conceptual-model-and-vocabulary.md), `CONCEPT-001..010`). A falsifier would show that another persisted object, rather than task/evidence state, is the common authority for the ordinary user journey.
 
 **`[FACT]`** The pinned implementation has a substantial safety-oriented local spine:
 
@@ -76,21 +76,21 @@ Unix graph mutation uses advisory locking; lifecycle append/projection separates
 
 | Plane | Snapshot-current assessment | Evidence | Confidence |
 |---|---|---|---|
-| Durable local graph | **Shipped, strongest core; Unix-bounded.** Serialized mutation and replay/fencing are substantial; non-Unix locking, parent-directory durability, and multi-store crash closure are not established. | E2 + bounded inherited E1; `src/parser.rs:83-157,275-357`; [`10`](10-code-architecture.md) | High for source shape; medium for destructive bounds |
+| Durable local graph | **Shipped, strongest core; Unix-bounded.** Serialized mutation and replay/fencing are substantial; non-Unix locking, parent-directory durability, and multi-store crash closure are not established. | E2 + bounded inherited E1; `src/parser.rs:83-157,275-357`; [`10`](../../archive/audit/2026-08-08-worksgood-system/10-code-architecture.md) | High for source shape; medium for destructive bounds |
 | Lifecycle/completion | **Shipped ordinary v3 valve; compatibility and public contracts conflict.** | E2 + candidate-built help in [`30`](30-contradiction-and-drift-register.md); `src/main.rs:1261-1274` | High |
-| Worker/model plane | **Multiple real handlers; public capability and ordinary worker topology differ.** Pi accounting/review gaps are snapshot findings, not present-HEAD assertions. | E2 + leaf executions; [`12`](12-model-execution-plane.md) | High static; medium external-provider applicability |
+| Worker/model plane | **Multiple real handlers; public capability and ordinary worker topology differ.** Pi accounting/review gaps are snapshot findings, not present-HEAD assertions. | E2 + leaf executions; [`12`](../../archive/audit/2026-08-08-worksgood-system/12-model-execution-plane.md) | High static; medium external-provider applicability |
 | Agency/evaluation | **Substantial representations; adaptive join incomplete.** Exact candidate review protects completion but does not feed agency evolution at the snapshot. | E2 absence/call-site sample; `src/completion_review.rs:83-121`; `src/agency/evolver.rs:120-224` | High within searched modules |
-| Federation/identity | **Real crypto and capability controls; production custody, recovery, and transport ownership partial.** | E2; [`14`](14-federation-identity-security.md) | High static; no security certification |
+| Federation/identity | **Real crypto and capability controls; production custody, recovery, and transport ownership partial.** | E2; [`14`](../../archive/audit/2026-08-08-worksgood-system/14-federation-identity-security.md) | High static; no security certification |
 | Content review | **Enforcing paths exist; audit durability/quorum/default-on claims narrower than prose.** | E2; `src/review/verdict.rs:53-80,117-190`; `src/review/pass2_review.rs:80-98` | High |
 | Remote execution/Pilot | **Protocol/CLI and dry-run composition exist; coordinator-owned lifecycle and turnkey real-host operation do not.** | E2; `src/dispatch/plan.rs:583-640`; `src/commands/spawn_task.rs:330-347`; `src/commands/pilot_cmd.rs:1066-1215` | High |
-| Testing/release evidence | **Large inventory, selectively activated.** Presence must not be read as pass/selection. | E2/E3; `.github/workflows/ci.yml:68-201`; [`17`](17-testing-ci-quality.md) | High |
-| Product/docs/operations | **Fragmented authority.** Strong bounded parity gates exist, but no repository-wide claim/decision/estate/evidence join was found. | E2/E4; [`16`](16-documentation-information-architecture.md); [`31`](31-documentation-sync-plan.md) | High for sampled estate |
+| Testing/release evidence | **Large inventory, selectively activated.** Presence must not be read as pass/selection. | E2/E3; `.github/workflows/ci.yml:68-201`; [`17`](../../archive/audit/2026-08-08-worksgood-system/17-testing-ci-quality.md) | High |
+| Product/docs/operations | **Fragmented authority.** Strong bounded parity gates exist, but no repository-wide claim/decision/estate/evidence join was found. | E2/E4; [`16`](../../archive/audit/2026-08-08-worksgood-system/16-documentation-information-architecture.md); [`31`](31-documentation-sync-plan.md) | High for sampled estate |
 
 ### 1.3 Highest-priority snapshot risks, recalibrated after independent review
 
 | Priority | Risk/state | Severity | Likelihood | Confidence | Primary evidence and countercontrol |
 |---:|---|---:|---|---|---|
-| 1 | **Worker IPC may mutate inbox read state before an array-valued response fails serialization** (`WGDR-049`). | S1 | Observed in the leaf environment; present-day applicability unknown | High for source mechanism; inherited E1 bounded to leaf environment | Flattened response and array results: `src/commands/service/ipc.rs:253-274,720-790`; stateful read: `src/messages.rs:631-696`; exact leaf command/output in [`18`](18-operations-configuration-ux.md), `OPS-001`. |
+| 1 | **Worker IPC may mutate inbox read state before an array-valued response fails serialization** (`WGDR-049`). | S1 | Observed in the leaf environment; present-day applicability unknown | High for source mechanism; inherited E1 bounded to leaf environment | Flattened response and array results: `src/commands/service/ipc.rs:253-274,720-790`; stateful read: `src/messages.rs:631-696`; exact leaf command/output in [`18`](../../archive/audit/2026-08-08-worksgood-system/18-operations-configuration-ux.md), `OPS-001`. |
 | 2 | **Completion help, dispatch, and owned-smoke policy describe incompatible authorities** (`WGDR-001/002`). This is a misleading core-workflow/release guarantee, not proof that selected tests fail. | S1 | Possible operator/release reliance | High | Flags declared at `src/cli.rs:528-554`, rejected at `src/main.rs:1261-1274`; smoke claim at `tests/smoke/README.md:3-29`; pinned Done source contains no manifest gate. Positive control: v3 publication-derived completion is explicit. |
 | 3 | **Federation custody is same-user/in-process, and recovery is not the promised hostile-worker/offline/time-secure boundary** (`WGDR-029/030`). | S1 | Possible under a same-UID shell-capable adversary | High static; exploit not run | `src/identity/keys.rs:51-68,226-300,340-377`; `src/identity/sigchain.rs:493-515,884-925`. Countercontrol: an optional KEK can encrypt seed material at rest; it does not isolate invocation from the same user/process. |
 | 4 | **Inbox list/read/delete and acknowledgement are not recipient-authenticated/owned** (`WGDR-032`). | S1 | Possible for a party that can reach the node | High static; adversarial runtime not rerun | `src/identity/node.rs:408-443,551-572`; `src/identity/transport.rs:318-354,480-496`. Countercontrol: per-inbox count/byte limits and retention bound storage; the residual is unauthorized read/delete/overwrite and **bounded quota consumption**, not unbounded fill. |
@@ -124,7 +124,7 @@ README charter
   -> this reviewed final 99
 ```
 
-**`[FACT]`** Primary product evidence is pinned to `b0892ea7`. Register and roadmap authors demonstrated non-audit byte equivalence to the pinned snapshot at their stated revisions. The independent reviewer sampled thirteen thematic checks directly with `git show` and found eleven supported as written and two supported only with narrowing/counterevidence ([`90` §3.2](90-independent-review.md#32-primary-evidence-spot-checks)). This final independently reran fourteen static byte assertions against the pinned tree; commands are in §16.3.
+**`[FACT]`** Primary product evidence is pinned to `b0892ea7`. Register and roadmap authors demonstrated non-audit byte equivalence to the pinned snapshot at their stated revisions. The independent reviewer sampled thirteen thematic checks directly with `git show` and found eleven supported as written and two supported only with narrowing/counterevidence ([`90` §3.2](../../archive/audit/2026-08-08-worksgood-system/90-independent-review.md#32-primary-evidence-spot-checks)). This final independently reran fourteen static byte assertions against the pinned tree; commands are in §16.3.
 
 ### 2.2 What was executed versus inspected
 
@@ -138,8 +138,8 @@ These are evidence gaps, not proof of defects.
 
 | Surface | Audit depth | Explicit limit |
 |---|---|---|
-| TUI, HTML/server, Telegram, Matrix, notifications, accessibility, terminal discoverability | Sampled in operations/concepts/leaves; not broadly synthesized by live human flow | Do not read “human-facing layer” as broadly verified. See [`18`](18-operations-configuration-ux.md) and [`19`](19-conceptual-model-and-vocabulary.md). |
-| Formal verification | CI and selected reducer/model boundaries inspected | Lean evidence does not model filesystem, process, Git, network, provider, or operator effects; see [`17`](17-testing-ci-quality.md), `TEST-007`. |
+| TUI, HTML/server, Telegram, Matrix, notifications, accessibility, terminal discoverability | Sampled in operations/concepts/leaves; not broadly synthesized by live human flow | Do not read “human-facing layer” as broadly verified. See [`18`](../../archive/audit/2026-08-08-worksgood-system/18-operations-configuration-ux.md) and [`19`](../../archive/audit/2026-08-08-worksgood-system/19-conceptual-model-and-vocabulary.md). |
+| Formal verification | CI and selected reducer/model boundaries inspected | Lean evidence does not model filesystem, process, Git, network, provider, or operator effects; see [`17`](../../archive/audit/2026-08-08-worksgood-system/17-testing-ci-quality.md), `TEST-007`. |
 | Casa adapter, `website/`, schemas/examples/templates, terminal benchmark, ancillary scripts | Inventoried and selectively sampled | Product/support status remains decision-required; inventory is not qualification. |
 | Performance and scale | No sustained campaign | Locking and smoke inventory do not establish large-graph throughput, latency, disk-pressure, or long-duration stability. |
 | Supply chain/dependency security | Release signing and Pi embed staleness sampled | Cargo/npm vulnerability, provenance, compromise response, and end-to-end supply-chain security were not audited. |
@@ -148,7 +148,7 @@ These are evidence gaps, not proof of defects.
 
 ### 2.4 Method contradictions and drift
 
-**`[CONTRADICTION]`** The draft used alternate labels, omitted per-domain local scope/drift sections, mixed confidence with likelihood, and used “current/shipped” for a historical snapshot. The charter requires exact evidence prefixes, seven-part fractal ordering, separate risk fields, and `snapshot-current` applicability (`README.md:196-327`; [`90`](90-independent-review.md), `IR-003..007`). This final adopts the charter contract and records all review dispositions in §15.
+**`[CONTRADICTION]`** The draft used alternate labels, omitted per-domain local scope/drift sections, mixed confidence with likelihood, and used “current/shipped” for a historical snapshot. The charter requires exact evidence prefixes, seven-part fractal ordering, separate risk fields, and `snapshot-current` applicability (`README.md:196-327`; [`90`](../../archive/audit/2026-08-08-worksgood-system/90-independent-review.md), `IR-003..007`). This final adopts the charter contract and records all review dispositions in §15.
 
 ### 2.5 Risks and gaps
 
@@ -161,8 +161,8 @@ These are evidence gaps, not proof of defects.
 ### 2.7 Evidence appendix
 
 - Normative scope and inventory: [`README.md`](README.md).
-- Draft method and source links: [`40-system-synthesis-draft.md`](40-system-synthesis-draft.md).
-- Independent check sample and limitations: [`90-independent-review.md`](90-independent-review.md).
+- Draft method and source links: [`40-system-synthesis-draft.md`](../../archive/audit/2026-08-08-worksgood-system/40-system-synthesis-draft.md).
+- Independent check sample and limitations: [`90-independent-review.md`](../../archive/audit/2026-08-08-worksgood-system/90-independent-review.md).
 - Final command provenance: §16.3.
 
 ---
@@ -199,7 +199,7 @@ These are evidence gaps, not proof of defects.
 
 ### 3.6 Evidence appendix
 
-- Cross-plane synthesis: [`20`](20-core-runtime-synthesis.md), [`21`](21-agency-federation-safety-synthesis.md), [`22`](22-product-docs-quality-synthesis.md), [`23`](23-evaluation-evolvability-cutover.md).
+- Cross-plane synthesis: [`20`](../../archive/audit/2026-08-08-worksgood-system/20-core-runtime-synthesis.md), [`21`](../../archive/audit/2026-08-08-worksgood-system/21-agency-federation-safety-synthesis.md), [`22`](../../archive/audit/2026-08-08-worksgood-system/22-product-docs-quality-synthesis.md), [`23`](23-evaluation-evolvability-cutover.md).
 - Deduplicated states: [`30`](30-contradiction-and-drift-register.md), especially §§3–6.
 
 ---
@@ -222,11 +222,11 @@ repository/project
        -> config/profile + agency/functions + federation/review/provider sidecars
 ```
 
-Scope: binaries/module boundaries, graph directory resolution, task/dependency representation, locking, atomic replacement, recovery, and cross-store authority. Deep evidence: [`10-code-architecture.md`](10-code-architecture.md), [`20-core-runtime-synthesis.md`](20-core-runtime-synthesis.md), and conceptual audit [`19`](19-conceptual-model-and-vocabulary.md).
+Scope: binaries/module boundaries, graph directory resolution, task/dependency representation, locking, atomic replacement, recovery, and cross-store authority. Deep evidence: [`10-code-architecture.md`](../../archive/audit/2026-08-08-worksgood-system/10-code-architecture.md), [`20-core-runtime-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/20-core-runtime-synthesis.md), and conceptual audit [`19`](../../archive/audit/2026-08-08-worksgood-system/19-conceptual-model-and-vocabulary.md).
 
 ### Findings
 
-1. **`[FACT]` — `ARCH-001` positive control.** Unix graph modification takes an exclusive advisory lock; replacement flushes/fsyncs the temporary file before rename (`src/parser.rs:83-157,275-357`). Lifecycle append/projection and torn-frame recovery provide a coherent serialized kernel (`src/lifecycle.rs:1526-1694`; [`10` §3](10-code-architecture.md#3-findings)).
+1. **`[FACT]` — `ARCH-001` positive control.** Unix graph modification takes an exclusive advisory lock; replacement flushes/fsyncs the temporary file before rename (`src/parser.rs:83-157,275-357`). Lifecycle append/projection and torn-frame recovery provide a coherent serialized kernel (`src/lifecycle.rs:1526-1694`; [`10` §3](../../archive/audit/2026-08-08-worksgood-system/10-code-architecture.md#3-findings)).
 2. **`[FACT]` — `ARCH-003/005/007`.** Dependency edges, completion state, graph status, config layers, and directory resolution have duplicated or distributed authority. `Task.after` drives readiness while `Task.before` is persisted; v3 and legacy completion writers coexist; config/profile fallback has several sources (`src/query.rs:306-517`; `src/commands/completion_done.rs:29-294`; `src/commands/done.rs`; `src/config.rs`).
 3. **`[FACT]` — `ARCH-006`.** Non-Unix graph/registry locking methods are no-ops in the sampled implementation. The bespoke replace path does not visibly establish the generic helper's parent-directory fsync behavior (`src/parser.rs:83-157,275-357`; `src/atomic_file.rs:20-142`).
 4. **`[FACT]` — `ARCH-008`.** Autopoietic child limits depend on best-effort provenance read/write around graph mutation rather than one transaction (`src/commands/add.rs:438-463,843-865`; `src/provenance.rs:43-117`).
@@ -254,8 +254,8 @@ Scope: binaries/module boundaries, graph directory resolution, task/dependency r
 
 ### Evidence appendix
 
-- Leaf: [`10-code-architecture.md`](10-code-architecture.md), `ARCH-001..009` and its focused commands.
-- Synthesis: [`20-core-runtime-synthesis.md`](20-core-runtime-synthesis.md).
+- Leaf: [`10-code-architecture.md`](../../archive/audit/2026-08-08-worksgood-system/10-code-architecture.md), `ARCH-001..009` and its focused commands.
+- Synthesis: [`20-core-runtime-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/20-core-runtime-synthesis.md).
 - Register: `WGDR-003/007`, `WGDR-T11`, `WGDR-U01/U03/U11` in [`30`](30-contradiction-and-drift-register.md).
 
 ---
@@ -276,7 +276,7 @@ draft/pause/time/dependencies
   -> retry/reopen/recovery or dependent readiness
 ```
 
-Scope: graph readiness, manual claim, spawn transaction, service concurrency, completion/review/publication, retries, cycles, waits/cron, recovery, and worker messaging. Deep evidence: [`11-orchestration-lifecycle.md`](11-orchestration-lifecycle.md) and [`20`](20-core-runtime-synthesis.md).
+Scope: graph readiness, manual claim, spawn transaction, service concurrency, completion/review/publication, retries, cycles, waits/cron, recovery, and worker messaging. Deep evidence: [`11-orchestration-lifecycle.md`](11-orchestration-lifecycle.md) and [`20`](../../archive/audit/2026-08-08-worksgood-system/20-core-runtime-synthesis.md).
 
 ### Findings
 
@@ -317,7 +317,7 @@ Scope: graph readiness, manual claim, spawn transaction, service concurrency, co
 
 - Leaf: [`11-orchestration-lifecycle.md`](11-orchestration-lifecycle.md), especially `ORCH-001..017` and §7 command records.
 - Register: [`30` §3.1 and `WGDR-049/U04`](30-contradiction-and-drift-register.md).
-- Draft source crosswalk: [`40` §5](40-system-synthesis-draft.md#5-task-and-orchestration-lifecycle).
+- Draft source crosswalk: [`40` §5](../../archive/audit/2026-08-08-worksgood-system/40-system-synthesis-draft.md#5-task-and-orchestration-lifecycle).
 
 ---
 
@@ -336,17 +336,17 @@ setup/profile/config -> handler-first route + reasoning
 operator plane: worksgood launcher + doctor + service/status + config + upgrade/package
 ```
 
-Scope: route grammar, handlers, Pi/plugin/watchdog/streams, config/profile/setup/doctor, accounting, service UX, HTML publication, install/upgrade/package/platform. Deep evidence: [`12-model-execution-plane.md`](12-model-execution-plane.md), [`18-operations-configuration-ux.md`](18-operations-configuration-ux.md), and [`20`](20-core-runtime-synthesis.md).
+Scope: route grammar, handlers, Pi/plugin/watchdog/streams, config/profile/setup/doctor, accounting, service UX, HTML publication, install/upgrade/package/platform. Deep evidence: [`12-model-execution-plane.md`](../../archive/audit/2026-08-08-worksgood-system/12-model-execution-plane.md), [`18-operations-configuration-ux.md`](../../archive/audit/2026-08-08-worksgood-system/18-operations-configuration-ux.md), and [`20`](../../archive/audit/2026-08-08-worksgood-system/20-core-runtime-synthesis.md).
 
 ### Findings
 
 1. **`[FACT]` — `MODEL-005/006/007` positive controls.** Explicit route/reasoning propagation, fail-closed worker admission, Pi turn-end usage deduplication, and evidence-based watchdog continuation are encoded controls (`src/dispatch/handler_for_model.rs`; `src/stream_event.rs`; `src/pi_watchdog/mod.rs`). The watchdog is not completion authority.
 2. **`[FACT]` — `MODEL-001`.** Discovery/templates expose more handler kinds than strict unattended worker admission supports. That is a surface distinction, not inherently a defect (`src/executor_discovery.rs:40-188`; `src/config.rs:2395-2433`; `WGDR-R02`).
 3. **`[FACT]` — `MODEL-002`.** Ordinary Pi JSON workers and the hermetic RPC handler construct different argv; ordinary worker source lacks the documented invocation-scoped `-e/-ne` plugin boundary (`src/service/executor.rs:1729-1752`; `src/commands/pi_handler.rs:492-537`). External-provider consequence remains `WGDR-U05`.
-4. **`[FACT]` — `MODEL-008/009`, snapshot-current.** Spend groups records under invocation day; cleanup metrics are process-local; the sampled v3 review/commit path omitted usage propagation (`src/commands/spend.rs:27-57`; `src/metrics.rs:1-29`; completion-module search in [`90` §3.2](90-independent-review.md#32-primary-evidence-spot-checks)). Post-snapshot Pi accounting/review work makes present-day applicability unknown.
+4. **`[FACT]` — `MODEL-008/009`, snapshot-current.** Spend groups records under invocation day; cleanup metrics are process-local; the sampled v3 review/commit path omitted usage propagation (`src/commands/spend.rs:27-57`; `src/metrics.rs:1-29`; completion-module search in [`90` §3.2](../../archive/audit/2026-08-08-worksgood-system/90-independent-review.md#32-primary-evidence-spot-checks)). Post-snapshot Pi accounting/review work makes present-day applicability unknown.
 5. **`[FACT]` — `OPS-002/003`.** Generic config set pretty-serializes parsed TOML, erasing comments. Arbitrary dotted paths are deliberately accepted to expose extension knobs, but ineffective unknown keys can remain lint-clean (`src/commands/config_cmd.rs:3029-3098`). The defect is not simply “unknown keys allowed”; policy must preserve intentional extension space.
 6. **`[CONTRADICTION]` — `WGDR-008/009`.** Existing-graph bare launch is setup-neutral, setup presents Pi, and doctor diagnoses Claude as required in sampled branches (`src/bin/worksgood.rs:6-16,124-151`; `src/config_defaults.rs:20-107`; `src/commands/setup.rs:1389-1471`; `src/commands/doctor.rs:166-226,241-416`).
-7. **`[FACT]` — `OPS-012` positive control.** Service status/cleanup defaults and conservative destructive behavior are comparatively strong; install safety also has bounded positive controls ([`18`](18-operations-configuration-ux.md), `OPS-010/012`).
+7. **`[FACT]` — `OPS-012` positive control.** Service status/cleanup defaults and conservative destructive behavior are comparatively strong; install safety also has bounded positive controls ([`18`](../../archive/audit/2026-08-08-worksgood-system/18-operations-configuration-ux.md), `OPS-010/012`).
 
 ### Contradictions and drift
 
@@ -375,8 +375,8 @@ Scope: route grammar, handlers, Pi/plugin/watchdog/streams, config/profile/setup
 
 ### Evidence appendix
 
-- Model leaf: [`12-model-execution-plane.md`](12-model-execution-plane.md), `MODEL-001..010`.
-- Operations leaf: [`18-operations-configuration-ux.md`](18-operations-configuration-ux.md), `OPS-001..014`.
+- Model leaf: [`12-model-execution-plane.md`](../../archive/audit/2026-08-08-worksgood-system/12-model-execution-plane.md), `MODEL-001..010`.
+- Operations leaf: [`18-operations-configuration-ux.md`](../../archive/audit/2026-08-08-worksgood-system/18-operations-configuration-ux.md), `OPS-001..014`.
 - Register: [`30` §3.2](30-contradiction-and-drift-register.md#32-installation-configuration-model-plane-accounting-and-packaging).
 
 ---
@@ -398,12 +398,12 @@ functions: template/schema -> apply/planner -> tasks -> run history -> adaptatio
 chat/human: attended binding -> durable histories/summary -> worker context
 ```
 
-Scope: agency identity/hashing, assignment, completion/candidate/performance evaluation, evolver, trace functions, chat histories/summary, concierge/human onboarding. Deep evidence: [`13-agency-evaluation-chat.md`](13-agency-evaluation-chat.md), [`21`](21-agency-federation-safety-synthesis.md), and focused [`23`](23-evaluation-evolvability-cutover.md).
+Scope: agency identity/hashing, assignment, completion/candidate/performance evaluation, evolver, trace functions, chat histories/summary, concierge/human onboarding. Deep evidence: [`13-agency-evaluation-chat.md`](../../archive/audit/2026-08-08-worksgood-system/13-agency-evaluation-chat.md), [`21`](../../archive/audit/2026-08-08-worksgood-system/21-agency-federation-safety-synthesis.md), and focused [`23`](23-evaluation-evolvability-cutover.md).
 
 ### Findings
 
 1. **`[FACT]` — `EVAL-001`, `EVC-001/002` positive controls.** Candidate-bound completion review has strong immutable provenance/replay properties and no longer gives evaluator satellites source-lifecycle authority (`src/completion_review.rs:83-121`; `src/evaluation/mod.rs:112-235`).
-2. **`[FACT]` — `AGENCY-004/EVC-005`.** In the searched completion modules, no call fed accepted modern review into `agency/evaluations/*.json`; the evolver reads that legacy performance store (`src/agency/eval.rs:49-201`; `src/agency/evolver.rs:120-224`; scoped call-site command in [`90` §7.2](90-independent-review.md#72-exact-command-log)). This is a bounded absence claim, not proof no generated/indirect path exists elsewhere.
+2. **`[FACT]` — `AGENCY-004/EVC-005`.** In the searched completion modules, no call fed accepted modern review into `agency/evaluations/*.json`; the evolver reads that legacy performance store (`src/agency/eval.rs:49-201`; `src/agency/evolver.rs:120-224`; scoped call-site command in [`90` §7.2](../../archive/audit/2026-08-08-worksgood-system/90-independent-review.md#72-exact-command-log)). This is a bounded absence claim, not proof no generated/indirect path exists elsewhere.
 3. **`[FACT]` — `EVC-003/004`.** Compact receipts bind verdict/model/time/object identity but omit attempt lineage, latency, source composition, and usage; reviewer call results discard usage in the sampled path (`src/completion_review.rs:83-95`; `src/completion_review_model.rs:58-88`).
 4. **`[FACT]` — `AGENCY-001/002/003`.** Persona composition is concrete, but access metadata is descriptive; documented hash/immutability equations differ from source; `auto_assign` is surfaced without the promised production LLM reachability (`src/agency/hash.rs:15-67`; `src/commands/role.rs:224-273`; `src/commands/assign.rs:205-393`).
 5. **`[FACT]` — `FUNC-001/002`.** Generative function schema exists, but planner execution is externally staged; apply rows and adaptive `RunSummary` readers use incompatible shapes (`src/commands/func_apply.rs:435-451,612-726`; `src/function.rs:298-346`).
@@ -437,8 +437,8 @@ Scope: agency identity/hashing, assignment, completion/candidate/performance eva
 
 ### Evidence appendix
 
-- Leaf: [`13-agency-evaluation-chat.md`](13-agency-evaluation-chat.md), `AGENCY/EVAL/FUNC/CHAT/CONTEXT/CONCIERGE/HUMAN` findings.
-- Cross-plane: [`21-agency-federation-safety-synthesis.md`](21-agency-federation-safety-synthesis.md), `XAUTH-001..010`.
+- Leaf: [`13-agency-evaluation-chat.md`](../../archive/audit/2026-08-08-worksgood-system/13-agency-evaluation-chat.md), `AGENCY/EVAL/FUNC/CHAT/CONTEXT/CONCIERGE/HUMAN` findings.
+- Cross-plane: [`21-agency-federation-safety-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/21-agency-federation-safety-synthesis.md), `XAUTH-001..010`.
 - Cutover: [`23-evaluation-evolvability-cutover.md`](23-evaluation-evolvability-cutover.md), `EVC-001..008` and proposed acceptance tests.
 
 ---
@@ -460,7 +460,7 @@ wgid + sigchain + custodian
 Pilot = orchestration wrapper around selected identity/message/review/provider CLI flows
 ```
 
-Scope: identity, key custody/recovery, envelope/transport/freshness, trust composition, inbound review, provider bundles/capabilities/leases/results, coordinator seam, and Pilot. Deep evidence: [`14-federation-identity-security.md`](14-federation-identity-security.md), [`15-review-exec-pilot.md`](15-review-exec-pilot.md), and [`21`](21-agency-federation-safety-synthesis.md).
+Scope: identity, key custody/recovery, envelope/transport/freshness, trust composition, inbound review, provider bundles/capabilities/leases/results, coordinator seam, and Pilot. Deep evidence: [`14-federation-identity-security.md`](../../archive/audit/2026-08-08-worksgood-system/14-federation-identity-security.md), [`15-review-exec-pilot.md`](../../archive/audit/2026-08-08-worksgood-system/15-review-exec-pilot.md), and [`21`](../../archive/audit/2026-08-08-worksgood-system/21-agency-federation-safety-synthesis.md).
 
 ### Findings
 
@@ -468,7 +468,7 @@ Scope: identity, key custody/recovery, envelope/transport/freshness, trust compo
 2. **`[FACT]` — `FED-003/004`.** `Custodian::sign_digest` loads same-user secret material in process; an optional KEK protects at rest but is not process/UID isolation. Recovery checks signer-carried timing and co-locates the backstop in sampled CLI flows (`src/identity/keys.rs:51-68,226-300,340-377`; `src/identity/sigchain.rs:493-515,884-925`; `src/commands/identity_cmd.rs:253-322`).
 3. **`[FACT]` — `FED-006`.** Inbox operations lack recipient-auth input. Count/byte quotas and retention bound storage; they do not prevent unauthorized read/delete/overwrite or bounded quota consumption (`src/identity/node.rs:408-443,551-572`; `src/identity/transport.rs:318-354,480-496`).
 4. **`[FACT]` — `RXP-001/002`.** Authentication, author trust, provider trust, review depth, capability, and candidate acceptance are separate inputs/gates. Author trust fails closed and provider opinion can lower it; “one trust dial” is an oversimplification (`src/trust.rs:79-125`; `src/review/depth.rs`; `src/providers/placement.rs`; `WGDR-R04`).
-5. **`[FACT]` — `RXP-003/004`.** Review enforcement exists, and its record read-modify-write is lock-protected and atomically replaced. The `VerdictRecord` is not signed, load does not revalidate the whole claimed chain in the sampled span, live callers can ignore recording failure, and deterministic reviewer `n` is ignored (`src/review/verdict.rs:53-80,117-190`; `src/review/pass2_review.rs:80-98`; ignored caller results listed in [`90` §3.2](90-independent-review.md#32-primary-evidence-spot-checks)).
+5. **`[FACT]` — `RXP-003/004`.** Review enforcement exists, and its record read-modify-write is lock-protected and atomically replaced. The `VerdictRecord` is not signed, load does not revalidate the whole claimed chain in the sampled span, live callers can ignore recording failure, and deterministic reviewer `n` is ignored (`src/review/verdict.rs:53-80,117-190`; `src/review/pass2_review.rs:80-98`; ignored caller results listed in [`90` §3.2](../../archive/audit/2026-08-08-worksgood-system/90-independent-review.md#32-primary-evidence-spot-checks)).
 6. **`[FACT]` — `RXP-005/007` positive controls.** Provider accept has coherent signature/lease/canonical-write checks and durable epoch fencing. **`[FACT]` — `RXP-006/008/009`.** Planner selection does not produce coordinator-owned spawn; lease renewal/sweep and multi-step accept/finalize remain manual or can strand post-fence work (`src/dispatch/plan.rs:583-640`; `src/commands/spawn_task.rs:330-347`; `src/commands/exec_fed_cmd.rs:951-979,1237-1384`).
 7. **`[FACT]` — `RXP-010/011`.** Pilot validates safe defaults before startup, but real-host mode records `check_passed: None`, starts a bootstrap rather than a complete agent/lease lifecycle, and dry-run uses a fixed worker (`src/commands/pilot_cmd.rs:43-50,1066-1125,1184-1215`). Countercontrol: the real CLI tells operators the full check requires both hosts.
 
@@ -501,9 +501,9 @@ Scope: identity, key custody/recovery, envelope/transport/freshness, trust compo
 
 ### Evidence appendix
 
-- Federation leaf: [`14-federation-identity-security.md`](14-federation-identity-security.md), `FED-001..014`.
-- Review/Exec/Pilot leaf: [`15-review-exec-pilot.md`](15-review-exec-pilot.md), `RXP-001..011` and drift records.
-- Typed authority synthesis: [`21-agency-federation-safety-synthesis.md`](21-agency-federation-safety-synthesis.md), `XAUTH-001..010`.
+- Federation leaf: [`14-federation-identity-security.md`](../../archive/audit/2026-08-08-worksgood-system/14-federation-identity-security.md), `FED-001..014`.
+- Review/Exec/Pilot leaf: [`15-review-exec-pilot.md`](../../archive/audit/2026-08-08-worksgood-system/15-review-exec-pilot.md), `RXP-001..011` and drift records.
+- Typed authority synthesis: [`21-agency-federation-safety-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/21-agency-federation-safety-synthesis.md), `XAUTH-001..010`.
 
 ---
 
@@ -523,12 +523,12 @@ inline/unit + 176 top-level integration targets
   -> actual human/provider/platform journey (only when explicitly run)
 ```
 
-Scope: Rust tests, smoke owner/gate policy, skips/fixtures/static contracts, CI selection, formal scope, Pi embed gate, release target/signing/package, and human-facing TUI/browser/channel/install flows. Deep evidence: [`17-testing-ci-quality.md`](17-testing-ci-quality.md), [`18`](18-operations-configuration-ux.md), and [`22`](22-product-docs-quality-synthesis.md).
+Scope: Rust tests, smoke owner/gate policy, skips/fixtures/static contracts, CI selection, formal scope, Pi embed gate, release target/signing/package, and human-facing TUI/browser/channel/install flows. Deep evidence: [`17-testing-ci-quality.md`](../../archive/audit/2026-08-08-worksgood-system/17-testing-ci-quality.md), [`18`](../../archive/audit/2026-08-08-worksgood-system/18-operations-configuration-ux.md), and [`22`](../../archive/audit/2026-08-08-worksgood-system/22-product-docs-quality-synthesis.md).
 
 ### Findings
 
 1. **`[FACT]` — `TEST-006/007` positive controls.** Pi source-to-embedded regenerate/diff is a clear declared anti-drift gate, and formal checks are explicitly bounded to selected reducers/models (`.github/workflows/ci.yml:82-125,174-201`; `worksgood-pi/`; `formal/`).
-2. **`[FACT]` — `TEST-001/002`.** At the snapshot, CI selected library, formal, selected binary/canary, Pi, and `integration_service` paths but not the full top-level integration estate. The pinned inventory counted 176 top-level Rust targets; independent review confirmed the count. “Not selected” does not mean failing (`.github/workflows/ci.yml:68-201`; [`90` §3.2](90-independent-review.md#32-primary-evidence-spot-checks)).
+2. **`[FACT]` — `TEST-001/002`.** At the snapshot, CI selected library, formal, selected binary/canary, Pi, and `integration_service` paths but not the full top-level integration estate. The pinned inventory counted 176 top-level Rust targets; independent review confirmed the count. “Not selected” does not mean failing (`.github/workflows/ci.yml:68-201`; [`90` §3.2](../../archive/audit/2026-08-08-worksgood-system/90-independent-review.md#32-primary-evidence-spot-checks)).
 3. **`[CONTRADICTION]` — `TEST-DRIFT-001/002`.** Smoke policy says Done is owner-gated while publication-derived dispatch does not call the gate and the permanent integration target asserts a retired completion generation (`tests/smoke/README.md:3-29`; `tests/integration_smoke_gate.rs:1-11,131-412`; `src/main.rs:1261-1274`).
 4. **`[FACT]` — `TEST-DRIFT-004`.** The smoke corpus includes protocol-live, deterministic fixture, compile-only, and static release-contract scenarios despite categorical “live, not stubs” policy. Each can be useful; the class must travel with the result (`tests/smoke/README.md:82-87`; `tests/smoke/scenarios/release_workflow_signing_contract.sh:1-18`; Pilot source).
 5. **`[UNCERTAINTY]`** Human interaction surfaces were not broadly run by this synthesis. TUI, HTML/browser, Telegram/Matrix, notifications, accessibility, terminal discovery, installers, and real provider flows cannot inherit confidence from CLI/library tests.
@@ -560,8 +560,8 @@ Scope: Rust tests, smoke owner/gate policy, skips/fixtures/static contracts, CI 
 
 ### Evidence appendix
 
-- Leaf: [`17-testing-ci-quality.md`](17-testing-ci-quality.md), `TEST-001..011` and `TEST-DRIFT-001..007`.
-- Product synthesis: [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md), quality/evidence map.
+- Leaf: [`17-testing-ci-quality.md`](../../archive/audit/2026-08-08-worksgood-system/17-testing-ci-quality.md), `TEST-001..011` and `TEST-DRIFT-001..007`.
+- Product synthesis: [`22-product-docs-quality-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/22-product-docs-quality-synthesis.md), quality/evidence map.
 - Charter inventory: [`README.md` §7](README.md#7-evidence-appendix).
 
 ---
@@ -582,11 +582,11 @@ historical reports/designs --immutable body--> applicability/supersession index
 estate manifest -> curated routers (not vice versa)
 ```
 
-Scope: docs inventory/indexes, manual/website source graph, command/config/reference, design/ADR/report status, vocabulary, root organization, link integrity, generated/embedded guides, and target synchronization architecture. Deep evidence: [`16-documentation-information-architecture.md`](16-documentation-information-architecture.md), [`19`](19-conceptual-model-and-vocabulary.md), [`22`](22-product-docs-quality-synthesis.md), and [`31`](31-documentation-sync-plan.md).
+Scope: docs inventory/indexes, manual/website source graph, command/config/reference, design/ADR/report status, vocabulary, root organization, link integrity, generated/embedded guides, and target synchronization architecture. Deep evidence: [`16-documentation-information-architecture.md`](../../archive/audit/2026-08-08-worksgood-system/16-documentation-information-architecture.md), [`19`](../../archive/audit/2026-08-08-worksgood-system/19-conceptual-model-and-vocabulary.md), [`22`](../../archive/audit/2026-08-08-worksgood-system/22-product-docs-quality-synthesis.md), and [`31`](31-documentation-sync-plan.md).
 
 ### Findings
 
-1. **`[FACT]` — `DOC-001/003/009`.** `KEY_DOCS` is curated and aging, while document status/applicability and report supersession are often implicit. It cannot safely serve as both complete estate inventory and reader router (`docs/KEY_DOCS.md:1-16`; [`16`](16-documentation-information-architecture.md)).
+1. **`[FACT]` — `DOC-001/003/009`.** `KEY_DOCS` is curated and aging, while document status/applicability and report supersession are often implicit. It cannot safely serve as both complete estate inventory and reader router (`docs/KEY_DOCS.md:1-16`; [`16`](../../archive/audit/2026-08-08-worksgood-system/16-documentation-information-architecture.md)).
 2. **`[FACT]` — `DOC-004`.** Manual README and sync script describe an ambiguous source graph; converter failure can copy raw Typst into `.md` (`docs/manual/README.md:30-42`; `scripts/sync-docs.sh:1-8,66-118`).
 3. **`[CONTRADICTION]` — `DOC-002/005`.** Setup journeys and “complete” command reference disagree with source/dispatch/support; parser help itself can be unreachable. A generated parser inventory alone is insufficient (`docs/COMMANDS.md`; `src/cli.rs:528-554`; `src/main.rs:1261-1274`).
 4. **`[FACT]` — `DOC-008` positive control.** Agent guide embedding and root guide parity are explicit/tested source relationships (`src/commands/agent_guide.rs:3-15,132-185`). They should be preserved, not deduplicated blindly.
@@ -618,9 +618,9 @@ Scope: docs inventory/indexes, manual/website source graph, command/config/refer
 
 ### Evidence appendix
 
-- Documentation leaf: [`16-documentation-information-architecture.md`](16-documentation-information-architecture.md), `DOC-001..010`.
-- Concept leaf: [`19-conceptual-model-and-vocabulary.md`](19-conceptual-model-and-vocabulary.md), `CONCEPT-001..010`.
-- Product synthesis: [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md), `PRODUCT-001..008`.
+- Documentation leaf: [`16-documentation-information-architecture.md`](../../archive/audit/2026-08-08-worksgood-system/16-documentation-information-architecture.md), `DOC-001..010`.
+- Concept leaf: [`19-conceptual-model-and-vocabulary.md`](../../archive/audit/2026-08-08-worksgood-system/19-conceptual-model-and-vocabulary.md), `CONCEPT-001..010`.
+- Product synthesis: [`22-product-docs-quality-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/22-product-docs-quality-synthesis.md), `PRODUCT-001..008`.
 - Roadmap: [`31-documentation-sync-plan.md`](31-documentation-sync-plan.md).
 
 ---
@@ -639,7 +639,7 @@ Scope: docs inventory/indexes, manual/website source graph, command/config/refer
 
 ### 11.3 `X-03` — typed authority vector, not one identity/trust scalar
 
-**`[FACT]`** Agency composition, runtime worker, federated principal, model route, compute provider, human classification, author/provider trust opinions, capability, content verdict, candidate verdict, and completion disposition are separate typed questions ([`21`](21-agency-federation-safety-synthesis.md), `XAUTH-001..010`).
+**`[FACT]`** Agency composition, runtime worker, federated principal, model route, compute provider, human classification, author/provider trust opinions, capability, content verdict, candidate verdict, and completion disposition are separate typed questions ([`21`](../../archive/audit/2026-08-08-worksgood-system/21-agency-federation-safety-synthesis.md), `XAUTH-001..010`).
 
 **`[INFERENCE]` (high confidence)** Collapsing them into “agent identity” or “one trust dial” can authorize or credit the wrong subject. The remedy is explicit bindings and qualified terms, not one universal ID/score.
 
@@ -780,7 +780,7 @@ The detailed dependencies, path lists, rollback policy, negative fixtures, and p
 
 ### 15.1 Release decision
 
-**`[FACT]`** [`90-independent-review.md`](90-independent-review.md) scored the draft **75/100** and recommended **HOLD** until seven blocking corrections were visibly resolved. This final does not claim a re-audit or a product refresh; it resolves presentation/calibration blockers against the pinned evidence.
+**`[FACT]`** [`90-independent-review.md`](../../archive/audit/2026-08-08-worksgood-system/90-independent-review.md) scored the draft **75/100** and recommended **HOLD** until seven blocking corrections were visibly resolved. This final does not claim a re-audit or a product refresh; it resolves presentation/calibration blockers against the pinned evidence.
 
 ### 15.2 Blocking corrections
 
@@ -821,24 +821,24 @@ Every artifact in the audit bundle is linked here; the final does not supersede 
 | Artifact | Contribution used by this final |
 |---|---|
 | [`README.md`](README.md) | Normative charter, scope, evidence labels, risk vocabulary, snapshot, fan-in contract. |
-| [`10-code-architecture.md`](10-code-architecture.md) | Module/persistence/authority findings `ARCH-001..009`. |
+| [`10-code-architecture.md`](../../archive/audit/2026-08-08-worksgood-system/10-code-architecture.md) | Module/persistence/authority findings `ARCH-001..009`. |
 | [`11-orchestration-lifecycle.md`](11-orchestration-lifecycle.md) | Lifecycle, completion, service, cycle/retry, and bounded live traces `ORCH-001..017`. |
-| [`12-model-execution-plane.md`](12-model-execution-plane.md) | Handler/Pi/stream/accounting/setup findings `MODEL-001..010`. |
-| [`13-agency-evaluation-chat.md`](13-agency-evaluation-chat.md) | Agency/evaluation/function/chat/context/concierge/human findings. |
-| [`14-federation-identity-security.md`](14-federation-identity-security.md) | Identity/custody/recovery/transport/capability/state/governance findings `FED-001..014`. |
-| [`15-review-exec-pilot.md`](15-review-exec-pilot.md) | Ingest/trust/review/Exec/Pilot findings `RXP-001..011` and drift. |
-| [`16-documentation-information-architecture.md`](16-documentation-information-architecture.md) | Documentation estate/authority/source-DAG findings `DOC-001..010`. |
-| [`17-testing-ci-quality.md`](17-testing-ci-quality.md) | Test selection/smoke/formal/release findings `TEST-001..011`. |
-| [`18-operations-configuration-ux.md`](18-operations-configuration-ux.md) | IPC/config/onboarding/accounting/package/platform/operator findings `OPS-001..014`. |
-| [`19-conceptual-model-and-vocabulary.md`](19-conceptual-model-and-vocabulary.md) | Product center, object hierarchy, authority namespaces, terminology `CONCEPT-001..010`. |
-| [`20-core-runtime-synthesis.md`](20-core-runtime-synthesis.md) | Architecture/orchestration/model cross-plane synthesis. |
-| [`21-agency-federation-safety-synthesis.md`](21-agency-federation-safety-synthesis.md) | Typed authority vector and safety composition `XAUTH-001..010`. |
-| [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md) | Product contract, documentation, verification, and operations synthesis `PRODUCT-001..008`. |
+| [`12-model-execution-plane.md`](../../archive/audit/2026-08-08-worksgood-system/12-model-execution-plane.md) | Handler/Pi/stream/accounting/setup findings `MODEL-001..010`. |
+| [`13-agency-evaluation-chat.md`](../../archive/audit/2026-08-08-worksgood-system/13-agency-evaluation-chat.md) | Agency/evaluation/function/chat/context/concierge/human findings. |
+| [`14-federation-identity-security.md`](../../archive/audit/2026-08-08-worksgood-system/14-federation-identity-security.md) | Identity/custody/recovery/transport/capability/state/governance findings `FED-001..014`. |
+| [`15-review-exec-pilot.md`](../../archive/audit/2026-08-08-worksgood-system/15-review-exec-pilot.md) | Ingest/trust/review/Exec/Pilot findings `RXP-001..011` and drift. |
+| [`16-documentation-information-architecture.md`](../../archive/audit/2026-08-08-worksgood-system/16-documentation-information-architecture.md) | Documentation estate/authority/source-DAG findings `DOC-001..010`. |
+| [`17-testing-ci-quality.md`](../../archive/audit/2026-08-08-worksgood-system/17-testing-ci-quality.md) | Test selection/smoke/formal/release findings `TEST-001..011`. |
+| [`18-operations-configuration-ux.md`](../../archive/audit/2026-08-08-worksgood-system/18-operations-configuration-ux.md) | IPC/config/onboarding/accounting/package/platform/operator findings `OPS-001..014`. |
+| [`19-conceptual-model-and-vocabulary.md`](../../archive/audit/2026-08-08-worksgood-system/19-conceptual-model-and-vocabulary.md) | Product center, object hierarchy, authority namespaces, terminology `CONCEPT-001..010`. |
+| [`20-core-runtime-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/20-core-runtime-synthesis.md) | Architecture/orchestration/model cross-plane synthesis. |
+| [`21-agency-federation-safety-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/21-agency-federation-safety-synthesis.md) | Typed authority vector and safety composition `XAUTH-001..010`. |
+| [`22-product-docs-quality-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/22-product-docs-quality-synthesis.md) | Product contract, documentation, verification, and operations synthesis `PRODUCT-001..008`. |
 | [`23-evaluation-evolvability-cutover.md`](23-evaluation-evolvability-cutover.md) | Focused representation/learning audit `EVC-001..008` and ledger/projector decision default. |
 | [`30-contradiction-and-drift-register.md`](30-contradiction-and-drift-register.md) | Deduplicated `WGDR-001..049`, terms, guards, uncertainties, primary checks. |
 | [`31-documentation-sync-plan.md`](31-documentation-sync-plan.md) | Authority model, F/D/I/S/V work types, phases, decision queue, rollback, drift gates. |
-| [`40-system-synthesis-draft.md`](40-system-synthesis-draft.md) | Comprehensive draft architecture and source crosswalk; used as base but not copied unchanged. |
-| [`90-independent-review.md`](90-independent-review.md) | Skeptical score, 13 primary samples, blockers, countercontrols, coverage gaps, release recommendation. |
+| [`40-system-synthesis-draft.md`](../../archive/audit/2026-08-08-worksgood-system/40-system-synthesis-draft.md) | Comprehensive draft architecture and source crosswalk; used as base but not copied unchanged. |
+| [`90-independent-review.md`](../../archive/audit/2026-08-08-worksgood-system/90-independent-review.md) | Skeptical score, 13 primary samples, blockers, countercontrols, coverage gaps, release recommendation. |
 | [`99-SYNTHESIS.md`](99-SYNTHESIS.md) | This reviewed final, including dispositions and applicability warning. |
 
 ### 16.2 High-severity primary-evidence index
@@ -894,7 +894,7 @@ post-snapshot non-audit delta=89 files changed, 5995 insertions(+), 413 deletion
 
 ### 16.4 Evidence inherited, not rerun
 
-**`[FACT]`** Candidate-built help behavior and leaf product executions are inherited from their exact appendices, especially audits [`10`](10-code-architecture.md), [`11`](11-orchestration-lifecycle.md), [`12`](12-model-execution-plane.md), [`18`](18-operations-configuration-ux.md), [`23`](23-evaluation-evolvability-cutover.md), and register [`30`](30-contradiction-and-drift-register.md). This final checked source plausibility and review disputes; it did not relabel those commands as final-local executions.
+**`[FACT]`** Candidate-built help behavior and leaf product executions are inherited from their exact appendices, especially audits [`10`](../../archive/audit/2026-08-08-worksgood-system/10-code-architecture.md), [`11`](11-orchestration-lifecycle.md), [`12`](../../archive/audit/2026-08-08-worksgood-system/12-model-execution-plane.md), [`18`](../../archive/audit/2026-08-08-worksgood-system/18-operations-configuration-ux.md), [`23`](23-evaluation-evolvability-cutover.md), and register [`30`](30-contradiction-and-drift-register.md). This final checked source plausibility and review disputes; it did not relabel those commands as final-local executions.
 
 ### 16.5 Final limitations
 

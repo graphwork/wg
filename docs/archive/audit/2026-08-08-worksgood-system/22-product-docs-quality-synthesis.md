@@ -16,7 +16,7 @@
 - [`17-testing-ci-quality.md`](17-testing-ci-quality.md) — tests, CI, smoke ownership, release evidence
 - [`18-operations-configuration-ux.md`](18-operations-configuration-ux.md) — install, configuration, secrets, observability, UX, operational readiness
 - [`19-conceptual-model-and-vocabulary.md`](19-conceptual-model-and-vocabulary.md) — product model, object/role vocabulary, trust and plane boundaries
-- [`README.md`](README.md) — normative audit charter and evidence contract
+- [`README.md`](../../../audit/2026-08-08-worksgood-system/README.md) — normative audit charter and evidence contract
 
 **Change boundary:** this artifact only; no production source, tests, workflows, schemas, packaging, or pre-existing documentation were modified
 

@@ -149,10 +149,10 @@ last time. Counts are live from `git ls-files`.
 
 | Directory | Markdown files | What it holds |
 |---|---:|---|
-| `docs/archive/` | 110 | Archived: root reports, historical research, audits, superseded designs |
-| `docs/reports/` | 96 | Dated reports and closeouts (wave-2 archive candidates) |
+| `docs/archive/` | 206 | Archived: root reports, historical research, audits, superseded designs |
+| `docs/reports/` | 16 | Dated reports and closeouts (wave-2 archive candidates) |
 | `docs/research/` | 121 | Research notes and studies |
-| `docs/audit/` | 23 | Dated audit trees |
+| `docs/audit/` | 7 | Dated audit trees |
 | `docs/plans/` | 13 | Implementation plans for work in flight |
 | `docs/design/` | 83 | Additional design docs (subset curated above) |
 | `docs/designs/` | 7 | Earlier design drafts |

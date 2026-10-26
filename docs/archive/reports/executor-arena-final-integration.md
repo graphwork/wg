@@ -6,11 +6,11 @@
 
 ## Enabled Surfaces
 
-- `wg executors --all` now discovers the full executor arena set from a single source of truth in [`src/executor_discovery.rs`](../../src/executor_discovery.rs): core `native`, `claude`, `codex`, `shell`; stable external `opencode`, `aider`, `goose`, `qwen`, `cline`; provider-specific `gemini`; experimental `crush`, `amplifier`.
-- `wg config --show` and `wg config --list` now print an `[executor choices]` section in [`src/commands/config_cmd.rs`](../../src/commands/config_cmd.rs), so configuration inspection exposes the same choice groups as discovery.
-- `wg config --executor` help text in [`src/cli.rs`](../../src/cli.rs) now names the complete grouped choice set and points custom integrations at `.wg/executors/<name>.toml`.
+- `wg executors --all` now discovers the full executor arena set from a single source of truth in [`src/executor_discovery.rs`](../../../src/executor_discovery.rs): core `native`, `claude`, `codex`, `shell`; stable external `opencode`, `aider`, `goose`, `qwen`, `cline`; provider-specific `gemini`; experimental `crush`, `amplifier`.
+- `wg config --show` and `wg config --list` now print an `[executor choices]` section in [`src/commands/config_cmd.rs`](../../../src/commands/config_cmd.rs), so configuration inspection exposes the same choice groups as discovery.
+- `wg config --executor` help text in [`src/cli.rs`](../../../src/cli.rs) now names the complete grouped choice set and points custom integrations at `.wg/executors/<name>.toml`.
 - `wg init` surfaces are pinned by [`tests/smoke/scenarios/executor_arena_surfaces.sh`](../../tests/smoke/scenarios/executor_arena_surfaces.sh): seeded external executor templates are checked alongside config and discovery output.
-- The executor arena guide now calls out the config/list choice surface in [`docs/guides/executor-arena.md`](../guides/executor-arena.md).
+- The executor arena guide now calls out the config/list choice surface in [`docs/guides/executor-arena.md`](../../guides/executor-arena.md).
 
 ## Experimental Boundaries
 
@@ -47,12 +47,12 @@ Notes:
 
 ## Source Links
 
-- Discovery source of truth: [`src/executor_discovery.rs`](../../src/executor_discovery.rs)
-- Config/list surface: [`src/commands/config_cmd.rs`](../../src/commands/config_cmd.rs)
-- CLI help surface: [`src/cli.rs`](../../src/cli.rs)
-- Integration test: [`tests/integration_executor_arena_surfaces.rs`](../../tests/integration_executor_arena_surfaces.rs)
+- Discovery source of truth: [`src/executor_discovery.rs`](../../../src/executor_discovery.rs)
+- Config/list surface: [`src/commands/config_cmd.rs`](../../../src/commands/config_cmd.rs)
+- CLI help surface: [`src/cli.rs`](../../../src/cli.rs)
+- Integration test: [`tests/integration_executor_arena_surfaces.rs`](../../../tests/integration_executor_arena_surfaces.rs)
 - Smoke scenario: [`tests/smoke/scenarios/executor_arena_surfaces.sh`](../../tests/smoke/scenarios/executor_arena_surfaces.sh)
-- Smoke manifest owner: [`tests/smoke/manifest.toml`](../../tests/smoke/manifest.toml)
-- User guide update: [`docs/guides/executor-arena.md`](../guides/executor-arena.md)
+- Smoke manifest owner: [`tests/smoke/manifest.toml`](../../../tests/smoke/manifest.toml)
+- User guide update: [`docs/guides/executor-arena.md`](../../guides/executor-arena.md)
 - Ranking dependency: [`docs/reports/executor-arena-ranking.md`](executor-arena-ranking.md)
-- Prior smoke dependency: [`docs/reports/executor-arena-smoke.md`](executor-arena-smoke.md)
+- Prior smoke dependency: [`docs/reports/executor-arena-smoke.md`](../../reports/executor-arena-smoke.md)

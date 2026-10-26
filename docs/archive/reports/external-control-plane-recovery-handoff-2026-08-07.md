@@ -14,15 +14,15 @@ The service is intentionally stopped. Do not restart it until the final independ
 
 Read in this order:
 
-1. [`docs/research/wg-control-plane-authority-deletion-map.md`](../research/wg-control-plane-authority-deletion-map.md) — current authority/store/process inventory and deletion map.
-2. [`formal/README.md`](../../formal/README.md) — exact proof boundary and production conformance seams.
-3. [`formal/WGLifecycle/Convergence.lean`](../../formal/WGLifecycle/Convergence.lean) — deterministic finish convergence and conditional liveness theorems.
-4. [`formal/WGLifecycle/Safety.lean`](../../formal/WGLifecycle/Safety.lean) — fencing, first-terminal-wins, promotion, cleanup, and protected-state invariants.
-5. [`formal/WGLifecycle/Incident.lean`](../../formal/WGLifecycle/Incident.lean) — exact incident convergence and non-stuck trace.
-6. [`formal/WGLifecycle/DaemonPlanner.lean`](../../formal/WGLifecycle/DaemonPlanner.lean) — unfinished-work exhaustiveness and useful scheduling boundary.
-7. [`docs/plans/simple-worker-owned-lean-convergence.md`](../plans/simple-worker-owned-lean-convergence.md) — the previously completed boring worker-owned completion model and clean-room canary.
-8. [`docs/plans/deterministic-convergence-final-cutover.md`](../plans/deterministic-convergence-final-cutover.md) — records that the older planner/convergence authority cutover was incomplete.
-9. [`docs/research/traces/wg-control-plane-authority-deletion-map/`](../research/traces/wg-control-plane-authority-deletion-map/) — eight bounded production-incident traces.
+1. [`docs/research/wg-control-plane-authority-deletion-map.md`](../../research/wg-control-plane-authority-deletion-map.md) — current authority/store/process inventory and deletion map.
+2. [`formal/README.md`](../../../formal/README.md) — exact proof boundary and production conformance seams.
+3. [`formal/WGLifecycle/Convergence.lean`](../../../formal/WGLifecycle/Convergence.lean) — deterministic finish convergence and conditional liveness theorems.
+4. [`formal/WGLifecycle/Safety.lean`](../../../formal/WGLifecycle/Safety.lean) — fencing, first-terminal-wins, promotion, cleanup, and protected-state invariants.
+5. [`formal/WGLifecycle/Incident.lean`](../../../formal/WGLifecycle/Incident.lean) — exact incident convergence and non-stuck trace.
+6. [`formal/WGLifecycle/DaemonPlanner.lean`](../../../formal/WGLifecycle/DaemonPlanner.lean) — unfinished-work exhaustiveness and useful scheduling boundary.
+7. [`docs/plans/simple-worker-owned-lean-convergence.md`](../../plans/simple-worker-owned-lean-convergence.md) — the previously completed boring worker-owned completion model and clean-room canary.
+8. [`docs/plans/deterministic-convergence-final-cutover.md`](../../plans/deterministic-convergence-final-cutover.md) — records that the older planner/convergence authority cutover was incomplete.
+9. [`docs/research/traces/wg-control-plane-authority-deletion-map/`](../../research/traces/wg-control-plane-authority-deletion-map/) — eight bounded production-incident traces.
 
 ## What the Lean work actually proves
 

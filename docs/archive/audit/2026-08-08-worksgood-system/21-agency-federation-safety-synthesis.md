@@ -416,7 +416,7 @@ Primary flow evidence: attended contract `src/text/attended_chat_contract.md:1-1
 
 ### 7.1 Snapshot, method, and dependency evidence
 
-**`[FACT]`** The normative audit charter is [`README.md`](README.md), which requires labels, seven sections, direct primary evidence, stable dependency IDs, explicit uncertainty, and preservation of contradictions (`README.md:172-338`). This synthesis read the charter and all three dependency artifacts in full:
+**`[FACT]`** The normative audit charter is [`README.md`](../../../audit/2026-08-08-worksgood-system/README.md), which requires labels, seven sections, direct primary evidence, stable dependency IDs, explicit uncertainty, and preservation of contradictions (`README.md:172-338`). This synthesis read the charter and all three dependency artifacts in full:
 
 - [`13-agency-evaluation-chat.md`](13-agency-evaluation-chat.md), 420 lines;
 - [`14-federation-identity-security.md`](14-federation-identity-security.md), 473 lines;

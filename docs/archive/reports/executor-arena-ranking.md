@@ -2,7 +2,7 @@
 
 - Task: `exec-rank-defaults`
 - Date: 2026-06-01
-- Primary smoke artifact: [executor-arena-smoke.md](executor-arena-smoke.md)
+- Primary smoke artifact: [executor-arena-smoke.md](../../reports/executor-arena-smoke.md)
 - Prior synthesis: [executor-arena-research.md](executor-arena-research.md)
 - Post-smoke fix context: `fix-nex-openrouter` completed on 2026-06-01 and
   merged as `c4bfcbeb`, with env-backed Nex/OpenRouter credential smoke passing.
@@ -38,7 +38,7 @@ lifecycle smokes.
 
 The ranking combines three layers of evidence:
 
-1. Live smoke evidence from [executor-arena-smoke.md](executor-arena-smoke.md):
+1. Live smoke evidence from [executor-arena-smoke.md](../../reports/executor-arena-smoke.md):
    direct OpenRouter passed, `wg endpoints test openrouter` passed, Codex over
    OpenRouter passed, Claude was installed but not live-spent, and most external
    CLIs were missing.
@@ -334,17 +334,17 @@ Before changing release defaults:
 
 ## Sources
 
-- [executor-arena-smoke.md](executor-arena-smoke.md) - live smoke evidence for
+- [executor-arena-smoke.md](../../reports/executor-arena-smoke.md) - live smoke evidence for
   OpenRouter, Nex/native pre-fix behavior, Codex, Claude, and missing CLIs.
 - [executor-arena-research.md](executor-arena-research.md) - adapter command
   shapes, prompt delivery, model normalization, and prior Rust-native analysis.
 - `wg show fix-nex-openrouter` - post-smoke env-key fix, commit `c4bfcbeb`, and
   smoke validation logs.
-- [../guides/executor-arena.md](../guides/executor-arena.md) - current stable
+- [../guides/executor-arena.md](../../guides/executor-arena.md) - current stable
   and experimental adapter documentation.
-- [../guides/openrouter-setup.md](../guides/openrouter-setup.md) - endpoint,
+- [../guides/openrouter-setup.md](../../guides/openrouter-setup.md) - endpoint,
   key, and external executor OpenRouter setup.
-- [../design-pan-executor.md](../design-pan-executor.md) - native executor
+- [../design-pan-executor.md](../../design-pan-executor.md) - native executor
   strategy, stream model, and target state.
-- [amplifier-research-report.md](amplifier-research-report.md) - counterpoint
+- [amplifier-research-report.md](../../reports/amplifier-research-report.md) - counterpoint
   on Amplifier-style framework integration versus WG-owned Rust execution.

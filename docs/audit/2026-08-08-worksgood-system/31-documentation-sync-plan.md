@@ -10,7 +10,7 @@
 
 **Artifact status:** audit-only synchronization program; no proposed edit, move, archive, generator, policy, or implementation decision in this document has been applied
 
-**Inputs:** audit charter [`README.md`](README.md), thematic syntheses [`20`](20-core-runtime-synthesis.md), [`21`](21-agency-federation-safety-synthesis.md), [`22`](22-product-docs-quality-synthesis.md), focused cutover audit [`23`](23-evaluation-evolvability-cutover.md), and contradiction register [`30`](30-contradiction-and-drift-register.md)
+**Inputs:** audit charter [`README.md`](README.md), thematic syntheses [`20`](../../archive/audit/2026-08-08-worksgood-system/20-core-runtime-synthesis.md), [`21`](../../archive/audit/2026-08-08-worksgood-system/21-agency-federation-safety-synthesis.md), [`22`](../../archive/audit/2026-08-08-worksgood-system/22-product-docs-quality-synthesis.md), focused cutover audit [`23`](23-evaluation-evolvability-cutover.md), and contradiction register [`30`](30-contradiction-and-drift-register.md)
 
 **Change boundary:** this new audit artifact only; production source, tests, workflows, schemas, generated output, and pre-existing documentation are untouched
 
@@ -600,9 +600,9 @@ Bounded result: 281 of the 570 pre-artifact docs Markdown files matched this del
 ### 7.3 Input traceability
 
 - Charter structure/evidence/decision separation: [`README.md`](README.md), especially §§3–6.
-- Core lifecycle/model authority and recommendations: [`20-core-runtime-synthesis.md`](20-core-runtime-synthesis.md), especially `CORE-001..012`, `CORE-DRIFT-001..012`, and §6.
-- Typed authority/trust and security seams: [`21-agency-federation-safety-synthesis.md`](21-agency-federation-safety-synthesis.md), especially `XAUTH-001..010` and §6.
-- Target product/IA/contract/evidence model: [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md), especially §§2.4–2.6 and `PRODUCT-REC-001..015`.
+- Core lifecycle/model authority and recommendations: [`20-core-runtime-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/20-core-runtime-synthesis.md), especially `CORE-001..012`, `CORE-DRIFT-001..012`, and §6.
+- Typed authority/trust and security seams: [`21-agency-federation-safety-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/21-agency-federation-safety-synthesis.md), especially `XAUTH-001..010` and §6.
+- Target product/IA/contract/evidence model: [`22-product-docs-quality-synthesis.md`](../../archive/audit/2026-08-08-worksgood-system/22-product-docs-quality-synthesis.md), especially §§2.4–2.6 and `PRODUCT-REC-001..015`.
 - Evaluation representation and learning decisions: [`23-evaluation-evolvability-cutover.md`](23-evaluation-evolvability-cutover.md), especially §§5–6.
 - Deduplicated contradiction authority: [`30-contradiction-and-drift-register.md`](30-contradiction-and-drift-register.md), `WGDR-001`–`WGDR-049`, `WGDR-T01`–`WGDR-T12`, `WGDR-R01`–`WGDR-R12`, `WGDR-U01`–`WGDR-U12`.
 

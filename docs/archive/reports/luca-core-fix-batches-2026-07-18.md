@@ -5,7 +5,7 @@
 **Candidates:** `d25cdd59`, `9a595528`, `02204b19`<br>
 **Source audited:** `e7fad9bb`; current `main`/`origin/main` was `9e33da3e` when this report was finalized. The only intervening path is the documentation-only `docs/reports/luca-casa-wgfed-overlap-2026-07-18.md`, so the audited source is identical to current main for every path below.
 
-This report turns the refreshed [Luca/Casa inventory](./inventory-luca-casa-stream-2026-07-18.md) into three implementation-ready **current-main** batches. It does not authorize a merge of `luca/integration/casa-pinello`, and it does not treat a clean textual apply as semantic approval.
+This report turns the refreshed [Luca/Casa inventory](../../reports/inventory-luca-casa-stream-2026-07-18.md) into three implementation-ready **current-main** batches. It does not authorize a merge of `luca/integration/casa-pinello`, and it does not treat a clean textual apply as semantic approval.
 
 The FailedPendingEval plan below incorporates the independent [PendingEval / FLIP inline-route resolution](./pending-eval-flip-inline-route-resolution.md). `9a595528` is a necessary safety slice, not the incident fix by itself.
 

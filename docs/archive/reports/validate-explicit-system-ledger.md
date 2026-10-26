@@ -3,7 +3,7 @@
 **Task:** `validate-explicit-system`
 **Validated commit (worktree HEAD):** `de976119` (fast-forwarded from branch base `fd3aa555` to align source with the globally-installed `wg` binary, which is built from the main worktree HEAD)
 **Date:** 2026-07-25
-**Contract under test:** [`docs/design-explicit-execution-system.md`](../design-explicit-execution-system.md)
+**Contract under test:** [`docs/design-explicit-execution-system.md`](../../design-explicit-execution-system.md)
 
 ## 0. Summary
 

@@ -14,11 +14,11 @@
 
 **Change boundary:** this new audit artifact only
 
-**Normative charter:** [`README.md`](README.md), especially its fan-in and evidence contract at `README.md:151-194,196-374`
+**Normative charter:** [`README.md`](../../../audit/2026-08-08-worksgood-system/README.md), especially its fan-in and evidence contract at `README.md:151-194,196-374`
 
 ## 1. Executive abstract
 
-**`[FACT]`** This synthesis read the charter and all three required dependency artifacts in full: [`10-code-architecture.md`](10-code-architecture.md), [`11-orchestration-lifecycle.md`](11-orchestration-lifecycle.md), and [`12-model-execution-plane.md`](12-model-execution-plane.md). It then checked material and disputed claims against primary source. No product, test, or pre-existing documentation file was changed. This synthesis ran source-provenance and artifact validation commands only; it did not rerun the leaf audits' product tests, daemons, smokes, or provider traces.
+**`[FACT]`** This synthesis read the charter and all three required dependency artifacts in full: [`10-code-architecture.md`](10-code-architecture.md), [`11-orchestration-lifecycle.md`](../../../audit/2026-08-08-worksgood-system/11-orchestration-lifecycle.md), and [`12-model-execution-plane.md`](12-model-execution-plane.md). It then checked material and disputed claims against primary source. No product, test, or pre-existing documentation file was changed. This synthesis ran source-provenance and artifact validation commands only; it did not rerun the leaf audits' product tests, daemons, smokes, or provider traces.
 
 **`[FACT]`** WorksGood's core is a file-backed, event-repaired task graph surrounded by a daemon, capability-brokered workers, model-specific processes, immutable completion objects, Git publication, and several operational projections. The strongest implemented path is:
 
@@ -48,7 +48,7 @@ paused task -> atomic publish -> derived readiness -> fenced attempt
 | Input artifact | Major contribution represented here | Inherited executed evidence | Synthesis treatment |
 |---|---|---|---|
 | [`10-code-architecture.md`](10-code-architecture.md) | package/binary boundaries; broad models; graph/lifecycle persistence; configuration layers; duplicate completion/resolution authorities; provenance and platform gaps | focused build, locking/replay tests, add/show/config trace, stale Done test | Adopted architecture and persistence map; completion severity reconciled with orchestration; no-lost-update result not generalized beyond Unix/sample. |
-| [`11-orchestration-lifecycle.md`](11-orchestration-lifecycle.md) | staged publication; readiness; attempt/generation/fence; spawn transaction; completion; retry/cycles/waits/cron; daemon IPC; documentation/test drift | two manual CLI traces, 15 targeted Rust binaries, six smokes, installed-daemon observation | Adopted current lifecycle authority and verified claim bypass; narrowed daemon observation by binary provenance; represented all ORCH finding groups in §3.4. |
+| [`11-orchestration-lifecycle.md`](../../../audit/2026-08-08-worksgood-system/11-orchestration-lifecycle.md) | staged publication; readiness; attempt/generation/fence; spawn transaction; completion; retry/cycles/waits/cron; daemon IPC; documentation/test drift | two manual CLI traces, 15 targeted Rust binaries, six smokes, installed-daemon observation | Adopted current lifecycle authority and verified claim bypass; narrowed daemon observation by binary provenance; represented all ORCH finding groups in §3.4. |
 | [`12-model-execution-plane.md`](12-model-execution-plane.md) | strict worker route set; config/role/reasoning precedence; process topology; Pi bridge/watchdog/accounting; setup and documentation drift | focused route/stream/watchdog/profile/native tests, generated Pi wrapper trace, two passing and one failing smoke | Adopted capability split, Pi topology, and observed accounting gap; rejected only the legacy `done.rs` causal attribution for MODEL-009 after current call-graph checking. |
 
 **`[UNCERTAINTY]`** This synthesis does not independently execute full Cargo tests, the full smoke manifest, Windows writers, real external models, provider credentials, power-loss injection, production-duration watchdogs, or a daemon built with embedded revision identity. The leaf commands remain the E1 evidence for their exact environments; links above preserve their bounded transcripts.
@@ -329,7 +329,7 @@ rg -n 'DoneHandoff|Commands::Done' src/worker_cli.rs src/main.rs
 **`[FACT]`** Detailed commands, output excerpts, test counts and limitations remain in the leaves and are not duplicated here:
 
 - Architecture package/persistence/add-show-config evidence: [`10-code-architecture.md` §7](10-code-architecture.md#7-evidence-appendix).
-- Orchestration lifecycle/manual claim/daemon/rejection/test/smoke evidence: [`11-orchestration-lifecycle.md` §7](11-orchestration-lifecycle.md#7-evidence-appendix).
+- Orchestration lifecycle/manual claim/daemon/rejection/test/smoke evidence: [`11-orchestration-lifecycle.md` §7](../../../audit/2026-08-08-worksgood-system/11-orchestration-lifecycle.md#7-evidence-appendix).
 - Model route/Pi/native/generated-wrapper/accounting evidence: [`12-model-execution-plane.md` §7](12-model-execution-plane.md#7-evidence-appendix).
 
 ### 7.4 Validation and limitations

@@ -3749,6 +3749,7 @@ name = "doc_archive_policy"
 script = "scenarios/doc_archive_policy.sh"
 owners = [
     "doc-archive-policy",
+    "doc-archive-policy-2",
 ]
 description = "Pins the documentation archive policy (docs/archive/POLICY.md) and its two mechanical gates, so archiving stays a rule instead of a habit: `scripts/gen-key-docs.py --check` exits 0 (docs/KEY_DOCS.md is generated from docs/key-docs.tsv and is NOT stale — the hand-maintained list went stale 2026-04-29 and stayed stale through the whole federation/review/exec wave); `scripts/doc-archive-audit.sh` returns BLOCK/exit 1 for a doc that source cites (docs/ops/runbook.md) and CLEAR/exit 0 for an unreferenced one, so a code-cited design doc can never be swept into docs/archive/; the repo root stays a seven-file markdown surface (POLICY.md §4 — new reports go under docs/, not /); every file under docs/archive/ is git-tracked (moves are `git mv`, never `rm`, so `git log --follow` and revert both still work for the 49 root reports archived in wave 1); and each existing archive bucket is non-empty. Credential-free, daemon-free, network-free."
 timeout_seconds = 60

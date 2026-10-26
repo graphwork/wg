@@ -10,11 +10,11 @@
 
 **Change boundary:** this file only; no production source, tests, workflows, or pre-existing documentation were changed
 
-**Normative audit method:** [`README.md`](README.md)
+**Normative audit method:** [`README.md`](../../../audit/2026-08-08-worksgood-system/README.md)
 
-**Detailed contradiction authority:** [`30-contradiction-and-drift-register.md`](30-contradiction-and-drift-register.md)
+**Detailed contradiction authority:** [`30-contradiction-and-drift-register.md`](../../../audit/2026-08-08-worksgood-system/30-contradiction-and-drift-register.md)
 
-**Synchronization plan:** [`31-documentation-sync-plan.md`](31-documentation-sync-plan.md)
+**Synchronization plan:** [`31-documentation-sync-plan.md`](../../../audit/2026-08-08-worksgood-system/31-documentation-sync-plan.md)
 
 > This draft is deliberately fractal. A reader may stop after §1, after any section abstract, after the findings and risk tables, or continue through direct evidence. Each major section repeats the same shape: **abstract → findings → risks → recommendations → deeper evidence**. It does not resolve contradictions by choosing the newest prose.
 
@@ -66,7 +66,7 @@ Unix graph mutation is serialized and replayable; launch is withheld until owner
 | 4 | Generic config editing erases comments, accepts ineffective unknown keys, and lint can call the file clean. | current, verified in leaf | **S1 / high** | The operator control plane can silently destroy intent and preserve typos (`src/commands/config_cmd.rs:3029-3096,3476-3676`; `WGDR-010/011`). |
 | 5 | Federation root/recovery custody is same-process/same-user key loading, not the hostile-worker signer boundary claimed by the ADR; recovery is co-located and weakly time-bound. | partial security boundary | **S1 / high** | A same-UID shell-capable worker can plausibly collapse the principal/capability boundary (`src/identity/keys.rs:51-68,226-377`; `src/identity/sigchain.rs:493-515,884-925`; `WGDR-029/030`). |
 | 6 | Federation inbox read/delete is unauthenticated and not an owned acknowledgement transaction. | partial transport | **S1 / high** | A reachable node can leak unsealed mail or delete/overwrite/fill an inbox even when message signatures preserve correctness (`src/identity/node.rs:408-443,551-572`; `src/identity/transport.rs:309-354`; `WGDR-032`). |
-| 7 | Modern exact candidate review does not feed agency learning, and its attempt/cost lineage is thin. | current disconnect | **S1 learning; S2 observability / high** | Quality gating may be universal while assignment/evolution remain statistically empty (`src/completion_review.rs:83-121`; `src/agency/eval.rs:49-201`; `src/agency/evolver.rs:120-224`; [`23`](23-evaluation-evolvability-cutover.md#3-findings)). |
+| 7 | Modern exact candidate review does not feed agency learning, and its attempt/cost lineage is thin. | current disconnect | **S1 learning; S2 observability / high** | Quality gating may be universal while assignment/evolution remain statistically empty (`src/completion_review.rs:83-121`; `src/agency/eval.rs:49-201`; `src/agency/evolver.rs:120-224`; [`23`](../../../audit/2026-08-08-worksgood-system/23-evaluation-evolvability-cutover.md#3-findings)). |
 | 8 | Remote placement reaches planning but normal spawn rejects `RemoteRunner`; result accept and lease operations remain multi-command/manual. Pilot's real path is bootstrap, while dry-run uses a fixed worker. | partial/manual | **S1 / high** | “Dispatcher wired” and “turnkey family team” overstate the reachable lifecycle (`src/dispatch/plan.rs:583-640`; `src/commands/spawn_task.rs:339-348`; `src/commands/pilot_cmd.rs:43-50,1066-1215`; `WGDR-040/042`). |
 | 9 | Setup, bare-launch, doctor, model-surface, spend, metrics, package, and platform narratives do not share one product contract. | current drift | **S1–S2 / high** | Operators can take wrong setup, readiness, budget, or support actions (`src/bin/worksgood.rs:6-16,124-144`; `src/commands/setup.rs:1389-1471`; `src/commands/doctor.rs:166-226`; `src/commands/spend.rs:27-67`; `src/metrics.rs:8-26`; `WGDR-008/009/012`). |
 | 10 | Test and documentation presence materially overstate activated evidence: normal CI selects a small integration subset, and the authoritative smoke gate is disconnected. | current | **S1 / high** | Green CI or a manifest entry is not evidence that the claimed user/release path passed (`.github/workflows/ci.yml:68-201`; [`17`](17-testing-ci-quality.md#3-findings)). |
@@ -89,11 +89,11 @@ Unix graph mutation is serialized and replayable; launch is withheld until owner
 6. either implement coordinator-owned remote execution/Pilot or label them manual/bootstrap;
 7. contain false high-impact claims, then build decision, claim, glossary, estate, and evidence registries.
 
-The phased program is detailed in §13 and [`31-documentation-sync-plan.md`](31-documentation-sync-plan.md).
+The phased program is detailed in §13 and [`31-documentation-sync-plan.md`](../../../audit/2026-08-08-worksgood-system/31-documentation-sync-plan.md).
 
 ### Deeper audit artifacts
 
-[`20-core-runtime-synthesis.md`](20-core-runtime-synthesis.md), [`21-agency-federation-safety-synthesis.md`](21-agency-federation-safety-synthesis.md), [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md), [`23-evaluation-evolvability-cutover.md`](23-evaluation-evolvability-cutover.md), and [`30-contradiction-and-drift-register.md`](30-contradiction-and-drift-register.md).
+[`20-core-runtime-synthesis.md`](20-core-runtime-synthesis.md), [`21-agency-federation-safety-synthesis.md`](21-agency-federation-safety-synthesis.md), [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md), [`23-evaluation-evolvability-cutover.md`](../../../audit/2026-08-08-worksgood-system/23-evaluation-evolvability-cutover.md), and [`30-contradiction-and-drift-register.md`](../../../audit/2026-08-08-worksgood-system/30-contradiction-and-drift-register.md).
 
 ---
 
@@ -124,7 +124,7 @@ Maturity labels:
 | **historical/superseded** | correct for an older revision or architecture, not current authority |
 | **proposed/decision-required** | desired behavior is not ratified, or competing authorities remain |
 
-Evidence precedence is scoped, not global: exact executed candidate behavior controls that environment; reachable source/schema controls current encoded behavior; accepted applicable decisions control desired policy; generated views control only declared derivative fields; immutable reports control their observed revision. A test file proves nothing about selection, and `AGENTS.md` alone never proves product behavior. See charter `README.md:229-327` and roadmap [`31` §2.2](31-documentation-sync-plan.md#22-target-authority-model-a-two-axis-join-not-newest-file-wins).
+Evidence precedence is scoped, not global: exact executed candidate behavior controls that environment; reachable source/schema controls current encoded behavior; accepted applicable decisions control desired policy; generated views control only declared derivative fields; immutable reports control their observed revision. A test file proves nothing about selection, and `AGENTS.md` alone never proves product behavior. See charter `README.md:229-327` and roadmap [`31` §2.2](../../../audit/2026-08-08-worksgood-system/31-documentation-sync-plan.md#22-target-authority-model-a-two-axis-join-not-newest-file-wins).
 
 ### Risks
 
@@ -136,9 +136,9 @@ Every proposed synchronization must identify whether it is a factual edit (**F**
 
 ### Deeper audit artifacts
 
-- Audit contract and inventory: [`README.md`](README.md)
-- Deduplicated 49-item register: [`30`](30-contradiction-and-drift-register.md)
-- Six-phase synchronization program: [`31`](31-documentation-sync-plan.md)
+- Audit contract and inventory: [`README.md`](../../../audit/2026-08-08-worksgood-system/README.md)
+- Deduplicated 49-item register: [`30`](../../../audit/2026-08-08-worksgood-system/30-contradiction-and-drift-register.md)
+- Six-phase synchronization program: [`31`](../../../audit/2026-08-08-worksgood-system/31-documentation-sync-plan.md)
 
 ---
 
@@ -173,7 +173,7 @@ Every proposed synchronization must identify whether it is a factual edit (**F**
 
 - [`19-conceptual-model-and-vocabulary.md`](19-conceptual-model-and-vocabulary.md)
 - [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md)
-- Register terms [`30` §4](30-contradiction-and-drift-register.md#4-terminology-and-authority-collision-subregister)
+- Register terms [`30` §4](../../../audit/2026-08-08-worksgood-system/30-contradiction-and-drift-register.md#4-terminology-and-authority-collision-subregister)
 
 ---
 
@@ -223,7 +223,7 @@ The current lifecycle kernel is substantially fail-closed: drafts are explicitly
 ### Findings
 
 1. **`[OBSERVED FACT — current/shipped]`** `wg add` creates a visible paused task; publication unpauses a selected region; readiness checks status, pause, time, and dependency disposition (`src/commands/add.rs:355,614-617,847-975`; `src/commands/resume.rs:164-350`; `src/query.rs:306-517`).
-2. **`[VERIFIED BEHAVIOR — current defect]`** Manual `wg claim` admitted an unpublished paused task and a future task that `wg ready` excluded. Source checks dependency disposition but omits pause/time readiness (`src/commands/claim.rs:11-151`; `src/query.rs:306-343`; [`11` Trace B](11-orchestration-lifecycle.md#trace-b--manual-admission-bypass)).
+2. **`[VERIFIED BEHAVIOR — current defect]`** Manual `wg claim` admitted an unpublished paused task and a future task that `wg ready` excluded. Source checks dependency disposition but omits pause/time readiness (`src/commands/claim.rs:11-151`; `src/query.rs:306-343`; [`11` Trace B](../../../audit/2026-08-08-worksgood-system/11-orchestration-lifecycle.md#trace-b--manual-admission-bypass)).
 3. **`[OBSERVED FACT — shipped positive control]`** Spawn prepares workspace, registry, fenced attempt, capability, and observer state before publishing the launch token; pre-permit failure rolls back (`src/commands/service/coordinator.rs:2366-2702`; `src/commands/spawn/execution.rs:1283-1438,1780-2160`).
 4. **`[OBSERVED FACT — shipped positive control]`** Current completion selects an immutable candidate, runs exact FLIP then eval, rechecks dependency outputs and publication, and commits `AttemptSucceeded` only under current generation/manifest checks (`src/commands/completion_submit.rs:187-487`; `src/commands/completion_done.rs:29-294`).
 5. **`[VERIFIED BEHAVIOR — bounded]`** An installed-daemon trace saw one slow completion review block unrelated IPC beyond 30 seconds. The installed binary lacked commit identity, so exact snapshot behavior is not labeled verified; pinned source accepts and executes completion inline on the coordinator thread (`src/commands/service/mod.rs:3330-3570`; `src/commands/service/ipc.rs:286-350,835-919`; `CORE-001`).
@@ -248,9 +248,9 @@ The current lifecycle kernel is substantially fail-closed: drafts are explicitly
 
 ### Deeper audit artifacts
 
-- [`11-orchestration-lifecycle.md`](11-orchestration-lifecycle.md)
+- [`11-orchestration-lifecycle.md`](../../../audit/2026-08-08-worksgood-system/11-orchestration-lifecycle.md)
 - [`20-core-runtime-synthesis.md`](20-core-runtime-synthesis.md)
-- Register [`30` §3.1](30-contradiction-and-drift-register.md#31-core-lifecycle-completion-and-verification)
+- Register [`30` §3.1](../../../audit/2026-08-08-worksgood-system/30-contradiction-and-drift-register.md#31-core-lifecycle-completion-and-verification)
 
 ---
 
@@ -289,7 +289,7 @@ WorksGood's model plane correctly separates route resolution, surface eligibilit
 
 - [`12-model-execution-plane.md`](12-model-execution-plane.md)
 - [`20-core-runtime-synthesis.md`](20-core-runtime-synthesis.md)
-- Evaluation/accounting detail: [`23`](23-evaluation-evolvability-cutover.md)
+- Evaluation/accounting detail: [`23`](../../../audit/2026-08-08-worksgood-system/23-evaluation-evolvability-cutover.md)
 
 ---
 
@@ -303,7 +303,7 @@ Agency persona composition, current completion review, candidate evaluation, ass
 
 1. **`[OBSERVED FACT — current]`** Agency `Agent.id` hashes role/tradeoff IDs, not a cryptographic principal. Several prompt-visible role/tradeoff/component/outcome fields are omitted, and edit semantics can delete/update old identities contrary to immutable-behavior prose (`src/agency/hash.rs:15-67`; `src/commands/role.rs:224-273`; `WGDR-019`).
 2. **`[OBSERVED FACT — partial]`** `auto_assign` is surfaced, but no coordinator caller for the retained LLM assigner was found. Manual `wg assign --auto` performs deterministic history ranking; direct dispatch commonly records runtime ownership without an agency composition (`src/commands/assign.rs:205-393`; `src/commands/service/assignment.rs:397-477`; `WGDR-020`).
-3. **`[VERIFIED BEHAVIOR — shipped positive control]`** Current v3 review preserves exact FLIP-before-eval ordering, immutable candidate/requirements/output binding, distinct reject/incomplete/unavailable outcomes, and publication-derived Done. Targeted `completion_review_valve` passed 9/9 and agency pipeline 34/34 active tests in audit 23 (`src/completion_review.rs:83-121,182-299`; [`23` §1](23-evaluation-evolvability-cutover.md#1-executive-abstract)).
+3. **`[VERIFIED BEHAVIOR — shipped positive control]`** Current v3 review preserves exact FLIP-before-eval ordering, immutable candidate/requirements/output binding, distinct reject/incomplete/unavailable outcomes, and publication-derived Done. Targeted `completion_review_valve` passed 9/9 and agency pipeline 34/34 active tests in audit 23 (`src/completion_review.rs:83-121,182-299`; [`23` §1](../../../audit/2026-08-08-worksgood-system/23-evaluation-evolvability-cutover.md#1-executive-abstract)).
 4. **`[OBSERVED FACT — current gap]`** Compact receipts omit reviewer attempts, timing, reasoning, usage/cost, response digest, retry lineage, source attempt/fence, and source agency composition. `wg show` exposes object references, not a complete review history (`src/completion_review.rs:83-95`; `src/commands/show.rs:937-953,1201-1290`).
 5. **`[VERIFIED BEHAVIOR — current disconnect]`** Audit 23 found 12/12 Done tasks with exact review pairs, zero normal `evaluation_records`, zero agency evaluation files, and no live agency task composition. Modern completion/evaluation has no call to `record_evaluation[_with_inference]`; evolver reads the legacy store (`src/agency/eval.rs:49-201`; `src/agency/evolver.rs:120-224`).
 6. **`[OBSERVED FACT — current gap]`** Assigner history can record placeholder `0.5`; no later caller replaces it with outcome quality (`src/commands/assign.rs:107-164`; `WGDR-023`).
@@ -331,7 +331,7 @@ Agency persona composition, current completion review, candidate evaluation, ass
 ### Deeper audit artifacts
 
 - [`13-agency-evaluation-chat.md`](13-agency-evaluation-chat.md)
-- [`23-evaluation-evolvability-cutover.md`](23-evaluation-evolvability-cutover.md)
+- [`23-evaluation-evolvability-cutover.md`](../../../audit/2026-08-08-worksgood-system/23-evaluation-evolvability-cutover.md)
 - [`21-agency-federation-safety-synthesis.md`](21-agency-federation-safety-synthesis.md)
 
 ---
@@ -383,7 +383,7 @@ WorksGood has real cryptographic and enforcement machinery: self-certifying prin
 - [`14-federation-identity-security.md`](14-federation-identity-security.md)
 - [`15-review-exec-pilot.md`](15-review-exec-pilot.md)
 - [`21-agency-federation-safety-synthesis.md`](21-agency-federation-safety-synthesis.md)
-- Register [`30` §3.4](30-contradiction-and-drift-register.md#34-federation-review-execution-federation-and-pilot)
+- Register [`30` §3.4](../../../audit/2026-08-08-worksgood-system/30-contradiction-and-drift-register.md#34-federation-review-execution-federation-and-pilot)
 
 ---
 
@@ -434,7 +434,7 @@ The documentation problem is broken authority composition, not lack of prose. Th
 
 ### Findings
 
-1. **`[OBSERVED FACT — snapshot-bounded]`** Audit 16 counted 555 docs Markdown files and 56 root Markdown files; the later sync-plan checkout counted 619 files below `docs/`, 570 Markdown. Counts changed as audits landed; the structural fact is absence of an estate/claim/decision/glossary registry (`16` §2.1; [`31` §1](31-documentation-sync-plan.md#1-executive-abstract)).
+1. **`[OBSERVED FACT — snapshot-bounded]`** Audit 16 counted 555 docs Markdown files and 56 root Markdown files; the later sync-plan checkout counted 619 files below `docs/`, 570 Markdown. Counts changed as audits landed; the structural fact is absence of an estate/claim/decision/glossary registry (`16` §2.1; [`31` §1](../../../audit/2026-08-08-worksgood-system/31-documentation-sync-plan.md#1-executive-abstract)).
 2. **`[OBSERVED FACT — current]`** `docs/KEY_DOCS.md` calls itself canonical and dated, but is a curated router, not a complete estate index. `COMMANDS.md` similarly does not cover the current help surface (`docs/KEY_DOCS.md:1-16`; `16` `DOC-001/005`).
 3. **`[CONTRADICTION — source graph]`** Manual README calls unified Typst authoritative while the sync script treats chapter Typst as source, concatenates Markdown, and can copy raw Typst to `.md` when conversion fails (`docs/manual/README.md:30-42`; `scripts/sync-docs.sh:1-8,66-118`).
 4. **`[OBSERVED FACT — current]`** Current designs, accepted decisions, historical reports, proposals, deterministic sparks, and shipped later slices often lack section-level status/applicability/supersession. This causes both false “current” and false “still hypothetical” readings (`WGDR-047/048`, `WGDR-R08/R09`).
@@ -462,7 +462,7 @@ The documentation problem is broken authority composition, not lack of prose. Th
 - [`16-documentation-information-architecture.md`](16-documentation-information-architecture.md)
 - [`19-conceptual-model-and-vocabulary.md`](19-conceptual-model-and-vocabulary.md)
 - [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md)
-- [`31-documentation-sync-plan.md`](31-documentation-sync-plan.md)
+- [`31-documentation-sync-plan.md`](../../../audit/2026-08-08-worksgood-system/31-documentation-sync-plan.md)
 
 ---
 
@@ -505,7 +505,7 @@ Installer collision/receipt handling, profile fail-closed behavior, secret redac
 
 - [`18-operations-configuration-ux.md`](18-operations-configuration-ux.md)
 - [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md)
-- Register [`30` §3.2](30-contradiction-and-drift-register.md#32-installation-configuration-model-plane-accounting-and-packaging)
+- Register [`30` §3.2](../../../audit/2026-08-08-worksgood-system/30-contradiction-and-drift-register.md#32-installation-configuration-model-plane-accounting-and-packaging)
 
 ---
 
@@ -572,9 +572,9 @@ The bundle deduplicates repeated leaf findings into **49 open `WGDR-*` records**
 
 ### Deeper audit artifacts
 
-- Full register: [`30-contradiction-and-drift-register.md`](30-contradiction-and-drift-register.md)
-- Evaluation migration adjudication: [`23`](23-evaluation-evolvability-cutover.md)
-- Synchronization decision queue: [`31` §4.1](31-documentation-sync-plan.md#41-decision-queue)
+- Full register: [`30-contradiction-and-drift-register.md`](../../../audit/2026-08-08-worksgood-system/30-contradiction-and-drift-register.md)
+- Evaluation migration adjudication: [`23`](../../../audit/2026-08-08-worksgood-system/23-evaluation-evolvability-cutover.md)
+- Synchronization decision queue: [`31` §4.1](../../../audit/2026-08-08-worksgood-system/31-documentation-sync-plan.md#41-decision-queue)
 
 ---
 
@@ -643,11 +643,11 @@ The roadmap is a dependency-ordered integrity program, not a doc cleanup. First 
 
 ### Deeper audit artifacts
 
-- Full phased plan and decision queue: [`31-documentation-sync-plan.md`](31-documentation-sync-plan.md)
+- Full phased plan and decision queue: [`31-documentation-sync-plan.md`](../../../audit/2026-08-08-worksgood-system/31-documentation-sync-plan.md)
 - Ranked core actions: [`20` §6](20-core-runtime-synthesis.md#6-recommendations)
 - Trust/safety actions: [`21` §6](21-agency-federation-safety-synthesis.md#6-recommendations)
 - Product actions: [`22` §6](22-product-docs-quality-synthesis.md#6-ranked-recommendations)
-- Learning representation/acceptance: [`23` §6](23-evaluation-evolvability-cutover.md#6-recommendations-and-human-decisions)
+- Learning representation/acceptance: [`23` §6](../../../audit/2026-08-08-worksgood-system/23-evaluation-evolvability-cutover.md#6-recommendations-and-human-decisions)
 
 ---
 
@@ -662,7 +662,7 @@ This section is the deepest layer: it maps every audit artifact from `10-*.md` t
 | Artifact | Contribution used in this draft | Main destinations |
 |---|---|---|
 | [`10-code-architecture.md`](10-code-architecture.md) | package/binary map, persistence, duplicate authorities, guardrails, config/read-model boundaries | §§4–5 |
-| [`11-orchestration-lifecycle.md`](11-orchestration-lifecycle.md) | lifecycle sequences, claim bypass, spawn transaction, completion generations, daemon blocking, rejection feedback | §5 and executive priorities |
+| [`11-orchestration-lifecycle.md`](../../../audit/2026-08-08-worksgood-system/11-orchestration-lifecycle.md) | lifecycle sequences, claim bypass, spawn transaction, completion generations, daemon blocking, rejection feedback | §5 and executive priorities |
 | [`12-model-execution-plane.md`](12-model-execution-plane.md) | route/surface matrix, Pi topologies, streams/watchdog/accounting, setup drift | §6 |
 | [`13-agency-evaluation-chat.md`](13-agency-evaluation-chat.md) | persona hash, assignment reachability, legacy learning, functions, chat/memory, human authority | §7 |
 | [`14-federation-identity-security.md`](14-federation-identity-security.md) | cryptography, custody, recovery, transport, compatibility, freshness, delegation, state safety | §8 |
@@ -674,9 +674,9 @@ This section is the deepest layer: it maps every audit artifact from `10-*.md` t
 | [`20-core-runtime-synthesis.md`](20-core-runtime-synthesis.md) | reconciled architecture/orchestration/model findings; corrected Pi-accounting cause | §§1, 4–6 |
 | [`21-agency-federation-safety-synthesis.md`](21-agency-federation-safety-synthesis.md) | typed authority vector and cross-plane seam risks | §§1, 7–8 |
 | [`22-product-docs-quality-synthesis.md`](22-product-docs-quality-synthesis.md) | product contract, operator journey, evidence activation, docs/testing/UX priorities | §§1, 3, 9–11 |
-| [`23-evaluation-evolvability-cutover.md`](23-evaluation-evolvability-cutover.md) | historical cutover, receipt lineage, live 12-task observation, target ledger/projector design | §7 and roadmap |
-| [`30-contradiction-and-drift-register.md`](30-contradiction-and-drift-register.md) | 49-item deduplication, S1 primary checks, terminology/resolved/uncertainty registers | §12 and all risk adjudication |
-| [`31-documentation-sync-plan.md`](31-documentation-sync-plan.md) | authority hierarchy, five registries, six phases, decision queue, rollback/release gates | §13 |
+| [`23-evaluation-evolvability-cutover.md`](../../../audit/2026-08-08-worksgood-system/23-evaluation-evolvability-cutover.md) | historical cutover, receipt lineage, live 12-task observation, target ledger/projector design | §7 and roadmap |
+| [`30-contradiction-and-drift-register.md`](../../../audit/2026-08-08-worksgood-system/30-contradiction-and-drift-register.md) | 49-item deduplication, S1 primary checks, terminology/resolved/uncertainty registers | §12 and all risk adjudication |
+| [`31-documentation-sync-plan.md`](../../../audit/2026-08-08-worksgood-system/31-documentation-sync-plan.md) | authority hierarchy, five registries, six phases, decision queue, rollback/release gates | §13 |
 
 **Completeness note:** there are no `24-*.md` through `29-*.md` artifacts in this bundle; the table covers every existing numbered artifact in the requested `10`–`31` range.
 
@@ -763,6 +763,6 @@ git diff --check
 
 ### Deeper audit artifacts
 
-The artifact coverage matrix above links every leaf and synthesis. For line-level transcripts, use each leaf's §7 evidence appendix; for deduplicated adjudication use [`30`](30-contradiction-and-drift-register.md); for implementation/documentation dependency order use [`31`](31-documentation-sync-plan.md).
+The artifact coverage matrix above links every leaf and synthesis. For line-level transcripts, use each leaf's §7 evidence appendix; for deduplicated adjudication use [`30`](../../../audit/2026-08-08-worksgood-system/30-contradiction-and-drift-register.md); for implementation/documentation dependency order use [`31`](../../../audit/2026-08-08-worksgood-system/31-documentation-sync-plan.md).
 
 **Final caution:** This is a review draft. Recommendations, target registries, authority hierarchy, and maturity wording remain proposed until downstream independent review and final synthesis adjudicate them. The draft's factual claims remain scoped to the cited repository revision, source spans, commands, and inherited evidence.

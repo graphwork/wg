@@ -12,7 +12,7 @@
 
 **Status:** independent audit review; no production source, tests, or pre-existing documentation changed
 
-**Normative method:** [`README.md`](README.md)
+**Normative method:** [`README.md`](../../../audit/2026-08-08-worksgood-system/README.md)
 
 ## 1. Executive abstract
 
