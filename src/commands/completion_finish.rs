@@ -32,7 +32,13 @@ impl Drop for TempFiles {
     }
 }
 
-pub fn run(dir: &Path, id: &str, integration_ref: &str, optional_checks: &[String]) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    id: &str,
+    integration_ref: &str,
+    optional_checks: &[String],
+    full_smoke: bool,
+) -> Result<()> {
     let cwd = std::env::current_dir().context("determine worker worktree")?;
     run_at_with_smoke_and_checks(
         dir,
@@ -41,6 +47,7 @@ pub fn run(dir: &Path, id: &str, integration_ref: &str, optional_checks: &[Strin
         &cwd,
         std::env::var_os("WG_AGENT_ID").is_some(),
         optional_checks,
+        full_smoke,
     )
 }
 
@@ -51,9 +58,12 @@ pub(crate) fn run_at_with_smoke(
     cwd: &Path,
     is_agent: bool,
 ) -> Result<()> {
-    run_at_with_smoke_and_checks(dir, id, integration_ref, cwd, is_agent, &[])
+    run_at_with_smoke_and_checks(dir, id, integration_ref, cwd, is_agent, &[], false)
 }
 
+/// `full_smoke` is the deliberate whole-corpus run (`wg done --full-smoke`): it
+/// selects every manifest scenario, INCLUDING retired ones (whose scripts are
+/// preserved under `tests/smoke/archive/`). Retirement never narrows this path.
 pub(crate) fn run_at_with_smoke_and_checks(
     dir: &Path,
     id: &str,
@@ -61,6 +71,7 @@ pub(crate) fn run_at_with_smoke_and_checks(
     cwd: &Path,
     is_agent: bool,
     optional_checks: &[String],
+    full_smoke: bool,
 ) -> Result<()> {
     let task = load_graph(dir.join("graph.jsonl"))?
         .get_task(id)
@@ -74,7 +85,13 @@ pub(crate) fn run_at_with_smoke_and_checks(
                 smoke_manifest_path.display()
             )
         })?;
-    if smoke_manifest.scenarios_for_task(id).is_empty() {
+    // Run the gate when there is anything to run, and also when the task owns
+    // only retired scenarios — the gate then prints the loud retirement note
+    // instead of silently narrowing coverage. `--full-smoke` always runs.
+    if !full_smoke
+        && smoke_manifest.scenarios_for_task(id).is_empty()
+        && smoke_manifest.retired_scenarios_for_task(id).is_empty()
+    {
         return run_at_with_checks(dir, id, integration_ref, cwd, optional_checks);
     }
     let captured = capture_validation_operation(
@@ -83,7 +100,10 @@ pub(crate) fn run_at_with_smoke_and_checks(
         u32::MAX,
         ValidationPurpose::Configured,
         cwd,
-        || super::done::run_smoke_gate(dir, id, false, false, is_agent).map_err(|e| e.to_string()),
+        || {
+            super::done::run_smoke_gate(dir, id, full_smoke, false, is_agent)
+                .map_err(|e| e.to_string())
+        },
     )
     .context("capture owned smoke gate")?;
     if !captured.exit.success {

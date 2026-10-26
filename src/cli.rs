@@ -548,7 +548,8 @@ pub enum Commands {
         ignore_unmerged_worktree: bool,
 
         /// Run every scenario in the smoke manifest, not just those owned by
-        /// this task. Use before merging high-impact changes.
+        /// this task — including scenarios retired to tests/smoke/archive/
+        /// (`retired = true`), which the default gate never runs.
         #[arg(long = "full-smoke")]
         full_smoke: bool,
 

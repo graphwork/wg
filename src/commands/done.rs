@@ -1525,7 +1525,11 @@ fn check_agent_git_hygiene(dir: &Path, task_id: &str, tags: &[String]) {
 ///
 /// `--skip-smoke` skips the gate entirely; agents are refused the escape
 /// hatch unless `WG_SMOKE_AGENT_OVERRIDE=1` is also set in the environment.
-/// `--full-smoke` runs every scenario in the manifest, ignoring ownership.
+/// `--full-smoke` runs every scenario in the manifest, ignoring ownership AND
+/// including retired scenarios (`retired = true`, scripts archived under
+/// `tests/smoke/archive/`). The default gate never runs a retired scenario even
+/// when the task still owns it, and reports the skip loudly so retirement never
+/// narrows coverage silently.
 pub(crate) fn run_smoke_gate(
     dir: &Path,
     id: &str,
@@ -1554,13 +1558,44 @@ pub(crate) fn run_smoke_gate(
         .with_context(|| format!("loading smoke manifest from {}", manifest_path.display()))?;
 
     let scenarios: Vec<_> = if full_smoke {
-        manifest.scenarios.iter().collect()
+        // `--full-smoke` is the deliberate whole-corpus runner: it opts retired
+        // scenarios back in (their scripts are preserved under
+        // `tests/smoke/archive/`, never deleted).
+        manifest.all_scenarios()
     } else {
         manifest.scenarios_for_task(id)
     };
 
+    // Retirement narrows the DEFAULT gate only. Never narrow it silently: name
+    // what was skipped and how to opt it back in.
+    let retired_owned = manifest.retired_scenarios_for_task(id);
+    if !full_smoke && !retired_owned.is_empty() {
+        eprintln!(
+            "Smoke gate: {} retired scenario(s) owned by '{}' skipped — {}\n\
+             Retired scenarios are preserved (scripts under tests/smoke/archive/, manifest entries intact). \
+             Run `wg done {} --full-smoke` to include them.",
+            retired_owned.len(),
+            id,
+            retired_owned
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            id
+        );
+    }
+    if full_smoke {
+        let retired = manifest.retired_scenarios();
+        if !retired.is_empty() {
+            eprintln!(
+                "Smoke gate: --full-smoke opted {} retired scenario(s) back in (archived under tests/smoke/archive/).",
+                retired.len()
+            );
+        }
+    }
+
     if scenarios.is_empty() {
-        // No scenarios owned by this task and no --full-smoke. Quiet no-op.
+        // No runnable scenarios for this task and no --full-smoke. Quiet no-op.
         return Ok(());
     }
 

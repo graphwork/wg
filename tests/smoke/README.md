@@ -10,8 +10,9 @@ set of shell scripts. The manifest is the regression contract for `wg done`:
 
 1. Loads `tests/smoke/manifest.toml` (path overridable with
    `WG_SMOKE_MANIFEST=...`).
-2. Selects scenarios whose `owners = [...]` list contains the task id, OR
-   every scenario when `--full-smoke` is passed.
+2. Selects scenarios whose `owners = [...]` list contains the task id **and
+   whose `retired` flag is not set**, OR every scenario (retired included) when
+   `--full-smoke` is passed.
 3. Runs each selected scenario with `bash <script>`.
 4. Inspects the exit code:
    * **0** → PASS
@@ -31,7 +32,9 @@ understand why a particular scenario is not load-bearing for their change.
 ## Adding a scenario (this is grow-only)
 
 Every regression that should have been caught by smoke gets a permanent
-scenario here. Do not delete entries; extend.
+scenario here. Do not delete entries; extend. A scenario whose subject is a
+handler or demo plane the daily flow no longer enters gets **retired**, not
+deleted (see below).
 
 1. Drop a script under `tests/smoke/scenarios/<name>.sh` that exits
    0/77/non-zero per the contract above.
@@ -98,6 +101,38 @@ success/assertion/timeout/SIGINT/SIGTERM paths, repetition baseline, a
 registered child that erases its environment, an unrelated concurrent `pi`
 survivor, and a concurrently healthy owned scenario that a stale-record sweep
 must not terminate).
+
+## Retirement (`retired = true`) — archive, never delete
+
+Smoke is not in CI, and by ownership design a scenario almost never re-runs
+once the task that owns it is done. Scenarios that pin a handler chain or demo
+plane the daily flow never enters (`claude` / `codex` / `nex` / `native` /
+`opencode` worker routes, or the WG-Fed / WG-Review / WG-Exec / pilot sparks)
+are **retired** rather than left to bloat the full-run wall:
+
+```toml
+[[scenario]]
+name = "nex_live_input_pty"
+script = "archive/nex_live_input_pty.sh"   # moved, not deleted
+owners = ["fix-wg-nex"]                    # kept: provenance for --full-smoke
+retired = true
+retired_reason = "pins a nex PTY route the daily pi flow never enters — docs reduction-plan C1.2"
+```
+
+Contract:
+
+* `wg done <task>` **never runs** a retired scenario, even when the task id is
+  still listed in its `owners`. The skip is reported loudly with the scenario
+  names and the opt-in command — retirement never narrows the gate silently.
+* `wg done <task> --full-smoke` **opts the retired corpus back in** (it runs
+  every manifest entry, retired included).
+* The script **moves** to `tests/smoke/archive/` (same directory depth, so
+  `$HERE/..`-relative paths keep resolving; `archive/_helpers.sh` forwards to
+  `scenarios/_helpers.sh`), the manifest entry and its `owners` stay, and the
+  scenario is still git-tracked. See `tests/smoke/archive/README.md` for the
+  full policy, the retired list, and what was deliberately kept.
+
+The retirement mechanism is pinned by `smoke_manifest_retired_scenarios`.
 
 ## Live, not stubs
 

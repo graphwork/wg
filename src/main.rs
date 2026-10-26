@@ -1387,13 +1387,22 @@ fn main() -> Result<()> {
                 if reason.is_some() {
                     anyhow::bail!("--reason requires --operator-accept");
                 }
-                if converged || skip_verify || ignore_unmerged_worktree || full_smoke || skip_smoke
-                {
+                // `--full-smoke` is NOT a completion bypass: it is a STRONGER
+                // gate (run every manifest scenario, retired included), so it
+                // stays available on the publication-derived path. The true
+                // bypass/merge/cycle flags remain refused.
+                if converged || skip_verify || ignore_unmerged_worktree || skip_smoke {
                     anyhow::bail!(
                         "legacy wg done bypass/merge/cycle flags are not supported by publication-derived completion; use --operator-accept --reason <WHY> for an attributed human recovery"
                     );
                 }
-                commands::completion_finish::run(&workgraph_dir, &id, "refs/heads/main", &checks)
+                commands::completion_finish::run(
+                    &workgraph_dir,
+                    &id,
+                    "refs/heads/main",
+                    &checks,
+                    full_smoke,
+                )
             }
         }
         Commands::CompletionObject {

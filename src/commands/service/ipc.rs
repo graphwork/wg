@@ -1255,6 +1255,7 @@ fn execute_worker_operation(
                     std::path::Path::new(&binding.worktree_path),
                     true,
                     &optional_checks,
+                    false,
                 )?;
                 Ok(serde_json::json!({"handoff": "done", "derived": true}))
             }
