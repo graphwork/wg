@@ -25,10 +25,16 @@ if ! wg init -m pi:test:fake >init.log 2>&1; then
     loud_fail "wg init failed during smoke setup: $(tail -10 init.log)"
 fi
 
-# Create three tasks and claim each with a distinct (fake) actor.
+# Create three tasks, release each draft, and claim each with a distinct
+# (fake) actor. `wg add` stages a PAUSED draft (a task the coordinator will
+# never dispatch), so the fixture must `wg publish` it before the task is
+# claimable/ready — that publish step is fixture setup, not the subject.
 for id in alpha beta gamma; do
     if ! wg add "Task $id" --id "task-$id" -d "smoke" >>add.log 2>&1; then
         loud_fail "wg add failed for task-$id: $(tail -5 add.log)"
+    fi
+    if ! wg publish "task-$id" --only >>publish.log 2>&1; then
+        loud_fail "wg publish failed for task-$id: $(tail -5 publish.log)"
     fi
     if ! wg claim "task-$id" --actor "agent-dead-$id" >>claim.log 2>&1; then
         loud_fail "wg claim failed for task-$id: $(tail -5 claim.log)"

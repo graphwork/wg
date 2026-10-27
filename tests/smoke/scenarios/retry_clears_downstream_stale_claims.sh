@@ -32,12 +32,21 @@ if ! wg init -m pi:test:fake >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -10 init.log)"
 fi
 
-# Build the chain: upstream → downstream
+# Build the chain: upstream → downstream. The edge is wired after both
+# claims because `wg claim` now refuses a task whose prerequisite is not
+# done, and this fixture needs a stale downstream claim to survive until
+# `wg retry upstream` runs.
 if ! wg add "Upstream task" --id upstream -d "smoke" >>add.log 2>&1; then
     loud_fail "wg add upstream failed: $(tail -5 add.log)"
 fi
-if ! wg add "Downstream task" --id downstream --after upstream -d "smoke" >>add.log 2>&1; then
+if ! wg publish upstream --only >>publish.log 2>&1; then
+    loud_fail "wg publish upstream failed: $(tail -5 publish.log)"
+fi
+if ! wg add "Downstream task" --id downstream -d "smoke" >>add.log 2>&1; then
     loud_fail "wg add downstream failed: $(tail -5 add.log)"
+fi
+if ! wg publish downstream --only >>publish.log 2>&1; then
+    loud_fail "wg publish downstream failed: $(tail -5 publish.log)"
 fi
 
 # Claim each with a fake actor (no live agent exists for these IDs, so
@@ -47,6 +56,9 @@ if ! wg claim upstream --actor agent-dead-up >>claim.log 2>&1; then
 fi
 if ! wg claim downstream --actor agent-dead-down >>claim.log 2>&1; then
     loud_fail "wg claim downstream failed: $(tail -5 claim.log)"
+fi
+if ! wg edit downstream --add-after upstream >>edit.log 2>&1; then
+    loud_fail "wg edit downstream --add-after upstream failed: $(tail -5 edit.log)"
 fi
 
 # Mark upstream Failed via wg fail so the retry path is exercised.

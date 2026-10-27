@@ -37,6 +37,16 @@ require_wg
 scratch=$(make_scratch)
 cd "$scratch"
 
+# `wg done` now binds its validation evidence to the project's git repo, and
+# the dispatch/worktree paths refuse to run outside one. The fixture needs a
+# committed repository before `wg init`, not just a directory.
+git init -q -b main . || loud_fail "git init failed in $scratch"
+git config user.email "smoke@test" >/dev/null
+git config user.name "Smoke" >/dev/null
+echo fixture >README.md
+git add README.md >/dev/null
+git commit -qm "fixture base" >/dev/null || loud_fail "git initial commit failed"
+
 # Credential-free pi fixture route: `wg chat create`/`create-chat` needs a
 # selected execution route, but this scenario never makes a model call.
 if ! wg init -m pi:test:fake >init.log 2>&1; then
@@ -74,11 +84,17 @@ fi
 
 # Run wg done. This is the synchronous reactivation path. With the bug,
 # the task would be re-Opened in microseconds and loop_iteration bumped.
-if ! wg done "$chat_id" >done.log 2>&1; then
+# Completion now runs the deterministic completion contract first, and this
+# fixture deliberately has no attempt-bound validation evidence, so the
+# attested operator-accept path is the supported completion witness here —
+# the subject under test is cycle reactivation, not the contract.
+if ! wg done "$chat_id" --operator-accept \
+    --reason "smoke: idle chat completion witness" >done.log 2>&1; then
     # `wg done` may refuse if the task is in_progress with no agent; allow
     # via stop-chat first to put it in a clean done-able state.
     wg service stop-chat "${chat_id##.chat-}" >stop.log 2>&1 || true
-    if ! wg done "$chat_id" >done.log 2>&1; then
+    if ! wg done "$chat_id" --operator-accept \
+        --reason "smoke: idle chat completion witness" >done.log 2>&1; then
         loud_fail "wg done $chat_id failed: $(tail -10 done.log)"
     fi
 fi

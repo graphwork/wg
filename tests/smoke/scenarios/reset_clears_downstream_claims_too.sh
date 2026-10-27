@@ -33,12 +33,20 @@ if ! wg init -m pi:test:fake >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -10 init.log)"
 fi
 
-# Build chain.
+# Build chain. Dependency edges are wired AFTER both tasks are claimed:
+# `wg claim` now refuses a task whose prerequisite is not done, and this
+# fixture deliberately wants both ends claimed by dead agents at once.
 if ! wg add "Upstream" --id upstream -d "smoke" >>add.log 2>&1; then
     loud_fail "wg add upstream failed: $(tail -5 add.log)"
 fi
-if ! wg add "Downstream" --id downstream --after upstream -d "smoke" >>add.log 2>&1; then
+if ! wg publish upstream --only >>publish.log 2>&1; then
+    loud_fail "wg publish upstream failed: $(tail -5 publish.log)"
+fi
+if ! wg add "Downstream" --id downstream -d "smoke" >>add.log 2>&1; then
     loud_fail "wg add downstream failed: $(tail -5 add.log)"
+fi
+if ! wg publish downstream --only >>publish.log 2>&1; then
+    loud_fail "wg publish downstream failed: $(tail -5 publish.log)"
 fi
 
 # Claim both — wg claim flips status to InProgress and stamps assigned.
@@ -47,6 +55,9 @@ if ! wg claim upstream --actor agent-dead-up >>claim.log 2>&1; then
 fi
 if ! wg claim downstream --actor agent-dead-down >>claim.log 2>&1; then
     loud_fail "wg claim downstream failed: $(tail -5 claim.log)"
+fi
+if ! wg edit downstream --add-after upstream >>edit.log 2>&1; then
+    loud_fail "wg edit downstream --add-after upstream failed: $(tail -5 edit.log)"
 fi
 
 # Sanity.

@@ -164,6 +164,20 @@ EOF
 wg retry hung-task-b --reason "smoke test" >retry.log 2>&1 \
     || loud_fail "wg retry failed: $(cat retry.log)"
 
+# `wg retry` is two-phase: the first invocation fences the task and asks the
+# exact prior owner to exit (SIGTERM); the reopen only becomes runnable on a
+# later reconcile pass, once the owner is provably gone. Re-invoking is
+# idempotent (it coalesces onto the same reopen intent) and runs that pass,
+# so drive it until the hold releases instead of asserting a one-shot flip.
+for _ in $(seq 1 40); do
+    status_now=$(wg show hung-task-b 2>/dev/null | grep -E "^Status:" | head -1)
+    case "$status_now" in
+        *open*|*Open*) break ;;
+    esac
+    wg retry hung-task-b --reason "smoke test" >>retry.log 2>&1 || true
+    sleep 0.25
+done
+
 # Sleep should be killed.
 for _ in $(seq 1 30); do
     if ! kill -0 "$sleep_pid_b" 2>/dev/null; then

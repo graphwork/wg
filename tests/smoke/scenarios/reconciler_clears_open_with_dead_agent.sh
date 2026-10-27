@@ -41,6 +41,11 @@ fi
 if ! wg add "Reconciler victim" --id ready-task -d "smoke" >>add.log 2>&1; then
     loud_fail "wg add failed: $(tail -5 add.log)"
 fi
+# `wg add` stages a PAUSED draft; release it so the post-sweep `wg ready`
+# assertion measures the reconciler rather than the draft gate.
+if ! wg publish ready-task --only >>publish.log 2>&1; then
+    loud_fail "wg publish failed: $(tail -5 publish.log)"
+fi
 
 # Claim with an actor that has no live registry entry. Pre-fix the
 # reconciler ignored Open tasks entirely; post-fix it surfaces this as

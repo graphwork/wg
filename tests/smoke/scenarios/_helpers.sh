@@ -86,6 +86,59 @@ loud_fail() {
     exit 1
 }
 
+# ── Expected-failure wrapper ────────────────────────────────────────
+# The central traps installed by this file below abort a scenario on ANY
+# failing command (ERR fires on the command itself, not just under `set -e`).
+# A scenario whose subject is a REFUSAL — `wg done` rejecting a missing
+# deliverable, an unregistered route being blocked, a stale claim being
+# rejected — therefore has to say so explicitly, or its own subject kills the
+# fixture. `wg_expect_fail` is that sanctioned spelling:
+#
+#   wg_expect_fail env WG_WORKTREE_PATH="$p" wg --dir "$d" done t --skip-smoke
+#   grep -q 'refused' "$WG_EXPECT_FAIL_OUTPUT"
+#
+# It runs the command with the ERR trap (and `errexit`) suspended, so a
+# refusal is DATA rather than a scenario failure, then records:
+#   $WG_EXPECT_FAIL_RC     — exit status the command actually returned
+#   $WG_EXPECT_FAIL_OUTPUT — combined capture (stdout lines, then stderr)
+#   $WG_EXPECT_FAIL_STDERR — stderr only
+# It FAILS the scenario loudly when the command unexpectedly SUCCEEDS, because
+# that means the refusal under test stopped refusing. Callers keep the normal
+# trap semantics afterwards, so an assertion that follows still aborts on a
+# failing `grep`.
+WG_EXPECT_FAIL_RC=0
+WG_EXPECT_FAIL_OUTPUT=""
+WG_EXPECT_FAIL_STDERR=""
+wg_expect_fail() {
+    if [[ $# -eq 0 ]]; then
+        loud_fail "wg_expect_fail needs a command to run"
+    fi
+    local capture_dir="${WG_SMOKE_REGISTRY_DIR:-${TMPDIR:-/tmp}}"
+    local out err saved_err_trap errexit_was_set=0
+    out="$(mktemp "$capture_dir/expect-fail.out.XXXXXX")" \
+        || loud_fail "wg_expect_fail could not create a capture file"
+    err="$(mktemp "$capture_dir/expect-fail.err.XXXXXX")" \
+        || loud_fail "wg_expect_fail could not create a capture file"
+    case "$-" in *e*) errexit_was_set=1 ;; esac
+    # Suspend only for the command under test; the exact prior trap is restored
+    # so later assertions keep the strict semantics this file guarantees.
+    saved_err_trap="$(trap -p ERR)"
+    trap - ERR
+    set +e
+    "$@" >"$out" 2>"$err"
+    WG_EXPECT_FAIL_RC=$?
+    if [[ $errexit_was_set -eq 1 ]]; then
+        set -e
+    fi
+    eval "$saved_err_trap"
+    WG_EXPECT_FAIL_OUTPUT="$(cat "$out" "$err")"
+    WG_EXPECT_FAIL_STDERR="$(cat "$err")"
+    if [[ $WG_EXPECT_FAIL_RC -eq 0 ]]; then
+        loud_fail "'$*' was expected to fail but exited 0 — the refusal under test no longer refuses.\noutput:\n$WG_EXPECT_FAIL_OUTPUT"
+    fi
+    return 0
+}
+
 _wg_smoke_procfs_ready() {
     [[ -d /proc && -x /proc && -r /proc/self/stat && -r /proc/self/environ ]]
 }

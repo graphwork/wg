@@ -175,13 +175,24 @@ PY
 
 # Direct review/agency calls share the hermetic capability barrier rather than
 # reaching Pi and discovering the unsupported provider during a model call.
+# The review gate lives behind the non-default `federation` cargo feature, so
+# this leg only runs when the cluster is compiled in (a default build has no
+# `wg review` verb at all). The route-authority assertions above are the
+# scenario's subject and never depend on it.
 printf 'ordinary reviewed content\n' >"$scratch/review-input.txt"
-WG_REVIEW_MODEL=1 run_wg review check \
-  --class IC1 --trust verified --author local:test --sensitivity high \
-  --content-file "$scratch/review-input.txt" \
-  >"$scratch/review.out" 2>"$scratch/review.err" || true
-grep -q 'WG-PI-PROVIDER-UNSUPPORTED' "$scratch/review.err"
-grep -q 'review-unavailable' "$scratch/review.out"
+if run_wg review --help >/dev/null 2>&1; then
+  # The refusal is the assertion, so it must not trip the helper ERR trap.
+  wg_expect_fail env WG_REVIEW_MODEL=1 \
+    HOME="$home" WG_GLOBAL_DIR="$global" wg --dir "$graph" review check \
+    --class IC1 --trust verified --author local:test --sensitivity high \
+    --content-file "$scratch/review-input.txt"
+  printf '%s\n' "$WG_EXPECT_FAIL_OUTPUT" >"$scratch/review.out"
+  printf '%s\n' "$WG_EXPECT_FAIL_STDERR" >"$scratch/review.err"
+  grep -q 'WG-PI-PROVIDER-UNSUPPORTED' "$scratch/review.err"
+  grep -q 'review-unavailable' "$scratch/review.out"
+else
+  echo "SKIP (review leg): 'wg review' is not compiled into this binary — the WG-Review cluster is behind the non-default 'federation' feature"
+fi
 run_wg service stop --force >/dev/null
 
 # Exercise the supported reset-to-inherit surface. This edits the existing Pi
