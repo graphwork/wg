@@ -314,12 +314,16 @@ scripts/gen-key-docs.py   # renders docs/KEY_DOCS.md + the census/archive pointe
   generator loudly instead of silently rotting.
 - `scripts/gen-key-docs.py --check` re-renders and fails on drift, so a doc
   added without being registered is a one-command `--check` away from being
-  noticed (CI can wire this exactly like the `pi-worksgood` embed-staleness job).
+  noticed. It is wired into CI as the **`docs/KEY_DOCS.md is current`** job
+  (`.github/workflows/ci.yml`), exactly like the `pi-worksgood` embed-staleness
+  job: the job runs `--check`, so a stale index fails the build with the drift
+  diff instead of rotting silently.
 - The census is live from `git ls-files` (index state), so **run the generator in
   the same commit that adds, moves, or archives a doc** — `git add` first, then
   `scripts/gen-key-docs.py`, then commit both. Forgetting is caught, not
-  punished: `tests/smoke/scenarios/doc_archive_policy.sh` fails the
-  `doc-archive-policy` smoke gate with the exact drift diff.
+  punished: the `docs/KEY_DOCS.md is current` CI job and
+  `tests/smoke/scenarios/doc_archive_policy.sh` both run the same `--check` and
+  fail with the exact drift diff.
 
 ## 10. Restoring a doc
 

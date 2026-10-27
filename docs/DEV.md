@@ -25,6 +25,29 @@ typst compile docs/manual/wg-manual.typ   # rebuild manual PDF
 typst compile docs/research/organizational-patterns.typ  # rebuild org patterns PDF
 ```
 
+## Documentation index: `docs/KEY_DOCS.md` is generated
+
+`docs/KEY_DOCS.md` is **not hand-maintained** — it is rendered from the curated
+`docs/key-docs.tsv` (`zone`, `path`, `purpose`, `audience`) by
+`scripts/gen-key-docs.py`, with a live per-directory census at the end. Policy:
+`docs/archive/POLICY.md` §9.
+
+The census reads `git ls-files`, so **run the generator in the same commit that
+adds, moves, registers, or archives a doc**:
+
+```bash
+git add docs/... docs/key-docs.tsv   # stage first: the census reads the index
+scripts/gen-key-docs.py              # rewrite docs/KEY_DOCS.md
+scripts/gen-key-docs.py --check      # exit 0 when current; exit 1 + drift diff when not
+```
+
+Forgetting is caught, not punished: the `docs/KEY_DOCS.md is current` CI job runs
+`--check` and fails with the drift diff, and
+`tests/smoke/scenarios/doc_archive_policy.sh` runs the same check in the
+`doc-archive-policy` smoke gate. Move or archive a doc without touching the TSV
+and the generator itself fails loudly on the now-missing path. Never hand-edit
+`docs/KEY_DOCS.md`.
+
 ## Documentation: Typst → Markdown
 
 **Typst (.typ) files are the ground truth.** Markdown versions exist for developers who prefer .md and for the website. Keep them in sync.

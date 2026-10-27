@@ -200,6 +200,28 @@ jobs:
           git diff --exit-code worksgood-pi/embedded worksgood-pi/src/version.ts \
             || { echo "::error::worksgood-pi/embedded is stale — run \`make embed-worksgood-pi\` and commit the result"; exit 1; }
 
+  # Anti-drift gate for the generated documentation index, modelled on the
+  # `Embed staleness gate` above. docs/KEY_DOCS.md is rendered from the curated
+  # docs/key-docs.tsv by scripts/gen-key-docs.py (docs/archive/POLICY.md §9).
+  # The hand-maintained predecessor went stale on 2026-04-29 and stayed stale
+  # through an entire feature wave, so a doc/TSV move that forgets to
+  # regenerate the index fails here with the exact drift diff.
+  docs-key-docs:
+    name: docs/KEY_DOCS.md is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `--check` re-renders from docs/key-docs.tsv + `git ls-files` and writes a
+      # unified diff to stderr before exiting 1, so the drift is in the job log.
+      # python3 comes from the runner image; the generator is stdlib-only.
+      - name: KEY_DOCS drift gate
+        run: |
+          scripts/gen-key-docs.py --check || {
+            echo '::error file=docs/KEY_DOCS.md::docs/KEY_DOCS.md is stale — run scripts/gen-key-docs.py and commit the regenerated file in the same commit as the doc move (drift diff above)'
+            exit 1
+          }
+
   nightly:
     name: Build & Test (nightly)
     runs-on: ubuntu-latest
