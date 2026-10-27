@@ -9,12 +9,12 @@
 #
 # This scenario verifies, against the real `wg` binary, that:
 #
-#   1. `wg setup --scope global --route claude-cli --yes` writes ONLY the
+#   1. `wg setup --scope global --route pi --model pi:test:fake --yes` writes ONLY the
 #      global config (~/.wg/config.toml) and leaves the cwd's .wg
 #      untouched.
-#   2. `wg setup --scope local --route claude-cli --yes` writes ONLY the
+#   2. `wg setup --scope local --route pi --model pi:test:fake --yes` writes ONLY the
 #      local config (./.wg/config.toml) and leaves ~/.wg untouched.
-#   3. `wg setup --scope both --route claude-cli --yes` writes BOTH paths.
+#   3. `wg setup --scope both --route pi --model pi:test:fake --yes` writes BOTH paths.
 #   4. `wg setup --scope garbage --yes` refuses with an error mentioning
 #      the valid values.
 #   5. The summary screen prints "Will write N keys" + "Will NOT write
@@ -38,11 +38,11 @@ proj1="$scratch/proj1"
 mkdir -p "$proj1"
 (
     cd "$proj1"
-    if ! wg setup --scope global --route claude-cli --yes >"$scratch/scope1.log" 2>&1; then
+    if ! wg setup --scope global --route pi --model pi:test:fake --yes >"$scratch/scope1.log" 2>&1; then
         cat "$scratch/scope1.log" 1>&2
         exit 1
     fi
-) || loud_fail "wg setup --scope global --route claude-cli --yes failed: $(tail -10 "$scratch/scope1.log")"
+) || loud_fail "wg setup --scope global --route pi --model pi:test:fake --yes failed: $(tail -10 "$scratch/scope1.log")"
 
 if [[ ! -f "$fake_home/.wg/config.toml" ]]; then
     loud_fail "expected $fake_home/.wg/config.toml after --scope global, got: $(ls "$fake_home")"
@@ -66,11 +66,11 @@ proj2="$scratch/proj2"
 mkdir -p "$proj2"
 (
     cd "$proj2"
-    if ! wg setup --scope local --route claude-cli --yes >"$scratch/scope2.log" 2>&1; then
+    if ! wg setup --scope local --route pi --model pi:test:fake --yes >"$scratch/scope2.log" 2>&1; then
         cat "$scratch/scope2.log" 1>&2
         exit 1
     fi
-) || loud_fail "wg setup --scope local --route claude-cli --yes failed: $(tail -10 "$scratch/scope2.log")"
+) || loud_fail "wg setup --scope local --route pi --model pi:test:fake --yes failed: $(tail -10 "$scratch/scope2.log")"
 
 if [[ ! -f "$proj2/.wg/config.toml" ]]; then
     loud_fail "expected $proj2/.wg/config.toml after --scope local"
@@ -87,11 +87,11 @@ proj3="$scratch/proj3"
 mkdir -p "$proj3"
 (
     cd "$proj3"
-    if ! wg setup --scope both --route claude-cli --yes >"$scratch/scope3.log" 2>&1; then
+    if ! wg setup --scope both --route pi --model pi:test:fake --yes >"$scratch/scope3.log" 2>&1; then
         cat "$scratch/scope3.log" 1>&2
         exit 1
     fi
-) || loud_fail "wg setup --scope both --route claude-cli --yes failed: $(tail -10 "$scratch/scope3.log")"
+) || loud_fail "wg setup --scope both --route pi --model pi:test:fake --yes failed: $(tail -10 "$scratch/scope3.log")"
 
 if [[ ! -f "$fake_home/.wg/config.toml" ]]; then
     loud_fail "--scope both did NOT write global config at $fake_home/.wg/config.toml"
@@ -101,7 +101,7 @@ if [[ ! -f "$proj3/.wg/config.toml" ]]; then
 fi
 
 # ── 4. --scope garbage refuses with helpful message ──────────────────
-if wg setup --scope garbage --route claude-cli --yes >"$scratch/scope4.log" 2>&1; then
+if wg setup --scope garbage --route pi --model pi:test:fake --yes >"$scratch/scope4.log" 2>&1; then
     loud_fail "wg setup --scope garbage --yes succeeded; should have refused. Log:\n$(cat "$scratch/scope4.log")"
 fi
 if ! grep -qE "global.*local.*both|--scope" "$scratch/scope4.log"; then

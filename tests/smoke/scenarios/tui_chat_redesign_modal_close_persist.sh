@@ -69,15 +69,15 @@ cd "$scratch"
 # if the var is not set.)
 unset WG_DIR
 
-# Init with `--executor claude` so `config.coordinator.effective_executor()`
-# returns "claude" — the TUI's `maybe_auto_enable_chat_pty` reads the
+# Init with a credential-free pi route so `config.coordinator.effective_executor()`
+# returns "pi" — the TUI's `maybe_auto_enable_chat_pty` reads the
 # global config (not per-chat overrides) when deciding whether to spawn
 # a PTY pane. We need a live pane to observe the [PTY]/[CMD] modal
-# indicator. The dispatcher itself never spawns a real claude agent
-# in this test (no chat tasks are dispatched as work), so missing
-# Anthropic creds don't cause a fail.
-if ! wg init --executor claude >init.log 2>&1; then
-    loud_fail "wg init --executor claude failed: $(tail -5 init.log)"
+# indicator. The dispatcher itself never spawns a real worker agent
+# in this test (no chat tasks are dispatched as work), so missing model
+# creds don't cause a fail.
+if ! wg init -m pi:test:fake >init.log 2>&1; then
+    loud_fail "wg init -m pi:test:fake failed: $(tail -5 init.log)"
 fi
 
 graph_dir=""

@@ -134,6 +134,19 @@ Contract:
 
 The retirement mechanism is pinned by `smoke_manifest_retired_scenarios`.
 
+### Fixture routes are `pi:`, not a retired handler
+
+A scenario whose *subject* is daily-path behavior (graph, service, dispatch,
+admission, worktree, TUI, secret, profile) must not carry a `claude` / `codex` /
+`nex` route as a credential-free fixture. `wg init -m claude:opus`, `-x claude`,
+`--route claude-cli` and the bare `openrouter:` provider prefix are all rejected
+by the current binary, so such a fixture is a guaranteed FAIL rather than a
+neutral scaffold: use `wg init -m pi:test:fake` (or `--route pi`), mark graph
+fixtures `"executor": "pi"`, and write inner provider prefixes as
+`pi:openrouter:<provider>/<model>`. `port-incidental-smoke-routes` did exactly
+that for the residual fixture-route scenarios and retired the 15 that then
+passed; `archive/README.md` carries the list and the ones still on the gate.
+
 ## Live, not stubs
 
 Scenarios MUST hit real endpoints / real binaries. The original wave-1 smoke

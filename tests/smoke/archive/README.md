@@ -20,6 +20,14 @@ scripts, their `owners` provenance, and their manifest entries all survive, so
 `--full-smoke` still runs them and `git revert` restores them to the default
 path in one step.
 
+## Current counts
+
+**113 of 392** manifest entries are retired (279 stay on the default gate).
+The first wave (`archive-retired-smokes`) retired **98** (20 spark plane + 78
+non-pi handler). The second wave (`port-incidental-smoke-routes`) ported the
+residual *fixture-route* scenarios to a credential-free `pi:` route and then
+retired the **15** whose ported body passes (99 → 113).
+
 ## Why these scenarios were retired
 
 The measured daily reality of this repo is that **every worker runs on the `pi`
@@ -104,22 +112,62 @@ tui_plus_opencode_model_fuzzy worksgood_default_release_contract
 not under this directory: it points at `tests/install/release_contract.sh`,
 which is an install-harness script, so only its manifest entry is retired.
 
-## What was deliberately KEPT
+## Wave 2: the residual fixture-route scenarios (`port-incidental-smoke-routes`)
 
-Retirement filters on the scenario's **subject**, not on a raw keyword scan.
-~33 scenarios that merely *mention* or incidentally configure a non-pi handler
-as a credential-free fixture — but assert graph / service / dispatch /
-admission / worktree / TUI / secret / profile / html behavior — stay on the
-default gate. Examples: `retry_kills_in_progress_agent`, `reset_clears_claim`,
-`reaper_retry_in_place_protected`, `wg_show_retry_attempts`,
-`isolation_worktree_collision_transaction`, `tui_log_pane_renders_raw_stream`,
-`secret_keyring_round_trip`, `wg_html_*` (owned by `retire-html-renderer`).
+`archive-retired-smokes` filtered on subject and explicitly kept ~33 scenarios
+that only *mention* or incidentally configure a non-pi handler as a
+credential-free fixture. The follow-up task ported those fixtures to `pi:` and
+retired the ones that pass. **15 were ported, re-run green, and retired**:
 
-The reduction plan's "**~155**" was a raw-mention upper bound; the reviewed
-subject-based retire set is **98** (20 spark + 78 handler). The residual ~33
-fixture-route scenarios are tracked by the follow-up task
-`port-incidental-smoke-routes-to-pi`: port the assertion to a `pi:` route first,
-then retire, so no behavior coverage is lost.
+```
+automatic_archival_opt_in          automatic_archival_restart_hold
+bash_chat                          chat_last_interaction_sort
+config_load_no_stderr_spam         custom_command_chat
+dispatcher_boot_no_orphan_supervisor
+dispatcher_kick_bypasses_settling_delay
+pi_config_lint_rejects_unsatisfied_route
+pi_handler_plugin_transports       service_start_survives_pty_hangup
+tui_bootstrap_parent_graph_isolation
+tui_help_modal_scroll              tui_log_pane_follows_retry
+wg_show_retry_attempts
+```
+
+The ports are route-only: `wg init -m claude:opus` / `-x claude` /
+`config --local --model codex:gpt-5.5` / `--route claude-cli` became
+`wg init -m pi:test:fake` (or `--route pi`), graph fixtures moved
+`"executor": "claude"` → `"executor": "pi"`, `model = "claude:opus"` →
+`model = "pi:test:fake"`, and the bare `openrouter:` provider prefix became
+`pi:openrouter:`. Assertions were left alone except for two documented,
+behavior-preserving adaptations: `automatic_archival_opt_in` now strips the
+`archive_retention_days` key from the checked-in `worksgood.toml` as well as
+`config.toml` (the pi projection materializes the key in the project document),
+and it matches the current `builtin-default` provenance label where it used to
+spell `default`.
+
+### Still on the default gate, and why
+
+The remaining fixture-route scenarios were **ported but not retired**, because
+the ported body still fails for a reason that has nothing to do with the route.
+They are kept active so the failure stays visible in the corpus:
+
+| Scenario(s) | Blocker (route-independent, pre-existing) |
+|---|---|
+| `reset_clears_claim`, `reset_clears_downstream_claims_too`, `retry_clears_downstream_stale_claims`, `reconciler_clears_open_with_dead_agent` | `wg reset` now leaves a task `open (PAUSED)`, so the "immediately ready after reset" assertion no longer holds |
+| `retry_kills_in_progress_agent`, `reaper_retry_in_place_protected` | `wg retry` no longer returns the task to `open` with the asserted status |
+| `chat_idle_does_not_respawn_loop`, `pi_worker_one_shot_prompt_and_cred_error`, `build_baseline_admission_refresh`, `retained_worktree_slow_sweep_does_not_starve_dispatch`, `isolation_worktree_collision_transaction` | dispatch/worktree paths now require a real git repo + admission eligibility; the fixtures are not git repos and dispatch defers forever |
+| `intake_deliverable_preflight`, `flip_role_model_routing_honors_config`, `unified_project_route_authority` | `_helpers.sh` installs an unconditional `ERR` trap, so a scenario that *asserts a refusal* by running a failing command dies at that command |
+| `launcher_custom_url_register_persists`, `profile_use_preserve_openrouter_endpoint`, `setup_scope_flag` | the surface under test is gone with the retired endpoint/global-routing config model (`[llm_endpoints]`, `--route claude-cli`, global routing writes) |
+| `tui_large_active_log_enrichment`, `tui_symbolic_context_bar`, `tui_termux_stacked_inspector`, `tui_log_pane_renders_raw_stream` | TUI-only drift: a first-frame latency ceiling, a missing chat-title row, a hung PTY, and an agent-resolution change that leaves the Log pane showing "no agent output yet" |
+| `chat_archive_kills_tmux_session` | `wg chat archive` no longer tears down the canonical `wg-chat-*` tmux session |
+| `chat_create_via_ipc_works`, `pi_plugin_live_validation` | SKIP without a real `pi`/`claude` CLI + model credentials (not credential-free) |
+| `shared_sccache_warm_rebuild` | SKIP without `sccache` |
+
+`secret_keyring_round_trip`, `wg_html_*` (owned by `retire-html-renderer`) and
+the TUI chat-*selector* scenarios are still default-gate members by design:
+their subject really is the preset/route menu or another task's surface.
+
+This wave deliberately changed **no production code**; the blocked list above is
+the evidence trail for the follow-ups, not a widening of this task.
 
 ## Shared routing invariants
 
