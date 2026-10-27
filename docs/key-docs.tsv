@@ -77,6 +77,7 @@ design	docs/design-retire-model-registry.md	Why the model registry was retired i
 design	docs/design-cow-worktrees.md	Copy-on-write worktrees for agent isolation	Contributors
 design	docs/build-artifact-storage.md	Build artifact storage / target-cache layout	Contributors
 design	docs/automatic-task-archival.md	Automatic task-archival behaviour in the graph	Contributors
+design	docs/design/claim-lifecycle.md	Claim lifecycle for `wg reset` / `wg retry` / the dispatcher reconciler ("Both": eager + lazy)	Contributors
 
 # --- adr: decisions of record ---------------------------------------------
 adr	docs/ADR-actor-vs-agent-identity.md	ADR: actor vs agent identity	Contributors

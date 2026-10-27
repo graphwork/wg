@@ -358,7 +358,7 @@ fn run_with_selection(
         retry_count = task.retry_count;
         max_retries = task.max_retries;
 
-        // Eager downstream-claim cleanup (design-claim-lifecycle):
+        // Eager downstream-claim cleanup (`docs/design/claim-lifecycle.md`):
         // walk the forward closure from this seed and clear any
         // downstream task whose claim references a dead agent. This is
         // the user-intent path — `wg retry <upstream>` says "the

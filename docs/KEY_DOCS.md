@@ -8,7 +8,7 @@ end accounts for the rest of the tree. Archive/keep rules live in
 `docs/archive/POLICY.md`; the gate for moving a doc is
 `scripts/doc-archive-audit.sh`.
 
-- curated docs: **71**
+- curated docs: **72**
 - tracked markdown in the repo: **788**
 - regenerate: `scripts/gen-key-docs.py` · verify: `scripts/gen-key-docs.py --check`
 
@@ -97,6 +97,7 @@ Why a shipping behaviour is shaped the way it is.
 | `docs/design-cow-worktrees.md` | Copy-on-write worktrees for agent isolation | Contributors |
 | `docs/build-artifact-storage.md` | Build artifact storage / target-cache layout | Contributors |
 | `docs/automatic-task-archival.md` | Automatic task-archival behaviour in the graph | Contributors |
+| `docs/design/claim-lifecycle.md` | Claim lifecycle for `wg reset` / `wg retry` / the dispatcher reconciler ("Both": eager + lazy) | Contributors |
 
 ## Decisions of record (ADR) (`adr`)
 
@@ -149,12 +150,12 @@ last time. Counts are live from `git ls-files`.
 
 | Directory | Markdown files | What it holds |
 |---|---:|---|
-| `docs/archive/` | 206 | Archived: root reports, historical research, audits, superseded designs |
+| `docs/archive/` | 209 | Archived: root reports, historical research, audits, superseded designs |
 | `docs/reports/` | 16 | Dated reports and closeouts (wave-2 archive candidates) |
 | `docs/research/` | 121 | Research notes and studies |
 | `docs/audit/` | 7 | Dated audit trees |
 | `docs/plans/` | 13 | Implementation plans for work in flight |
-| `docs/design/` | 83 | Additional design docs (subset curated above) |
+| `docs/design/` | 84 | Additional design docs (subset curated above) |
 | `docs/designs/` | 7 | Earlier design drafts |
 | `docs/prod-audit/` | 7 | Production-readiness audits |
 | `docs/studies/` | 7 | Study documents |

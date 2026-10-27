@@ -467,7 +467,7 @@ wg service resume           # Resume dispatching
 
 | Command | Purpose |
 |---------|---------|
-| `wg compact` | Distill graph state into context.md |
+| `wg compact` | Distill graph state into the project context summary |
 | `wg sweep` | Detect and recover orphaned in-progress tasks with dead agents |
 | `wg sweep --dry-run` | Preview orphaned tasks without fixing |
 | `wg checkpoint <task> -s "summary"` | Save checkpoint for context preservation |

@@ -49,8 +49,11 @@ fn identity() -> ObserverIdentity {
 #[test]
 fn case_distinct_paths_retain_exact_manifest_identity_or_fail_materialization_explicitly() {
     let root = repo();
-    let upper_name = "PROMPT_CONSTRUCTION_ANALYSIS.md";
-    let lower_name = "prompt_construction_analysis.md";
+    // Two exact spellings that differ only in case — the shape a macOS
+    // case-collision artifact takes. The specific names are arbitrary; what
+    // matters is that the index holds both spellings distinctly.
+    let upper_name = "MixedCaseArtifact.md";
+    let lower_name = "mixedcaseartifact.md";
     let upper = root.path().join(upper_name);
     let lower = root.path().join(lower_name);
     fs::write(&upper, "upper\n").unwrap();

@@ -969,11 +969,11 @@ mod tests {
         assert!(archived.contains("stream hung"));
     }
 
-    /// TDD for the lazy reconciler path described in design-claim-lifecycle:
-    /// a task in `Status::Open` (not InProgress!) whose `assigned` references
-    /// a Dead agent must be unclaimed by the next dispatcher tick. This is
-    /// the safety net that catches what `wg reset`/`wg retry` eager paths
-    /// miss (kill -9, panic, host reboot).
+    /// TDD for the lazy reconciler path described in
+    /// `docs/design/claim-lifecycle.md`: a task in `Status::Open` (not
+    /// InProgress!) whose `assigned` references a Dead agent must be unclaimed
+    /// by the next dispatcher tick. This is the safety net that catches what
+    /// `wg reset`/`wg retry` eager paths miss (kill -9, panic, host reboot).
     #[test]
     fn test_dispatcher_heartbeat_unclaims_dead_agents() {
         let temp_dir = TempDir::new().unwrap();

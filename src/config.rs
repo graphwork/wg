@@ -1682,7 +1682,7 @@ pub enum DispatchRole {
     Triage,
     /// Agent creator
     Creator,
-    /// Compactor: distills graph state into context.md
+    /// Compactor: distills graph state into the project context summary
     Compactor,
     /// Coordinator evaluation (inline per-turn scoring)
     CoordinatorEval,

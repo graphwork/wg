@@ -1655,7 +1655,8 @@ mod tests {
             vec![make_task_with_status("task-1", "A task", Status::Open)],
         );
 
-        // Even if a stale compactor/context.md is present, it must NOT be injected.
+        // Even if a stale legacy `.wg/compactor/context.md` artifact is present, it
+        // must NOT be injected.
         let ctx_path = dir.join("compactor").join("context.md");
         std::fs::create_dir_all(ctx_path.parent().unwrap()).unwrap();
         std::fs::write(&ctx_path, "stale graph-cycle compaction output").unwrap();

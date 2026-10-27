@@ -5,7 +5,7 @@
 #   1. scripts/gen-key-docs.py --check   — docs/KEY_DOCS.md is not stale.
 #   2. scripts/doc-archive-audit.sh      — a code-cited doc is BLOCKed (exit 1),
 #                                          an unreferenced doc is CLEAR (exit 0).
-#   3. the repo root stays a seven-file markdown surface (POLICY.md §4).
+#   3. the repo root stays a three-file markdown surface (POLICY.md §4).
 #   4. every doc moved into docs/archive/ is still tracked (git mv, never rm).
 #
 # Credential-free, daemon-free, network-free.
@@ -60,7 +60,7 @@ esac
 
 # ── 3. the root is a small surface, not a report dump ───────────────
 root_md=$(ls -1 ./*.md 2>/dev/null | wc -l | tr -d ' ')
-((root_md <= 7)) || fail "repo root has $root_md markdown files; POLICY.md §4 caps it at 7 (write reports under docs/)"
+((root_md <= 3)) || fail "repo root has $root_md markdown files; POLICY.md §4 caps it at 3 (write reports under docs/)"
 for required in README.md AGENTS.md CLAUDE.md; do
   [[ -f "$required" ]] || fail "root surface lost $required"
 done

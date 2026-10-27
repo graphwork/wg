@@ -71,8 +71,8 @@ the file is not archive-eligible yet** — write the replacement first.
 
 ## 3. Never archived (unconditional keep)
 
-- `README.md`, `AGENTS.md`, `CLAUDE.md` (repo root is a seven-file surface:
-  these three plus the four source-cited design docs listed in §4).
+- `README.md`, `AGENTS.md`, `CLAUDE.md` (the repo root is a three-file
+  markdown surface — see §4).
 - `docs/KEY_DOCS.md` and this policy.
 - `docs/COMMANDS.md`, `docs/AGENT-*.md`, `docs/agent-git-hygiene.md`,
   `docs/WORKTREE-ISOLATION.md`, `docs/config-*.md`, `docs/models.md`,
@@ -85,17 +85,30 @@ the file is not archive-eligible yet** — write the replacement first.
   (`docs/ops/completion-validation-evidence.md`, the review-gate ADR series).
   Never archived, even when the feature is quiet.
 
-## 4. The repo root is a seven-file surface
+## 4. The repo root is a three-file surface
 
-`README.md`, `AGENTS.md`, `CLAUDE.md`, and the four root docs that **source
-cites by name** (audit verdict **BLOCK**, they cannot move without a code edit):
+`README.md`, `AGENTS.md`, `CLAUDE.md` — and nothing else. A root-level `*.md`
+is reported as a candidate by `scripts/doc-archive-audit.sh --root-reports`
+unless it is in that keep set, so a stray report at the root fails the wave
+gate immediately.
 
-| File | Cited by |
-|---|---|
-| `context.md` | `src/config.rs`, `src/commands/service/coordinator_agent.rs`, `.claude/skills/wg/SKILL.md` |
-| `design-claim-lifecycle.md` | `src/commands/claim_lifecycle.rs` |
-| `PROMPT_CONSTRUCTION_ANALYSIS.md` | `src/commands/deliverables.rs`, `tests/integration_worktree_observer.rs` |
-| `prompt_construction_analysis.md` | `tests/integration_worktree_observer.rs` |
+Wave 1 (§8) kept four files at the root because source cited them by basename
+(audit verdict **BLOCK**). Wave 2b resolved all four, so the keep list and the
+root now agree:
+
+| Former root file | Where it lives now | Why |
+|---|---|---|
+| `context.md` | `docs/archive/root-reports/compaction-context-2026-04-09.md` | an accidentally-committed `wg compact` snapshot (a point-in-time artifact), **renamed on the move** because the legacy `.wg/compactor/context.md` artifact is a *different* file and its basename would have left the archived path permanently BLOCKed |
+| `design-claim-lifecycle.md` | `docs/design/claim-lifecycle.md` | **still the authority** (K3): it is the stated rationale for the shipped eager+lazy claim reconciler in `src/commands/claim_lifecycle.rs` and `src/commands/sweep.rs` |
+| `PROMPT_CONSTRUCTION_ANALYSIS.md` | `docs/archive/root-reports/PROMPT_CONSTRUCTION_ANALYSIS.md` | historical analysis of the retired `native` executor; the file itself was one half of a macOS case-collision pair |
+| `prompt_construction_analysis.md` | `docs/archive/root-reports/prompt_construction_analysis.md` | the other half of the same case-collision pair |
+
+The two `PROMPT_CONSTRUCTION_ANALYSIS` halves were only cited from **test
+data** (`tests/integration_worktree_observer.rs` needs two spellings that differ
+only in case; `src/commands/deliverables.rs` needed a `Discard …` deliverable
+bullet). Neither test ever opened the root file, so both fixtures were given
+neutral names (`MixedCaseArtifact.md` / `mixedcaseartifact.md`,
+`mixed_case_artifact.md`) — same semantics, and no doc path left in a test.
 
 New root-level reports are not allowed. Write the doc under `docs/reports/`
 (if it is a report) or `docs/design/` (if it is a design), and let this policy
@@ -264,6 +277,55 @@ gate's verdict, not an editorial choice: the six are cited by
 `docs/plans/2026-08-09-simple-local-wg-recovery.md` and
 `docs/design-adaptive-agency-loop.md`, so they are WARN and stay. Collapsing the
 split means repointing those two live docs first (a wave-3 candidate).
+
+### Wave 2b — 2026-10-26 (`unblock-root-doc-archive`): the four BLOCK keepers
+
+Wave 1 left four root docs in place because source named them. This wave
+resolved each one on its merits, then moved it — the gate is a prompt to *decide*,
+not a veto.
+
+Gate before: `scripts/doc-archive-audit.sh --root-reports` →
+**4 candidates — 4 BLOCK, 0 WARN, 0 CLEAR**. Gate after:
+**no candidates, exit 0** (the root holds only `README.md`, `AGENTS.md`,
+`CLAUDE.md`), and re-auditing every destination (§5 step 4) is quiet:
+
+```bash
+scripts/doc-archive-audit.sh docs/archive/root-reports/compaction-context-2026-04-09.md \
+  docs/archive/root-reports/PROMPT_CONSTRUCTION_ANALYSIS.md \
+  docs/archive/root-reports/prompt_construction_analysis.md
+# -> WARN x3, referrer = docs/archive/POLICY.md only (the wave table below, §6)
+scripts/doc-archive-audit.sh docs/design/claim-lifecycle.md
+# -> BLOCK, referrer = src/commands/claim_lifecycle.rs -- BY DESIGN (K3):
+#    the code names its own rationale, and docs/design/ is never an archive bucket
+```
+
+No code file names any of the three archived destinations.
+
+| File | Decision | Citation repointed |
+|---|---|---|
+| `context.md` | historical (a stray `wg compact` snapshot) → archive, **renamed** to `compaction-context-2026-04-09.md` | `src/config.rs` role doc comment: "distills graph state into the project context summary"; `.claude/skills/wg/SKILL.md`: same rewording. `src/commands/service/coordinator_agent.rs` was **not** a citation of this file — it names the unrelated legacy `.wg/compactor/context.md` artifact, so only its comment was made explicit and its `join("context.md")` code is untouched |
+| `design-claim-lifecycle.md` | **still the authority** (K3) → promoted to `docs/design/claim-lifecycle.md` | `src/commands/claim_lifecycle.rs` module doc → ``docs/design/claim-lifecycle.md`` |
+| `PROMPT_CONSTRUCTION_ANALYSIS.md` | historical → archive, original name kept | `src/commands/deliverables.rs` and `tests/integration_worktree_observer.rs` cited it only as **test data**, not as a doc: both fixtures now use a neutral case-collision name (`mixed_case_artifact.md`, `MixedCaseArtifact.md` / `mixedcaseartifact.md`) |
+| `prompt_construction_analysis.md` | historical → archive, original name kept | same test-fixture rename |
+
+Two things this wave learned, both now reflected in the tool's own comments:
+
+1. **The gate is basename- and boundary-aware but deliberately not
+   path-aware.** `compactor/context.md` therefore counted as a citation of a
+   root `context.md`. That over-reporting is the safe direction (a file looks
+   *more* cited than it is), but it is also why the archived snapshot was
+   renamed: keeping the basename would have left the archived path permanently
+   BLOCKed by an unrelated runtime filename.
+2. **Test data is not a citation.** A test fixture that happens to spell a doc
+   path is data about *spelling*, not a pointer to the doc; neutral fixture names
+   keep the test honest and keep the gate quiet. `scripts/doc-archive-audit.sh`'s
+   own explanatory comments were also switched to neutral example filenames
+   (`notes.md` / `workspace-notes.md`, `design-scope.md` / `scope.md`) so the gate
+   script never cites a real doc.
+
+No behavioural change: every repointed line is a Rust doc/line comment, a
+markdown table cell, a shell comment, or an in-test string literal that the test
+only greps for shape.
 
 ### Wave 3 — measured, not yet done
 

@@ -524,7 +524,7 @@ mod tests {
     fn discard_framing_bullet_is_not_a_deliverable() {
         // The finish-lint-pr49 regression: a bullet that instructs the file be
         // discarded must NOT be treated as a required deliverable.
-        let desc = "## Validation\n- Discard PROMPT_CONSTRUCTION_ANALYSIS.md — it is a known macOS case-collision artifact, do not commit it.\n";
+        let desc = "## Validation\n- Discard mixed_case_artifact.md — it is a known macOS case-collision artifact, do not commit it.\n";
         assert!(
             parse_deliverables(desc).is_empty(),
             "got {:?}",

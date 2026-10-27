@@ -29,9 +29,11 @@
 # Exit status: 0 when no candidate is BLOCK (and, with --orphans, when nothing
 # at all was found), 1 when at least one candidate is BLOCK.
 #
-# Reference matching is boundary-aware so `context.md` does not match
-# `workspace-context.md` and `design-claim-lifecycle.md` does not match
-# `claim-lifecycle.md`.
+# Reference matching is boundary-aware so `notes.md` does not match
+# `workspace-notes.md` and `design-scope.md` does not match `scope.md`. It is
+# deliberately NOT path-aware: `sub/dir/notes.md` still counts as a reference to
+# a root `notes.md` (over-reporting is the safe direction for a gate that
+# decides whether a file may MOVE).
 
 set -uo pipefail
 
@@ -125,8 +127,9 @@ ref_kind() {
 # directory wave audits hundreds of candidates and per-candidate grep is
 # quadratic in repo size (measured: 2m23s for 96 files vs <1s for the index).
 #
-# Emits `referrer<TAB>basename` pairs. Boundary-aware: `context.md` does not
-# match `workspace-context.md`. If two candidates share a basename the pair is
+# Emits `referrer<TAB>basename` pairs. Boundary-aware: `notes.md` does not
+# match `workspace-notes.md` (see the path-component note at the top of this
+# file). If two candidates share a basename the pair is
 # attributed to whichever candidate asks for it, which can only *over*-report
 # (a candidate looks more referenced than it is) — the safe direction for a
 # gate that decides whether to move a file.

@@ -8,7 +8,7 @@
 //! across files or pulled in via a `commands::reset -> commands::retry`
 //! cross-import that obscures intent.
 //!
-//! See `design-claim-lifecycle.md` for the rationale ("Both: Eager +
+//! See `docs/design/claim-lifecycle.md` for the rationale ("Both: Eager +
 //! Lazy with status-aware reconciler").
 
 use std::collections::HashSet;
