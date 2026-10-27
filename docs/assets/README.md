@@ -14,9 +14,10 @@ README hero and console captures.
 To record (`pi-fleet.gif`, from a real WG project with active work):
 
 ```bash
-# enable the cockpit first:
-#   {"fleetView": true} in ~/.pi/agent/extensions/pi-worksgood/config.json
-asciinema rec pi-fleet.cast -c "pi"   # then run /wg-fleet in the session
+# the clickable strip is on by default; /wg-fleet (or a click) opens the cockpit.
+# To show the strip UNFOLDED from the start:
+#   {"fleetViewCollapsed": false} in ~/.pi/agent/extensions/pi-worksgood/config.json
+asciinema rec pi-fleet.cast -c "pi"   # click the strip header, then /wg-fleet
 agg pi-fleet.cast pi-fleet.gif         # asciinema-agg, or convert via gifski
 ```
 
