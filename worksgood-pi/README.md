@@ -21,9 +21,68 @@ Topology B the SDK Node host). See
 | **Tools** (LLM/human callable) | `wg_capabilities` (effective trusted/scoped/read-only policy), `wg_ready`, `wg_show`, `wg_add` (visible draft), `wg_publish` (explicit release), `wg_done`, `wg_fail`, `wg_msg_send`, `wg_msg_read`, `wg_run` — all registered with `exposure: "direct", defaultActive: false`, so they are INACTIVE until `/wg on` activates this session (or the project is marked active). pi's `hidden` exposure can never be activated, so it is not an option here. |
 | **Commands** | `/wg init` (conversational bootstrap: the agent inspects state, then runs `wg init` / `wg setup` / `wg pi-plugin install` and reports a short summary), `/wg ready\|graph\|show\|run\|add\|done\|fail`, **`/wg on\|off\|status`** (session-scoped activation — see below), `/wg-viz` (live work-graph panel), `/wg-fleet` (scrollable fleet view; `/wg-fleet expand\|collapse` toggles the ambient strip), `/wg-model <provider:id>` (warm in-session swap), `/wg-wake [on\|off]` (completion-event wakeups) |
 | **VizView panel** | `/wg-viz` opens a read-only live work-graph panel via `ctx.ui.custom()` (TUI mode only): dependency tree, keyboard selection, expand/collapse, the TUI HUD's selected-task → detail-lines model, log tail; mouse clicks where the host pi-tui dispatches mouse to custom components. A passive widget (`ctx.ui.setWidget("wg-viz")`) shows a one-line in-progress/ready/blocked/done/failed summary. Data comes from the daemon IPC socket (read-only `viz_snapshot` request, bounded poll with change-guard); when the daemon is unavailable the panel falls back to the read-only `wg viz --all --no-tui` ASCII output and the widget silently clears. **Slice boundary (first slice):** deferred — filters, agency lanes UI, chat surfaces, back-edge arc rendering, scrollback search, and HUD-only detail sections (admission waiting, agency identity, route receipts). Read-only by construction: the panel never mutates graph state. |
-| **FleetView bottom panel** | The pi-subagents-style fleet companion to `/wg-viz`, in two parts. **`/wg-fleet` opens the scrollable view** — a `ctx.ui.custom()` component (TUI mode only) with a counts header, the dependency tree, and real scrolling: **wheel / PgUp / PgDn / Home / End** scroll the tree (the selection is dragged along so it stays visible), **↑/↓** move the selection and scroll it into view, **Enter / → / l** drill into the selected task's detail (reusing the TUI HUD detail-lines model plus the live agent activity and a **bounded** stream tail — `TRANSCRIPT_TAIL_BYTES` 256 KiB / 80 default lines / 500 max / 32 KiB body), and **q / Esc** close. It reads via the daemon's read-only **`GetFleet`** surface (`WgBackend.getFleet`, with its CLI fallback), never mutating graph state. **Config-gated and OFF by default** — opt in with `{"fleetView": true}` in `~/.pi/agent/extensions/pi-worksgood/config.json` (or `WG_PI_FLEET_VIEW=1`). Alongside it, the ambient **multi-line widget mounted below the editor** (`ctx.ui.setWidget("wg-fleet", lines, { placement: "belowEditor" })`) is unchanged: it shows live WG agents (id, task, model, elapsed) plus in-progress/ready/blocked/done/failed task counts with the WG TUI's status glyphs/colours, compact by default and expandable with `/wg-fleet expand\|collapse`. Both degrade silently in print/json/rpc and never mutate graph state. |
+| **FleetView bottom panel** | The pi-subagents-style fleet companion to `/wg-viz`, in two parts. **`/wg-fleet` opens the scrollable view** — a `ctx.ui.custom()` component (TUI mode only) with a counts header, the dependency tree, and real scrolling: **wheel / PgUp / PgDn / Home / End** scroll the tree (the selection is dragged along so it stays visible), **↑/↓** move the selection and scroll it into view, **Enter / → / l** drill into the selected task's detail (reusing the TUI HUD detail-lines model plus the live agent activity and a **bounded** stream tail — `TRANSCRIPT_TAIL_BYTES` 256 KiB / 80 default lines / 500 max / 32 KiB body), and **q / Esc** close. It reads via the daemon's read-only **`GetFleet`** surface (`WgBackend.getFleet`, with its CLI fallback), never mutating graph state. Alongside it, the ambient **CLICKABLE strip mounted below the editor** (`ctx.ui.setWidget("wg-fleet", componentFactory, { placement: "belowEditor" })`) is the always-there surface: a one-line live status summary (in-progress/ready/blocked counts + active agents, painted with the WG TUI's status glyphs/colours) that **left-clicks to unfold** into live agent rows and back, whose rows **click to open the cockpit on that task**, and which becomes a one-line discovery hint (`/wg on to activate`) when WG is dormant but the project has a `.wg/`. It is visible by default whenever the session (or project) is active; `{"fleetView": false}` / `WG_PI_FLEET_VIEW=0` opts out, and `fleetViewCollapsed` starts it folded or unfolded. See [What clicks do where](#what-clicks-do-where-the-click-model). Both degrade silently in print/json/rpc and never mutate graph state. |
 | **Model bridge** | `registerProvider(WG endpoints/keys)` + managed-chat `model_select` → WG `CoordinatorState.model_override` write-back |
 | **Completion wakeups** | A bounded poll of the graph (`wg list --json`, enriched with `wg show <id> --json`) tells the live session when a task reaches a terminal/needs-attention transition. The wake is injected with `pi.sendMessage` (`triggerTurn` when the session is idle; queued as a follow-up when busy) and pinged with `ctx.ui.notify`. A persisted per-session cursor (`<sessionFile>.wg-wake-cursor.json`) makes each transition announce exactly once and lets several sessions attached to one daemon keep independent cursors. Safe defaults: failures always, completions top-level only, `/wg-wake off` mutes a session. Read-only; the daemon-push/event-stream path is the documented follow-up. See [design-pi-completion-wakeups.md](../docs/design-pi-completion-wakeups.md). |
+
+## What clicks do where (the click model)
+
+WG's in-session surfaces are **mouse-navigable**, the way pi-subagents' FleetView
+and async widget are: you should never need to know an extension command to open,
+fold, navigate, or investigate.
+
+The ambient strip below the editor is mounted through the **component form** of
+`ctx.ui.setWidget`, so it receives pi's mouse dispatch (`handleMouse`). pi keeps
+that one component mounted and WG mutates it on every poll, so a fold survives
+progress updates and never touches your global pi expand setting (pi-subagents'
+`asyncWidgetCollapsed` semantics). The fold state resets when the widget is
+removed (`/wg off`, session shutdown) or pi reloads.
+
+| where | left click |
+|---|---|
+| **strip header row** (`▸ wg fleet (click) · …`) | fold ⇄ unfold: one-line live status summary ⇄ the usual multi-line layout |
+| **an agent row** (unfolded) | open the scrollable fleet panel, **selected on that task** — the fast path from "something is running" to "show me that task" |
+| **the dormant strip** (`◇ wg fleet · dormant · click to inspect · /wg on to activate`) | open the panel in the **read-only `inactive` view** (counts + hint). Discovery works without booting WG: nothing polls, nothing is activated |
+| **panel: a tree row** | select it (the selection marker follows) |
+| **panel: the already-selected row, or a double-click** | open that task's detail (WG's own `wg show` text verbatim) |
+| **panel: the detail header** (`… · [← back]`) | go back to the tree — the same destination as `←`/`h`/`q`/`Esc` |
+| **panel: wheel** | scroll the active pane (the selection is dragged along so it stays visible) |
+| **panel: press-and-drag** | pan the tree (`capture`: the gesture keeps panning even when the pointer leaves the content area) |
+| modifier clicks (shift/alt/ctrl), right/middle buttons, drag/wheel **on the strip**, blank/chrome rows, clicks outside a panel's content area | **ignored** — left unhandled so the host keeps its own behaviour |
+
+Keyboard parity is unchanged: `↑`/`↓` select, `Enter`/`→`/`l` open detail,
+`←`/`h`/`Enter`/`q`/`Esc` go back, `o`/`space` expand a subtree, `q`/`Esc` close
+from the tree, `PgUp`/`PgDn`/`Home`/`End` scroll.
+
+Every `handleMouse` return is pi's `PiMouseResult` **object** shape
+(`{handled: true}`, optionally `capture`/`focus`) or `undefined` — never a bare
+boolean, which would crash pi core's `dispatchMouseEvent`
+(`Cannot use 'in' operator to search for 'target' in true`).
+
+### Strip states and configuration
+
+| state | what mounts |
+|---|---|
+| session active (`/wg on`) **or** project marked active | the live one-line status strip (counts + active agents); click to unfold, click a row to open |
+| dormant, but the project has a `.wg/` | the one-line discovery strip (`/wg on to activate`); click opens the read-only inactive view |
+| dormant with no `.wg/` | nothing |
+
+```json
+// ~/.pi/agent/extensions/pi-worksgood/config.json
+{
+  "fleetView": true,          // mount the strip (default: true). `false` opts out entirely
+  "fleetViewCollapsed": true, // start FOLDED, i.e. the one-line summary (default: true)
+  "fleetViewExpanded": false, // unfolded body lists every live agent (default: false: a few)
+  "fleetViewPlacement": "belowEditor",
+  "fleetViewPollMs": 5000
+}
+```
+
+`WG_PI_FLEET_VIEW`, `WG_PI_FLEET_VIEW_COLLAPSED`, `WG_PI_FLEET_VIEW_EXPANDED`,
+`WG_PI_FLEET_VIEW_PLACEMENT`, `WG_PI_FLEET_VIEW_POLL_MS` override the file. The
+full cockpit stays an **explicit** open: `/wg-fleet` (or a click), with
+`/wg-fleet fold|unfold|expand|collapse` as the keyboard equivalents of the strip
+clicks.
 
 ## Session-scoped activation (dormant by default)
 
@@ -56,9 +115,10 @@ session-only activation (with an honest warning) where no `.wg/` exists.
 - **Safety.** Neither verb touches `~/.pi/agent/settings.json`, removes the
 extension entry, or touches `.wg/`/the daemon. Running agents are separate
 processes and are unaffected. **`wg pi-plugin disable` remains the CLI-only
-uninstall.** Surfaces (the config-gated `/wg-fleet` strip, completion wakes)
-follow the session state: `/wg on` mounts them, `/wg off` unmounts them; the
-viz/fleet panels stay on demand.
+uninstall.** Surfaces (the `/wg-fleet` strip, completion wakes) follow the
+session state: `/wg on` re-syncs them to the live strip, `/wg off` leaves the
+one-line dormant discovery strip (a project with `.wg/` stays discoverable), and
+the viz/fleet panels stay on demand.
 
 WG context (`WG_TASK_ID`, `WG_AGENT_ID`, `WG_CHAT_ID`, `WG_CHAT_REF`,
 `WG_STATE_DIR`, `WG_DAEMON_SOCKET`, `WG_PROJECT_DIR`) rides in via environment
@@ -82,8 +142,9 @@ src/commands.ts       /wg and /wg-model (+ autocomplete)
 src/viz-snapshot.ts   daemon-socket client: read-only viz_snapshot + bounded poller + ASCII fallback
 src/viz-readmodel.ts  pure tree/detail/counts read-model (mirrors src/tui/viz_viewer/state.rs vocabulary)
 src/viz-panel.ts      /wg-viz ctx.ui.custom() panel + setWidget live summary (TUI mode only)
-src/fleet-view.ts     /wg-fleet ambient below-editor fleet widget (config-gated, TUI mode only)
-src/fleet-panel.ts    /wg-fleet scrollable ctx.ui.custom() fleet panel (config-gated, TUI mode only)
+src/fleet-view.ts     /wg-fleet ambient below-editor fleet surface: mount/sync, config gate, click wiring
+src/fleet-strip.ts    the CLICKABLE one-line status strip (fold/unfold, row-click, dormant hint) + mouse contract
+src/fleet-panel.ts    /wg-fleet scrollable ctx.ui.custom() fleet panel (+ the read-only `inactive` view)
 src/fleet-panel-model.ts  pure scroll math + bounded transcript tail + tree/counts read-model
 src/fleet-config.ts   extension-config gate (fleetView flag, pi-subagents-style config file)
 src/bash-timeout.ts   tool_call mutator: bounded default timeout for the unbounded `bash` tool

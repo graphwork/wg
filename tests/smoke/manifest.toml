@@ -1950,6 +1950,15 @@ description = "Pins full mouse parity between /wg-fleet and the WG TUI (full-mou
 timeout_seconds = 360
 
 [[scenario]]
+name = "fleet_clickable_strip"
+script = "scenarios/fleet_clickable_strip.sh"
+owners = [
+    "wg-clickable-fleet",
+]
+description = "Pins WG's CLICKABLE fleet UX (wg-clickable-fleet): the ambient below-editor surface mounts in pi's COMPONENT form (so pi mouse dispatch reaches it), a LEFT CLICK on the header row folds it to a one-line live status summary and back (pi-subagents asyncWidgetCollapsed semantics: the fold persists across poll updates because WG mutates the one mounted component instead of re-registering the widget key, and resets on re-mount), a click on an agent row opens the full /wg-fleet cockpit selected on that task, and modifier clicks / right buttons / drag / wheel / press / blank rows are left UNHANDLED with every return in pi's PiMouseResult OBJECT shape (never the bare boolean that crashes pi core). Activation-gated content: an ACTIVE project (or marked-active session) shows the live counts strip, a DORMANT project that still has .wg/ shows the one-line '/wg on to activate' hint whose click opens the READ-ONLY inactive view (counts + hint over a static tree, no polling, no cockpit), and a project with no .wg/ mounts nothing. Credential-free: runs the focused strip/panel/read-model unit tests, then drives the EMBEDDED bundle through the real extension factory against three synthetic projects, then checks the plugin cache matches the embedded strip."
+timeout_seconds = 240
+
+[[scenario]]
 name = "pi_handler_plugin_transports"
 script = "scenarios/pi_handler_plugin_transports.sh"
 owners = [

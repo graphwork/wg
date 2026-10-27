@@ -42,11 +42,12 @@ grep -q "installFleetView" "$plugin/embedded/pi-worksgood/index.js" || \
 grep -q "FLEET_WIDGET_KEY" "$plugin/embedded/pi-worksgood/fleet-view.js" || \
     loud_fail "embed missing FLEET_WIDGET_KEY" "embedded/pi-worksgood/fleet-view.js"
 
-# 3. Behavioural probe against the EMBEDDED bundle: default-off gate + below-editor mount.
+# 3. Behavioural probe against the EMBEDDED bundle: opt-out gate + the CLICKABLE
+#    component-form mount below the editor (a factory, not a lines array).
 node --input-type=module - "$plugin" <<'NODE' >/tmp/fleet-bottom-panel-probe.log 2>&1 || \
     loud_fail "fleet bottom-panel embedded probe failed" "$(cat /tmp/fleet-bottom-panel-probe.log)"
 const plugin = process.argv[2];
-const { mkdtempSync } = await import("node:fs");
+const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const mod = await import(`${plugin}/embedded/pi-worksgood/index.js`);
@@ -56,6 +57,14 @@ process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "wg-fleet-smoke-"))
 // Force the read-only CLI fallback (never touch a real project daemon).
 process.env.WG_DAEMON_SOCKET = join(process.env.PI_CODING_AGENT_DIR, "none.sock");
 delete process.env.WG_PI_FLEET_VIEW;
+// Hermetic activation: a synthetic project marked ACTIVE (`.wg/session-active`),
+// so the ambient strip mounts deterministically instead of depending on the
+// inherited smoke environment's WG_DIR. A live strip is the surface under test.
+for (const key of ["WG_DIR", "WG_PROJECT_DIR", "WG_PROJECT_ROOT", "WG_STATE_DIR"]) delete process.env[key];
+const project = join(process.env.PI_CODING_AGENT_DIR, "project");
+mkdirSync(join(project, ".wg"), { recursive: true });
+writeFileSync(join(project, ".wg", "session-active"), "active\n");
+
 
 const AGENTS = JSON.stringify([
   { id: "agent-7", task_id: "task-a", executor: "pi", model: "pi:openrouter:x/y", status: "working", uptime: "3m", process_alive: true },
@@ -80,9 +89,11 @@ function makeHarness(mode, enabled) {
       return { stdout: TASKS, stderr: "", code: 0, killed: false };
     },
   };
+  // The strip is visible by default now; `0` is the explicit opt-out.
   if (enabled) process.env.WG_PI_FLEET_VIEW = "1";
-  else delete process.env.WG_PI_FLEET_VIEW;  mod.default(pi);
-  return { calls, commands, handlers, ctx: { mode, hasUI: mode === "tui", ui, signal: undefined } };
+  else process.env.WG_PI_FLEET_VIEW = "0";
+  mod.default(pi);
+  return { calls, commands, handlers, ctx: { mode, hasUI: mode === "tui", ui, signal: undefined, cwd: project } };
 }
 
 async function settle() { for (let i = 0; i < 40; i++) await new Promise((r) => setTimeout(r, 25)); }
@@ -103,8 +114,21 @@ const last = fleetCalls(on).at(-1);
 if (!last) throw new Error("enabled panel did not mount");
 if (last[0] !== "wg-fleet") throw new Error(`unexpected widget key ${last[0]}`);
 if (!last[2] || last[2].placement !== "belowEditor") throw new Error(`expected belowEditor, got ${JSON.stringify(last[2])}`);
-if (!Array.isArray(last[1]) || last[1].length < 2) throw new Error(`expected multi-line widget, got ${JSON.stringify(last[1])}`);
-if (!String(last[1][0]).includes("wg fleet")) throw new Error(`header missing: ${last[1][0]}`);
+// The clickable surface MUST be the component form: pi only dispatches mouse
+// events to a mounted component (`handleMouse`), never to a lines array.
+if (typeof last[1] !== "function") {
+  throw new Error(`expected the component-form (clickable) widget, got ${typeof last[1]}`);
+}
+const strip = last[1]({ requestRender: () => {}, terminal: { rows: 24, columns: 100 } }, undefined);
+if (typeof strip.handleMouse !== "function") throw new Error("strip is not clickable (no handleMouse)");
+const folded = strip.render(100);
+if (!Array.isArray(folded) || folded.length < 1) throw new Error(`strip rendered nothing: ${JSON.stringify(folded)}`);
+if (!String(folded[0]).includes("wg fleet")) throw new Error(`header missing: ${folded[0]}`);
+// Left-click the header row: it folds/unfolds and returns pi's OBJECT shape.
+const click = strip.handleMouse({ type: "click", button: "left", y: 0, shift: false, alt: false, ctrl: false });
+if (!click || typeof click !== "object" || click.handled !== true) {
+  throw new Error(`header click was not handled as an object: ${JSON.stringify(click)}`);
+}
 
 // Enabled + non-TUI: silent degrade (no mount).
 const json = makeHarness("json", true);
@@ -112,7 +136,7 @@ fireStart(json);
 await settle();
 if (fleetCalls(json).length !== 0) throw new Error(`non-TUI mode mounted a widget: ${JSON.stringify(fleetCalls(json))}`);
 
-console.log("probe ok: default-off, belowEditor mount, non-TUI silent degrade");
+console.log("probe ok: opt-out gate, clickable belowEditor mount, non-TUI silent degrade");
 // Tear down the session-scoped intervals so this probe process exits cleanly.
 for (const h of [off, on, json]) {
   for (const handler of h.handlers.session_shutdown ?? []) handler({}, h.ctx);

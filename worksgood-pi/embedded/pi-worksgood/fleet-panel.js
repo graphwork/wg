@@ -100,6 +100,8 @@ export class FleetPanelComponent {
     cachedWidth = -1;
     cachedHeight = -1;
     disposed = false;
+    /** Read-only dormant view (counts + hint; no cockpit, no navigation). */
+    inactive;
     constructor(snapshot, tui, onClose, theme = null, options = {}, liveDir = undefined, detailFetcher = undefined) {
         this.tui = tui;
         this.onClose = onClose;
@@ -108,13 +110,19 @@ export class FleetPanelComponent {
         this.liveDir = liveDir;
         this.detailFetcher = detailFetcher;
         this.snapshot = snapshot;
-        this.selectedId = this.firstVisibleId();
+        this.inactive = options.inactive === true;
+        this.selectedId = options.initialTaskId ?? this.firstVisibleId();
         this.refreshDetailTail();
     }
     // ── state / data ──────────────────────────────────────────────────────────
     /** Apply a fresh snapshot from the poller and re-render. */
     setSnapshot(snapshot) {
         this.snapshot = snapshot;
+        if (this.inactive) {
+            this.invalidate();
+            this.tui.requestRender();
+            return;
+        }
         if (this.selectedId && !snapshot?.tasks.some((t) => t.id === this.selectedId)) {
             this.selectedId = this.firstVisibleId();
         }
@@ -144,6 +152,19 @@ export class FleetPanelComponent {
     /** Body rows between the fixed header and footer. */
     bodyViewport() {
         return Math.max(1, this.viewportHeight() - 2);
+    }
+    /**
+     * Scrollable rows for the DORMANT view: it reserves 4 chrome rows (counts +
+     * two hint lines + a spacer) and 1 footer row, so its window is smaller than
+     * the live cockpit's. Scroll clamping and rendering MUST agree on this or the
+     * offset jumps on the next render.
+     */
+    inactiveBody() {
+        return Math.max(1, this.bodyViewport() - 5);
+    }
+    /** Scrollable rows of the currently active pane. */
+    activeBody() {
+        return this.inactive ? this.inactiveBody() : this.bodyViewport();
     }
     /**
      * Inclusive panel rows that hold scrollable body content: row 0 is the
@@ -272,14 +293,15 @@ export class FleetPanelComponent {
     scrollBy(delta) {
         if (!Number.isFinite(delta) || delta === 0)
             return;
-        if (this.mode === "detail") {
+        if (this.mode === "detail" && !this.inactive) {
             const total = this.detailContent().length;
             this.detailScroll = clampScroll(this.detailScroll + delta, total, this.bodyViewport());
         }
         else {
             const total = this.treeLineCount();
-            this.treeScroll = clampScroll(this.treeScroll + delta, total, this.bodyViewport());
-            this.dragSelectionIntoView();
+            this.treeScroll = clampScroll(this.treeScroll + delta, total, this.activeBody());
+            if (!this.inactive)
+                this.dragSelectionIntoView();
         }
         this.invalidate();
         this.tui.requestRender();
@@ -324,15 +346,16 @@ export class FleetPanelComponent {
     }
     /** Page the active pane by `direction` (±1), keeping the selection visible. */
     pageBy(direction) {
-        const view = this.bodyViewport();
-        if (this.mode === "detail") {
+        const view = this.activeBody();
+        if (this.mode === "detail" && !this.inactive) {
             const total = this.detailContent().length;
             this.detailScroll = pageScroll(this.detailScroll, view, direction, total);
         }
         else {
             const total = this.treeLineCount();
             this.treeScroll = pageScroll(this.treeScroll, view, direction, total);
-            this.dragSelectionIntoView();
+            if (!this.inactive)
+                this.dragSelectionIntoView();
         }
         this.invalidate();
         this.tui.requestRender();
@@ -448,6 +471,27 @@ export class FleetPanelComponent {
     handleInput(data) {
         if (this.disposed)
             return;
+        // The dormant view is READ-ONLY: there is no cockpit to navigate. Only
+        // close and scroll are meaningful.
+        if (this.inactive) {
+            if (matchesKey(data, Key.escape) || data === "q") {
+                this.close();
+                return;
+            }
+            if (matchesKey(data, Key.up))
+                this.scrollBy(-1);
+            else if (matchesKey(data, Key.down))
+                this.scrollBy(1);
+            else if (matchesKey(data, Key.pageUp))
+                this.pageBy(-1);
+            else if (matchesKey(data, Key.pageDown))
+                this.pageBy(1);
+            else if (matchesKey(data, Key.home))
+                this.scrollBy(-this.treeLineCount());
+            else if (matchesKey(data, Key.end))
+                this.scrollBy(this.treeLineCount());
+            return;
+        }
         if (this.mode === "detail") {
             // In the detail view q/Esc (and ←/h/Backspace) go BACK to the tree — the
             // same key that drilled in, so there is one consistent escape. Enter also
@@ -534,6 +578,10 @@ export class FleetPanelComponent {
                 this.scrollBy(delta);
             return { handled: true };
         }
+        // Dormant read-only view: there is nothing to select or open. Clicks are
+        // ignored (unhandled) so the host keeps its own behaviour.
+        if (this.inactive)
+            return undefined;
         // A live pan gesture owns the pointer stream until release. pi retargets
         // drag/release to the component that handled the press, so this runs even
         // for coordinates outside the content area (capture semantics).
@@ -562,6 +610,20 @@ export class FleetPanelComponent {
             }
             return { handled: true };
         }
+        // DETAIL VIEW: the header row is the clickable BACK affordance (`[<-]`).
+        // A click on the header is outside the content area, so it never starts a
+        // press gesture; pi synthesizes the standalone click and it lands here —
+        // mirroring `<-`/`h`/`q`/`Esc` exactly.
+        if (type === "click" || type === "mouse.click") {
+            const headerRow = typeof event.y === "number" && Number.isFinite(event.y) ? Math.trunc(event.y) : -1;
+            if (this.mode === "detail" && headerRow === 0) {
+                this.pressGesture = false;
+                this.pressWasSelected = false;
+                this.drag = null;
+                this.closeDetail();
+                return { handled: true };
+            }
+        }
         if (type === "press" || type === "mouse.press") {
             const lineIndex = this.contentLineIndex(event.y);
             if (lineIndex === null)
@@ -575,7 +637,7 @@ export class FleetPanelComponent {
             this.tui.requestRender?.();
             return { handled: true, capture: true, focus: true };
         }
-        if (type === "click") {
+        if (type === "click" || type === "mouse.click") {
             const lineIndex = this.contentLineIndex(event.y);
             const fromPress = this.pressGesture;
             const preSelected = fromPress && this.pressWasSelected;
@@ -658,9 +720,11 @@ export class FleetPanelComponent {
         const lines = [];
         const taskIds = [];
         for (const line of this.treeLines()) {
-            const marker = line.taskId !== null && line.taskId === this.selectedId ? "❯ " : "  ";
+            // The dormant view is a STATIC read-only projection: no selection marker
+            // and no live per-agent activity (there is no cockpit and nothing polls).
+            const marker = !this.inactive && line.taskId !== null && line.taskId === this.selectedId ? "❯ " : "  ";
             let text = `${marker}${line.text}`;
-            if (line.taskId) {
+            if (line.taskId && !this.inactive) {
                 const agent = agentForTask(this.snapshot.agents, line.taskId);
                 const activity = agentActivityLabel(agent);
                 if (activity)
@@ -690,7 +754,32 @@ export class FleetPanelComponent {
         const palette = resolveStatusPalette(snapshot?.tree?.palette);
         const lines = [];
         let hitMap = [];
-        if (!snapshot) {
+        if (this.inactive) {
+            // ── dormant read-only view: counts + hint, NOT the live cockpit ──
+            // Checked FIRST: a dormant session usually has NO daemon running, and the
+            // whole point of this view is that it still explains itself.
+            const header = snapshot
+                ? `${fleetCountsHeader(snapshot.counts)} · inactive`
+                : "wg-fleet ▸ inactive · no live counts (daemon offline)";
+            lines.push({ text: header, color: "accent" });
+            lines.push({
+                text: "  WG is dormant in this session — nothing is polling and no agents are tracked.",
+                color: "dim",
+            });
+            lines.push({
+                text: "  Run /wg on to activate the wg tool family and the live fleet cockpit.",
+                color: "warning",
+            });
+            lines.push({ text: "", color: "dim" });
+            const tree = this.treeContent();
+            // Leave room for the 4 chrome rows above and the footer below so the
+            // hint/exit line is never the part that gets clipped.
+            const room = this.inactiveBody();
+            this.treeScroll = clampScroll(this.treeScroll, tree.lines.length, room);
+            lines.push(...tree.lines.slice(this.treeScroll, this.treeScroll + room));
+            lines.push({ text: "  read-only · ↑/↓ scroll · q/Esc close · /wg on to activate", color: "dim" });
+        }
+        else if (!snapshot) {
             lines.push({ text: "wg-fleet · daemon offline", color: "dim" });
             lines.push({ text: "  no fleet snapshot available · q close", color: "dim" });
         }
@@ -709,13 +798,13 @@ export class FleetPanelComponent {
             const top = total === 0 ? 0 : this.detailScroll + 1;
             const bottom = Math.min(total, this.detailScroll + body);
             lines.push({
-                text: this.color("accent", `wg-fleet · ${this.selectedId ?? "?"} · detail (wg show) · ${pct}% [lines ${top}-${bottom}/${total}]`),
+                text: this.color("accent", `wg-fleet · ${this.selectedId ?? "?"} · detail (wg show) · ${pct}% [lines ${top}-${bottom}/${total}] · [← back]`),
                 color: "accent",
             });
             const windowed = detail.slice(this.detailScroll, this.detailScroll + body);
             lines.push(...windowed);
             lines.push({
-                text: `  PgUp/PgDn ↑/↓ Home/End scroll · ←/q/Esc back · activity/transcript tail below are pi-side`,
+                text: `  PgUp/PgDn ↑/↓ Home/End scroll · ←/q/Esc or click the header to go back · tail below is pi-side`,
                 color: "dim",
             });
         }
@@ -818,19 +907,25 @@ export async function openFleetPanel(ctx, fetchSnapshot, liveDir, options = {}) 
             height,
             transcriptLines: options.transcriptLines,
             enterGuardMs: options.enterGuardMs,
+            inactive: options.inactive === true,
+            ...(options.initialTaskId ? { initialTaskId: options.initialTaskId } : {}),
         }, liveDir, options.fetchDetail);
         let inFlight = false;
-        const timer = setInterval(() => {
-            if (inFlight || component.isDisposed)
-                return;
-            inFlight = true;
-            void fetchSnapshot(columns())
-                .then((snapshot) => component.setSnapshot(snapshot))
-                .catch(() => undefined)
-                .finally(() => {
-                inFlight = false;
-            });
-        }, options.pollMs ?? FLEET_PANEL_POLL_MS);
+        // The dormant view is STATIC: one bounded read, no poller (nothing is live
+        // while WG is dormant, so polling would be pure churn).
+        const timer = options.inactive
+            ? null
+            : setInterval(() => {
+                if (inFlight || component.isDisposed)
+                    return;
+                inFlight = true;
+                void fetchSnapshot(columns())
+                    .then((snapshot) => component.setSnapshot(snapshot))
+                    .catch(() => undefined)
+                    .finally(() => {
+                    inFlight = false;
+                });
+            }, options.pollMs ?? FLEET_PANEL_POLL_MS);
         const instance = {
             render: (width) => component.render(width),
             handleInput: (data) => {
@@ -840,7 +935,8 @@ export async function openFleetPanel(ctx, fetchSnapshot, liveDir, options = {}) 
             handleMouse: (event) => component.handleMouse(event),
             invalidate: () => component.invalidate(),
             dispose: () => {
-                clearInterval(timer);
+                if (timer)
+                    clearInterval(timer);
                 component.dispose();
             },
         };

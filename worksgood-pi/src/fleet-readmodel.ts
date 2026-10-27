@@ -82,6 +82,13 @@ export interface FleetCounts {
 export interface FleetLine {
   text: string;
   color: FleetColor;
+  /**
+   * The WG task this line belongs to, when it is an agent row. Optional and
+   * purely additive: it lets a CLICKABLE surface hit-test "which row did the
+   * pointer hit" from the SAME lines it renders (no second, drifting
+   * re-derivation of the row order).
+   */
+  taskId?: string | null;
 }
 
 const TERMINAL_AGENT_STATUSES = new Set(["done", "failed", "dead"]);
@@ -216,12 +223,21 @@ export function fleetCounts(agents: FleetAgent[], tasks: VizTask[]): FleetCounts
   };
 }
 
-/** The compact one-line summary (also what `/wg-fleet` announces). */
-export function fleetHeaderLine(counts: FleetCounts): string {
+/**
+ * The counts segment on its own (`2 active · 1 in-progress · … · 0 failed`), so a
+ * surface that wants its own affordance prefix (`▸ wg fleet (click) · …`) does
+ * not have to re-derive — or drift from — this vocabulary.
+ */
+export function fleetCountsText(counts: FleetCounts): string {
   return (
-    `wg fleet · ${counts.active} active · ${counts.inProgress} in-progress · ` +
+    `${counts.active} active · ${counts.inProgress} in-progress · ` +
     `${counts.ready} ready · ${counts.blocked} blocked · ${counts.done} done · ${counts.failed} failed`
   );
+}
+
+/** The compact one-line summary (also what `/wg-fleet` announces). */
+export function fleetHeaderLine(counts: FleetCounts): string {
+  return `wg fleet · ${fleetCountsText(counts)}`;
 }
 
 /** Compact human elapsed for an agent: registry uptime, else age of `startedAt`. */
@@ -351,7 +367,7 @@ export function renderFleetLines(snapshot: FleetSnapshot, opts: FleetRenderOptio
     .sort((a, b) => a.id.localeCompare(b.id));
 
   const shown = expanded ? live : live.slice(0, maxCompact);
-  for (const agent of shown) lines.push(agentLine(agent, now));
+  for (const agent of shown) lines.push({ ...agentLine(agent, now), taskId: agent.taskId });
 
   if (!expanded && live.length > shown.length) {
     lines.push({ text: `+${live.length - shown.length} more · /wg-fleet to expand`, color: "dim" });

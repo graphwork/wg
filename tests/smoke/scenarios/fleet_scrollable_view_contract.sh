@@ -163,13 +163,20 @@ NODE
 node --input-type=module - "$plugin" <<'NODE' >/tmp/fleet-scroll-widget.log 2>&1 || \
     loud_fail "fleet ambient widget probe failed" "$(cat /tmp/fleet-scroll-widget.log)"
 const plugin = process.argv[2];
-const { mkdtempSync } = await import("node:fs");
+const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const mod = await import(`${plugin}/embedded/pi-worksgood/index.js`);
 
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "wg-fleet-scroll-"));
 process.env.WG_DAEMON_SOCKET = join(process.env.PI_CODING_AGENT_DIR, "none.sock");
+// Hermetic activation: a synthetic project marked ACTIVE (`.wg/session-active`),
+// so the ambient strip mounts deterministically instead of depending on the
+// inherited smoke environment's WG_DIR. A live strip is the surface under test.
+for (const key of ["WG_DIR", "WG_PROJECT_DIR", "WG_PROJECT_ROOT", "WG_STATE_DIR"]) delete process.env[key];
+const project = join(process.env.PI_CODING_AGENT_DIR, "project");
+mkdirSync(join(project, ".wg"), { recursive: true });
+writeFileSync(join(project, ".wg", "session-active"), "active\n");
 
 const AGENTS = JSON.stringify([{ id: "agent-7", task_id: "task-a", executor: "pi", status: "working", process_alive: true }]);
 const TASKS = JSON.stringify([{ id: "task-a", title: "A", status: "in-progress", after: [], before: [] }]);
@@ -189,9 +196,10 @@ function harness(mode, enabled) {
         : { stdout: TASKS, stderr: "", code: 0, killed: false };
     },
   };
-  if (enabled) process.env.WG_PI_FLEET_VIEW = "1"; else delete process.env.WG_PI_FLEET_VIEW;
+  // The strip is visible by default now; `0` is the explicit opt-out.
+  process.env.WG_PI_FLEET_VIEW = enabled ? "1" : "0";
   mod.default(pi);
-  return { calls, handlers, ctx: { mode, hasUI: mode === "tui", ui, signal: undefined } };
+  return { calls, handlers, ctx: { mode, hasUI: mode === "tui", ui, signal: undefined, cwd: project } };
 }
 const settle = async () => { for (let i = 0; i < 40; i++) await new Promise((r) => setTimeout(r, 25)); };
 const fireStart = (h) => { for (const handler of h.handlers.session_start ?? []) handler({}, h.ctx); };
@@ -208,13 +216,18 @@ if (!last) throw new Error("enabled ambient widget did not mount");
 if (last[0] !== "wg-fleet" || !last[2] || last[2].placement !== "belowEditor") {
   throw new Error(`expected belowEditor widget, got ${JSON.stringify(last)}`);
 }
-if (!Array.isArray(last[1]) || last[1].length < 2) throw new Error("ambient widget should stay multi-line");
+if (typeof last[1] !== "function") throw new Error("ambient widget should mount the CLICKABLE component form");
+const strip = last[1]({ requestRender: () => {}, terminal: { rows: 24, columns: 100 } }, undefined);
+if (typeof strip.handleMouse !== "function") throw new Error("ambient strip is not clickable");
+const stripLines = strip.render(100);
+if (!Array.isArray(stripLines) || stripLines.length < 1) throw new Error("ambient strip rendered nothing");
+if (!String(stripLines[0]).includes("wg fleet")) throw new Error(`strip header missing: ${stripLines[0]}`);
 
 const json = harness("json", true);
 fireStart(json); await settle();
 if (fleetCalls(json).length !== 0) throw new Error("non-TUI mode mounted a widget");
 
-console.log("probe ok: ambient widget default-off, belowEditor mount, non-TUI silent");
+console.log("probe ok: ambient strip opt-out, clickable belowEditor mount, non-TUI silent");
 for (const h of [off, on, json]) for (const handler of h.handlers.session_shutdown ?? []) handler({}, h.ctx);
 process.exit(0);
 NODE

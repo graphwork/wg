@@ -144,10 +144,18 @@ export function fleetCounts(agents, tasks) {
         failed: counts.failed,
     };
 }
+/**
+ * The counts segment on its own (`2 active · 1 in-progress · … · 0 failed`), so a
+ * surface that wants its own affordance prefix (`▸ wg fleet (click) · …`) does
+ * not have to re-derive — or drift from — this vocabulary.
+ */
+export function fleetCountsText(counts) {
+    return (`${counts.active} active · ${counts.inProgress} in-progress · ` +
+        `${counts.ready} ready · ${counts.blocked} blocked · ${counts.done} done · ${counts.failed} failed`);
+}
 /** The compact one-line summary (also what `/wg-fleet` announces). */
 export function fleetHeaderLine(counts) {
-    return (`wg fleet · ${counts.active} active · ${counts.inProgress} in-progress · ` +
-        `${counts.ready} ready · ${counts.blocked} blocked · ${counts.done} done · ${counts.failed} failed`);
+    return `wg fleet · ${fleetCountsText(counts)}`;
 }
 /** Compact human elapsed for an agent: registry uptime, else age of `startedAt`. */
 export function agentElapsed(agent, now = Date.now()) {
@@ -270,7 +278,7 @@ export function renderFleetLines(snapshot, opts = {}) {
         .sort((a, b) => a.id.localeCompare(b.id));
     const shown = expanded ? live : live.slice(0, maxCompact);
     for (const agent of shown)
-        lines.push(agentLine(agent, now));
+        lines.push({ ...agentLine(agent, now), taskId: agent.taskId });
     if (!expanded && live.length > shown.length) {
         lines.push({ text: `+${live.length - shown.length} more · /wg-fleet to expand`, color: "dim" });
     }

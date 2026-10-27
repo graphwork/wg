@@ -305,13 +305,21 @@ describe("renderFleetLines — compact/expand", () => {
 // ── config gate ──────────────────────────────────────────────────────────────
 
 describe("fleet config gate", () => {
-  it("is disabled by default", () => {
-    expect(DEFAULT_FLEET_VIEW_CONFIG.enabled).toBe(false);
+  // The clickable STRIP is the default surface: it used to default OFF, so a
+  // fresh operator saw nothing clickable and concluded the feature was missing.
+  it("defaults to a visible, FOLDED one-line strip", () => {
+    expect(DEFAULT_FLEET_VIEW_CONFIG.enabled).toBe(true);
+    expect(DEFAULT_FLEET_VIEW_CONFIG.collapsed).toBe(true); // start folded (asyncWidgetCollapsed-style)
+    expect(DEFAULT_FLEET_VIEW_CONFIG.expanded).toBe(false);
     expect(DEFAULT_FLEET_VIEW_CONFIG.placement).toBe("belowEditor");
-    expect(parseFleetViewConfig({}).enabled).toBe(false);
-    expect(parseFleetViewConfig({ fleetView: true }).enabled).toBe(true);
-    expect(parseFleetViewConfig({ fleetView: "yes" }).enabled).toBe(true);
-    expect(parseFleetViewConfig(null).enabled).toBe(false);
+    expect(parseFleetViewConfig({}).enabled).toBe(true);
+    expect(parseFleetViewConfig({}).collapsed).toBe(true);
+    expect(parseFleetViewConfig(null).enabled).toBe(true);
+    // The operator's explicit opt-out is honoured, in both directions.
+    expect(parseFleetViewConfig({ fleetView: false }).enabled).toBe(false);
+    expect(parseFleetViewConfig({ fleetView: "no" }).enabled).toBe(false);
+    expect(parseFleetViewConfig({ fleetView: true, fleetViewCollapsed: false }).collapsed).toBe(false);
+    expect(parseFleetViewConfig({ fleetViewCollapsed: "yes" }).collapsed).toBe(true);
   });
 
   it("reads the pi-subagents-style extension config file (opt-in)", () => {
@@ -325,10 +333,15 @@ describe("fleet config gate", () => {
     expect(config.placement).toBe("belowEditor");
   });
 
-  it("degrades to disabled when no config file exists and honours the env override", () => {
+  it("defaults to enabled with no config file and honours the env opt-out", () => {
     const home = mkdtempSync(join(tmpdir(), "wg-fleet-cfg-empty-"));
-    expect(readFleetViewConfig({ PI_CODING_AGENT_DIR: home }).enabled).toBe(false);
+    expect(readFleetViewConfig({ PI_CODING_AGENT_DIR: home }).enabled).toBe(true);
+    expect(readFleetViewConfig({ PI_CODING_AGENT_DIR: home }).collapsed).toBe(true);
+    expect(readFleetViewConfig({ PI_CODING_AGENT_DIR: home, WG_PI_FLEET_VIEW: "0" }).enabled).toBe(false);
     expect(readFleetViewConfig({ PI_CODING_AGENT_DIR: home, WG_PI_FLEET_VIEW: "1" }).enabled).toBe(true);
+    expect(
+      readFleetViewConfig({ PI_CODING_AGENT_DIR: home, WG_PI_FLEET_VIEW_COLLAPSED: "0" }).collapsed,
+    ).toBe(false);
   });
 });
 
@@ -444,7 +457,7 @@ describe("installFleetView", () => {
     }
   });
 
-  it("mounts a multi-line widget BELOW the editor when enabled in TUI mode", async () => {
+  it("mounts a CLICKABLE one-line strip BELOW the editor when the session is active", async () => {
     vi.useFakeTimers();
     try {
       const { pi, handlers, ui, ctx } = makePi("tui");
@@ -460,10 +473,22 @@ describe("installFleetView", () => {
       const call = ui.setWidget.mock.calls.at(-1)!;
       expect(call[0]).toBe(FLEET_WIDGET_KEY);
       expect(call[2]).toEqual({ placement: "belowEditor" });
-      expect(Array.isArray(call[1])).toBe(true);
-      expect(call[1]!.length).toBeGreaterThan(1); // multi-line
-      expect(String(call[1]![0])).toContain("wg fleet ·");
+      // COMPONENT form: a factory, so pi can dispatch mouse events to it.
+      expect(typeof call[1]).toBe("function");
+      const tui = { requestRender: vi.fn(), terminal: { rows: 24, columns: 80 } };
+      const component = (call[1] as (tui: unknown, theme: unknown) => {
+        render: (w: number) => string[];
+        handleMouse?: (event: unknown) => unknown;
+      })(tui, undefined);
+      expect(typeof component.handleMouse).toBe("function");
+      const lines = component.render(80);
+      // Folded by default: ONE line, the live status strip.
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("wg fleet (click)");
+      expect(lines[0]).toContain("in-progress");
+      expect(lines[0]).toContain("(click)");
       expect(controller.isEnabled()).toBe(true);
+      expect(controller.isFolded()).toBe(true);
       handlers.get("session_shutdown")!({}, ctx);
     } finally {
       vi.useRealTimers();
@@ -486,7 +511,7 @@ describe("installFleetView", () => {
     }
   });
 
-  it("/wg-fleet toggles expand/collapse and explains when disabled", async () => {
+  it("/wg-fleet fold|unfold|expand|collapse drives the strip and explains when disabled", async () => {
     const { pi, commands, ctx } = makePi("tui");
     const controller = installFleetView(pi as never, backend as never, {}, { config: { enabled: false } });
     await commands.get("wg-fleet")!.handler("", ctx);
@@ -494,12 +519,33 @@ describe("installFleetView", () => {
     expect(controller.isExpanded()).toBe(false);
 
     const enabled = makePi("tui");
+    await new Promise((r) => setTimeout(r, 0));
     const on = installFleetView(enabled.pi as never, backend as never, {}, { config: { enabled: true } });
     await enabled.commands.get("wg-fleet")!.handler("expand", enabled.ctx);
     expect(on.isExpanded()).toBe(true);
+    expect(on.isFolded()).toBe(false);
     await enabled.commands.get("wg-fleet")!.handler("collapse", enabled.ctx);
-    expect(on.isExpanded()).toBe(false);
+    expect(on.isFolded()).toBe(true);
+    await enabled.commands.get("wg-fleet")!.handler("unfold", enabled.ctx);
+    expect(on.isFolded()).toBe(false);
+    await enabled.commands.get("wg-fleet")!.handler("fold", enabled.ctx);
+    expect(on.isFolded()).toBe(true);
     await enabled.commands.get("wg-fleet")!.handler("toggle", enabled.ctx);
-    expect(on.isExpanded()).toBe(true);
+    expect(on.isFolded()).toBe(false);
+    expect(on.isExpanded()).toBe(true); // body layout flag is untouched by fold/toggle
+  });
+
+  it("mounts NOTHING in a project with no .wg/ and no activation (off)", async () => {
+    const { pi, handlers, ui, ctx } = makePi("tui");
+    const controller = installFleetView(pi as never, backend as never, {}, {
+      config: { enabled: true },
+      isActive: () => false,
+      isProjectActive: () => false,
+      hasWgDir: () => false,
+    });
+    handlers.get("session_start")!({}, ctx);
+    await Promise.resolve();
+    expect(ui.setWidget).not.toHaveBeenCalled();
+    expect(controller.mode()).toBe("off");
   });
 });

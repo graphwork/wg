@@ -191,12 +191,19 @@ NODE
 node --input-type=module - "$plugin" <<'NODE' >/tmp/fleet-parity-widget.log 2>&1 || \
     loud_fail "fleet ambient widget probe failed" "$(cat /tmp/fleet-parity-widget.log)"
 const plugin = process.argv[2];
-const { mkdtempSync } = await import("node:fs");
+const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const mod = await import(`${plugin}/embedded/pi-worksgood/index.js`);
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "wg-fleet-parity-"));
 process.env.WG_DAEMON_SOCKET = join(process.env.PI_CODING_AGENT_DIR, "none.sock");
+// Hermetic activation: a synthetic project marked ACTIVE (`.wg/session-active`),
+// so the ambient strip mounts deterministically instead of depending on the
+// inherited smoke environment's WG_DIR. A live strip is the surface under test.
+for (const key of ["WG_DIR", "WG_PROJECT_DIR", "WG_PROJECT_ROOT", "WG_STATE_DIR"]) delete process.env[key];
+const project = join(process.env.PI_CODING_AGENT_DIR, "project");
+mkdirSync(join(project, ".wg"), { recursive: true });
+writeFileSync(join(project, ".wg", "session-active"), "active\n");
 const AGENTS = JSON.stringify([{ id: "agent-7", task_id: "task-a", executor: "pi", status: "working", process_alive: true }]);
 const TASKS = JSON.stringify([{ id: "task-a", title: "A", status: "in-progress", after: [], before: [] }]);
 function harness(mode, enabled) {
@@ -213,9 +220,10 @@ function harness(mode, enabled) {
         : { stdout: TASKS, stderr: "", code: 0, killed: false };
     },
   };
-  if (enabled) process.env.WG_PI_FLEET_VIEW = "1"; else delete process.env.WG_PI_FLEET_VIEW;
+  // The strip is visible by default now; `0` is the explicit opt-out.
+  process.env.WG_PI_FLEET_VIEW = enabled ? "1" : "0";
   mod.default(pi);
-  return { calls, handlers, ctx: { mode, hasUI: mode === "tui", ui, signal: undefined } };
+  return { calls, handlers, ctx: { mode, hasUI: mode === "tui", ui, signal: undefined, cwd: project } };
 }
 const settle = async () => { for (let i = 0; i < 40; i++) await new Promise((r) => setTimeout(r, 25)); };
 const fireStart = (h) => { for (const handler of h.handlers.session_start ?? []) handler({}, h.ctx); };
@@ -225,7 +233,7 @@ if (fleetCalls(off).length !== 0) throw new Error("disabled ambient widget mount
 const on = harness("tui", true); fireStart(on); await settle();
 const last = fleetCalls(on).at(-1);
 if (!last || last[2]?.placement !== "belowEditor") throw new Error(`ambient widget should mount belowEditor: ${JSON.stringify(last)}`);
-console.log("probe ok: ambient widget default-off, belowEditor mount unaffected");
+console.log("probe ok: ambient strip opt-out, belowEditor mount unaffected");
 for (const h of [off, on]) for (const handler of h.handlers.session_shutdown ?? []) handler({}, h.ctx);
 process.exit(0);
 NODE

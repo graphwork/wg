@@ -185,19 +185,30 @@ export default function worksgoodPi(pi) {
     // for one. Configurable via $WG_PI_BASH_TIMEOUT_SECS or the extension
     // config file's `bashTimeoutSecs`. Always on (it only fills an absent field).
     installBashToolTimeout(pi, readBashTimeoutConfig(process.env));
-    const fleetView = installFleetView(pi, backend, env, { isActive: () => activation.isActive() }); // /wg-fleet bottom panel (config-gated, TUI mode only, read-only)
+    const fleetView = installFleetView(pi, backend, env, {
+        // The ambient strip is CLICKABLE and follows the session state: live when
+        // /wg on (or the project is marked active), a one-line discovery hint when
+        // WG is dormant but the project has a .wg/, and nothing otherwise.
+        isActive: () => activation.isActive(),
+        isProjectActive: () => activation.isProjectActive(),
+        projectRoot: () => activation.projectRoot(),
+    }); // /wg-fleet bottom panel (TUI mode only, read-only, click-to-fold)
     const wake = installCompletionWatcher(pi, backend, env, { isActive: () => activation.isActive() }); // /wg-wake + polling watcher: tell the session when tasks finish
-    // Surfaces follow the SESSION state: /wg on mounts them, /wg off unmounts them.
+    // Surfaces follow the SESSION state: /wg on mounts them, /wg off re-evaluates
+    // them. Both hooks call the SAME `sync`, which derives the surface from the
+    // activation state — so /wg off leaves the dormant discovery strip (when the
+    // project still has a .wg/) instead of blanking every affordance.
     activation.setHooks({
         mount: async (ctx) => {
             if (ctx)
-                await fleetView.mount(ctx);
+                await fleetView.sync(ctx);
             if (ctx)
                 wake.start(ctx);
         },
         unmount: async (ctx) => {
             wake.stop();
-            fleetView.unmount(ctx);
+            if (ctx)
+                await fleetView.sync(ctx);
         },
     });
     // Tear down any session-scoped resources (the future daemon-IPC socket /
@@ -215,10 +226,11 @@ export { ACTIVATION_MARKER_CONTENT, ACTIVATION_MARKER_FILE, ACTIVATION_STATE_DIR
 export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js";
 export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_PANEL_POLL_MS } from "./viz-panel.js";
 export { installFleetView, FLEET_WIDGET_KEY, FLEET_POLL_MS, } from "./fleet-view.js";
+export { FleetStripComponent, STRIP_CLICK_HINT, STRIP_DORMANT_CLICK_HINT, STRIP_DORMANT_GLYPH, STRIP_DORMANT_HINT, STRIP_FOLDED_GLYPH, STRIP_FOLD_HINT, STRIP_LINE_MAX_WIDTH, STRIP_ROW_HINT, STRIP_UNFOLDED_GLYPH, STRIP_UNFOLD_HINT, dormantStripLine, stripSummaryLine, } from "./fleet-strip.js";
 export { FleetPanelComponent, openFleetPanel, makeFleetFetcher, makeFleetDetailFetcher, FLEET_PANEL_POLL_MS, DETAIL_ENTER_GUARD_MS, } from "./fleet-panel.js";
 export { DEFAULT_TRANSCRIPT_LINES, FLEET_PANEL_DEFAULT_HEIGHT, FLEET_PANEL_MIN_HEIGHT, MAX_TRANSCRIPT_BODY_BYTES, MAX_TRANSCRIPT_LINES, MAX_TRANSCRIPT_LINE_CHARS, TRANSCRIPT_TAIL_BYTES, agentActivityLabel, agentForTask, agentStreamCandidates, agentUsageDetailLabel, agentUsageLabel, boundTranscriptBody, buildFleetTree, clampScroll, fleetCountsHeader, getFleetRowToVizTask, getFleetToVizSnapshot, maxScroll, pageScroll, readAgentStreamTail, readTextTail, renderWgTree, safeTailText, scrollToKeepVisible, transcriptLineLimit, wgTreeLineDepth, } from "./fleet-panel-model.js";
 export { DEFAULT_FLEET_VIEW_CONFIG, FLEET_CONFIG_DIRS, fleetConfigPaths, parseFleetViewConfig, readFleetViewConfig, resolveAgentDir, } from "./fleet-config.js";
-export { agentColor, agentElapsed, agentGlyph, agentLine, agentModel, agentUsageCompact, agentUsageFull, compactCount, fleetCounts, fleetHeaderLine, fleetSummaryLine, isAgentAlive, renderFleetLines, taskColor, taskGlyph, } from "./fleet-readmodel.js";
+export { agentColor, agentElapsed, agentGlyph, agentLine, agentModel, agentUsageCompact, agentUsageFull, compactCount, fleetCounts, fleetCountsText, fleetHeaderLine, fleetSummaryLine, isAgentAlive, renderFleetLines, taskColor, taskGlyph, } from "./fleet-readmodel.js";
 export { FALLBACK_STATUS_PALETTE, colorModeOf, fgAnsi, normalizeStatusPalette, paintRgb, paintStatusText, paletteNotice, resolveStatusPalette, rgbToAnsi256, statusRgb, } from "./status-palette.js";
 export { FleetPoller, fetchAgents, fetchFleetOverSocket, fleetSnapshotWithFallback, normalizeAgent, } from "./fleet-snapshot.js";
 export { fetchVizSnapshot, resolveSocketPath, socketCandidates, vizSnapshotWithFallback, VizPoller, } from "./viz-snapshot.js";

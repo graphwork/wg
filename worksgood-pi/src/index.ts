@@ -200,18 +200,28 @@ export default function worksgoodPi(pi: ExtensionAPI): void {
   // config file's `bashTimeoutSecs`. Always on (it only fills an absent field).
   installBashToolTimeout(pi, readBashTimeoutConfig(process.env));
 
-  const fleetView = installFleetView(pi, backend, env, { isActive: () => activation.isActive() }); // /wg-fleet bottom panel (config-gated, TUI mode only, read-only)
+  const fleetView = installFleetView(pi, backend, env, {
+    // The ambient strip is CLICKABLE and follows the session state: live when
+    // /wg on (or the project is marked active), a one-line discovery hint when
+    // WG is dormant but the project has a .wg/, and nothing otherwise.
+    isActive: () => activation.isActive(),
+    isProjectActive: () => activation.isProjectActive(),
+    projectRoot: () => activation.projectRoot(),
+  }); // /wg-fleet bottom panel (TUI mode only, read-only, click-to-fold)
   const wake = installCompletionWatcher(pi, backend, env, { isActive: () => activation.isActive() }); // /wg-wake + polling watcher: tell the session when tasks finish
 
-  // Surfaces follow the SESSION state: /wg on mounts them, /wg off unmounts them.
+  // Surfaces follow the SESSION state: /wg on mounts them, /wg off re-evaluates
+  // them. Both hooks call the SAME `sync`, which derives the surface from the
+  // activation state — so /wg off leaves the dormant discovery strip (when the
+  // project still has a .wg/) instead of blanking every affordance.
   activation.setHooks({
     mount: async (ctx) => {
-      if (ctx) await fleetView.mount(ctx);
+      if (ctx) await fleetView.sync(ctx);
       if (ctx) wake.start(ctx);
     },
     unmount: async (ctx) => {
       wake.stop();
-      fleetView.unmount(ctx);
+      if (ctx) await fleetView.sync(ctx);
     },
   });
 
@@ -283,7 +293,23 @@ export {
   FLEET_WIDGET_KEY,
   FLEET_POLL_MS,
 } from "./fleet-view.js";
-export type { FleetViewController, InstallFleetOptions } from "./fleet-view.js";
+export type { FleetViewController, InstallFleetOptions, FleetSurfaceMode } from "./fleet-view.js";
+export {
+  FleetStripComponent,
+  STRIP_CLICK_HINT,
+  STRIP_DORMANT_CLICK_HINT,
+  STRIP_DORMANT_GLYPH,
+  STRIP_DORMANT_HINT,
+  STRIP_FOLDED_GLYPH,
+  STRIP_FOLD_HINT,
+  STRIP_LINE_MAX_WIDTH,
+  STRIP_ROW_HINT,
+  STRIP_UNFOLDED_GLYPH,
+  STRIP_UNFOLD_HINT,
+  dormantStripLine,
+  stripSummaryLine,
+} from "./fleet-strip.js";
+export type { FleetStripInit, FleetStripMode, StripRow, StripRowKind } from "./fleet-strip.js";
 export {
   FleetPanelComponent,
   openFleetPanel,
@@ -342,6 +368,7 @@ export {
   agentUsageFull,
   compactCount,
   fleetCounts,
+  fleetCountsText,
   fleetHeaderLine,
   fleetSummaryLine,
   isAgentAlive,

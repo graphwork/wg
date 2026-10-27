@@ -9,25 +9,37 @@
  *
  *   ~/.pi/agent/extensions/pi-worksgood/config.json
  *   {
- *     "fleetView": true,          // default: false (no chatter unless asked)
- *     "fleetViewExpanded": false,  // start compact (header + a few live agents)
+ *     "fleetView": true,           // default: true — the ambient strip is visible
+ *                                  // when this session/project is active
+ *     "fleetViewCollapsed": true,  // start FOLDED (the one-line live status strip)
+ *     "fleetViewExpanded": false,  // unfolded: compact body (a few live agents)
  *     "fleetViewPlacement": "belowEditor",
  *     "fleetViewPollMs": 5000
  *   }
  *
+ * **The strip is the default surface, not the exception.** It used to default to
+ * OFF, so a fresh operator saw nothing clickable and concluded the clickable
+ * fleet did not exist. The one-line live status strip is now visible by default
+ * whenever WG is active in the session (or the project is marked active), and a
+ * dormant-but-WG project still gets a one-line discovery hint. `fleetView:
+ * false` / `WG_PI_FLEET_VIEW=0` is the (honoured) opt-out; the FULL scrollable
+ * cockpit stays an explicit open (`/wg-fleet`, or a click on the strip).
+ *
  * Resolution order (first win):
- *   1. explicit env override (`WG_PI_FLEET_VIEW`, `WG_PI_FLEET_VIEW_POLL_MS`);
+ *   1. explicit env override (`WG_PI_FLEET_VIEW`, `WG_PI_FLEET_VIEW_COLLAPSED`,
+ *      `WG_PI_FLEET_VIEW_EXPANDED`, `WG_PI_FLEET_VIEW_POLL_MS`);
  *   2. the first existing config file among the candidate dirs;
- *   3. the safe default (`enabled: false`).
+ *   3. the safe default (`enabled: true`, `collapsed: true`).
  *
  * Everything here is pure/read-only — it never writes a config file.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-/** Safe defaults: disabled, compact, below the editor, 5s cadence. */
+/** Safe defaults: visible one-line strip, compact body, below the editor, 5s cadence. */
 export const DEFAULT_FLEET_VIEW_CONFIG = {
-    enabled: false,
+    enabled: true,
+    collapsed: true,
     expanded: false,
     placement: "belowEditor",
     pollMs: 5000,
@@ -92,6 +104,7 @@ export function parseFleetViewConfig(raw) {
     const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     return {
         enabled: asBool(obj.fleetView, DEFAULT_FLEET_VIEW_CONFIG.enabled),
+        collapsed: asBool(obj.fleetViewCollapsed, DEFAULT_FLEET_VIEW_CONFIG.collapsed),
         expanded: asBool(obj.fleetViewExpanded, DEFAULT_FLEET_VIEW_CONFIG.expanded),
         placement: asPlacement(obj.fleetViewPlacement, DEFAULT_FLEET_VIEW_CONFIG.placement),
         pollMs: asPollMs(obj.fleetViewPollMs, DEFAULT_FLEET_VIEW_CONFIG.pollMs),
@@ -118,6 +131,7 @@ export function readFleetViewConfig(env = process.env, io = defaultIO, explicitP
     }
     return {
         enabled: asBool(env.WG_PI_FLEET_VIEW, config.enabled),
+        collapsed: asBool(env.WG_PI_FLEET_VIEW_COLLAPSED, config.collapsed),
         expanded: asBool(env.WG_PI_FLEET_VIEW_EXPANDED, config.expanded),
         placement: asPlacement(env.WG_PI_FLEET_VIEW_PLACEMENT, config.placement),
         pollMs: asPollMs(env.WG_PI_FLEET_VIEW_POLL_MS, config.pollMs),

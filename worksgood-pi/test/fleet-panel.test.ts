@@ -875,6 +875,125 @@ describe("FleetPanelComponent", () => {
     expect(scrolled.at(-1)).toContain("drag");
   });
 
+  it("detail view: the header is a clickable BACK affordance ([<-])", async () => {
+    const { component, render } = makeComponent(bigSnap(40), 8, undefined, async () => ({
+      text: "wg show body line 1\nline 2",
+    }));
+    render();
+    component.handleMouse({ type: "press", y: 1, button: "left" });
+    component.handleMouse({ type: "click", y: 1, button: "left", clickCount: 2 });
+    expect(component.detailVisible).toBe(true);
+    await flush();
+    const detail = component.render(100);
+    // The afforance is VISIBLE, so the click is discoverable, not a secret.
+    expect(detail[0]).toContain("[← back]");
+    expect(detail.at(-1)).toContain("click the header to go back");
+
+    // A standalone click on the header row (outside the content area) goes back
+    // exactly like <-/h/q/Esc — an object result, never a bare boolean.
+    const back = component.handleMouse({ type: "click", y: 0, button: "left", clickCount: 1 });
+    expect(back).toMatchObject({ handled: true });
+    expect(isPiMouseResult(back)).toBe(true);
+    expect(component.detailVisible).toBe(false);
+
+    // ...while a click INSIDE the detail body is not a back navigation.
+    component.handleMouse({ type: "press", y: 1, button: "left" });
+    component.handleMouse({ type: "click", y: 1, button: "left", clickCount: 2 });
+    expect(component.detailVisible).toBe(true);
+    component.handleMouse({ type: "click", y: 3, button: "left", clickCount: 1 });
+    expect(component.detailVisible).toBe(true);
+  });
+
+  it("ignores standalone clicks outside the content area in tree mode", () => {
+    const { component, render } = makeComponent(bigSnap(40), 6); // rows 0..5, content 1..4
+    render();
+    const sel = component.selected;
+    for (const y of [0, 5, -1, 9999]) {
+      expect(component.handleMouse({ type: "click", y, button: "left" })).toBeUndefined();
+    }
+    expect(component.selected).toBe(sel);
+    expect(component.detailVisible).toBe(false);
+  });
+
+  it("preselects a task when opened from an ambient agent-row click", () => {
+    const tui = { requestRender: vi.fn(), terminal: { rows: 10, columns: 100 } };
+    const component = new FleetPanelComponent(
+      bigSnap(10) as never,
+      tui as never,
+      vi.fn(),
+      null,
+      { initialTaskId: "task-003" },
+    );
+    component.render(100);
+    expect(component.selected).toBe("task-003");
+  });
+
+  it("inactive view: counts + `/wg on to activate` hint over a STATIC tree", () => {
+    const tui = { requestRender: vi.fn(), terminal: { rows: 14, columns: 100 } };
+    const closed = vi.fn();
+    const component = new FleetPanelComponent(
+      bigSnap(40) as never,
+      tui as never,
+      closed,
+      null,
+      { inactive: true },
+    );
+    const lines = component.render(100);
+    const text = lines.join("\n");
+    expect(lines[0]).toContain("inactive");
+    expect(lines[0]).toContain("in-progress");
+    expect(text).toContain("/wg on to activate");
+    expect(text).toContain("read-only");
+    // NOT the live cockpit: no selection marker and no per-agent activity.
+    expect(text).not.toContain("❯");
+    expect(text).not.toContain("agent-7");
+    // The static tree IS there (read-only structure).
+    expect(text).toContain("task-000");
+
+    // Nothing to navigate: clicks are unhandled, wheel still scrolls, q closes.
+    expect(component.handleMouse({ type: "click", y: 1, button: "left" })).toBeUndefined();
+    expect(component.handleMouse({ type: "press", y: 2, button: "left" })).toBeUndefined();
+    const before = component.scrollOffset;
+    expect(component.handleMouse({ type: "wheel", wheelDelta: 3 })).toMatchObject({ handled: true });
+    expect(component.scrollOffset).toBeGreaterThan(before);
+    // Enter never drills into a detail view here.
+    component.handleInput("\r");
+    expect(component.detailVisible).toBe(false);
+    component.handleInput("q");
+    expect(closed).toHaveBeenCalled();
+  });
+
+  it("inactive view still explains itself when the daemon is offline", () => {
+    const tui = { requestRender: vi.fn(), terminal: { rows: 10, columns: 100 } };
+    const component = new FleetPanelComponent(null, tui as never, vi.fn(), null, { inactive: true });
+    const text = component.render(100).join("\n");
+    expect(text).toContain("inactive");
+    expect(text).toContain("/wg on to activate");
+  });
+
+  it("CONTRACT: the inactive view obeys the same mouse contract", () => {
+    const tui = { requestRender: vi.fn(), terminal: { rows: 12, columns: 100 } };
+    const component = new FleetPanelComponent(treeSnap() as never, tui as never, vi.fn(), null, {
+      inactive: true,
+    });
+    component.render(100);
+    const battery: Array<Record<string, unknown>> = [
+      { type: "click", y: 0, button: "left" },
+      { type: "click", y: 2, button: "left" },
+      { type: "press", y: 2, button: "left" },
+      { type: "drag", y: 3 },
+      { type: "release", y: 3 },
+      { type: "wheel", wheelDelta: 4 },
+      {},
+    ];
+    for (const event of battery) {
+      const result = component.handleMouse(event as never);
+      expect(isPiMouseResult(result)).toBe(true);
+      if (result) expect(typeof result).toBe("object");
+      expect(() => piDispatchMouseEvent(component, event)).not.toThrow();
+    }
+  });
+
   it("CONTRACT: handleMouse never returns a truthy non-object (pi-core crash guard)", () => {
     // Regression for the wheel-scroll crash:
     //   TypeError: Cannot use 'in' operator to search for 'target' in true
