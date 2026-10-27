@@ -223,18 +223,34 @@ for (const h of [live, dormant, absent]) {
 process.exit(0);
 NODE
 
-# ── 4. embed == cache (the running binary embeds exactly the plugin on disk) ─
+# ── 4. The committed embed matches a fresh build of src (anti-drift) ────────
+# `npm run build` above wrote worksgood-pi/pi-worksgood/; the committed bundle
+# the wg binary embeds must be byte-identical, so a source edit without a
+# re-embed fails HERE rather than silently shipping an old strip.
+for built in "$plugin"/pi-worksgood/*.js; do
+    base="$(basename "$built")"
+    [ -f "$plugin/embedded/pi-worksgood/$base" ] || \
+        loud_fail "embed is missing $base" "worksgood-pi/embedded/pi-worksgood/$base"
+    diff -q "$built" "$plugin/embedded/pi-worksgood/$base" >/dev/null || \
+        loud_fail "embed is STALE for $base" \
+            "worksgood-pi/embedded/pi-worksgood/$base differs from a fresh build — run \`make embed-worksgood-pi\`"
+done
+echo "embed ok: committed bundle == fresh build ($(ls "$plugin"/pi-worksgood/*.js | wc -l) files)"
+
+# The operator's materialized plugin CACHE is owned by the installed binary, so
+# a mismatch here is a note (it refreshes on the next `wg pi-plugin install` /
+# `wg dev-sync`), never a failure of this task's candidate bytes.
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/wg/worksgood-pi"
 compat="$(sed -n 's/.*WG_PI_PLUGIN_COMPAT_VERSION: &str = "\([^"]*\)".*/\1/p' "$repo/src/pi_plugin/mod.rs" | head -n1)"
 if [ -n "$compat" ] && [ -f "$cache/$compat/pi-worksgood/fleet-strip.js" ]; then
-    if ! diff -q "$plugin/embedded/pi-worksgood/fleet-strip.js" \
+    if diff -q "$plugin/embedded/pi-worksgood/fleet-strip.js" \
         "$cache/$compat/pi-worksgood/fleet-strip.js" >/dev/null; then
-        loud_fail "plugin cache is STALE" \
-            "$cache/$compat/pi-worksgood/fleet-strip.js differs from the embedded strip — run \`wg pi-plugin install\`"
+        echo "cache ok: embedded fleet-strip.js == plugin cache ($compat)"
+    else
+        echo "note: plugin cache ($compat) predates this build — run \`wg pi-plugin install\` (or \`wg dev-sync\`) to refresh it"
     fi
-    echo "cache ok: embedded fleet-strip.js == plugin cache ($compat)"
 else
-    echo "note: plugin cache not materialized for compat $compat — skipping the embed==cache check"
+    echo "note: plugin cache not materialized for compat $compat — skipping the cache comparison"
 fi
 
 echo "fleet clickable strip OK"
