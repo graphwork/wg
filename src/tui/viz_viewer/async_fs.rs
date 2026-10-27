@@ -9,10 +9,6 @@
 //! recent cached value (possibly stale). When a request completes, the cache
 //! is updated; the next render frame picks up the fresh value.
 //!
-//! Slow-disk detection: every operation records its wall-clock duration. If a
-//! single operation exceeds [`SLOW_OP_THRESHOLD`], the most recent slow op is
-//! exposed via [`AsyncFs::slow_disk_indicator`] for display in the status bar.
-//!
 //! See task `fix-tui-must` for the architectural rationale.
 
 use std::collections::{HashMap, HashSet};
@@ -24,19 +20,6 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use worksgood::graph::WorkGraph;
-
-/// Operations slower than this surface a "disk slow" indicator in the status bar.
-pub const SLOW_OP_THRESHOLD: Duration = Duration::from_millis(500);
-/// How long the slow-disk indicator stays visible after the last slow op.
-pub const SLOW_OP_VISIBLE: Duration = Duration::from_secs(5);
-
-/// One snapshot of a slow disk operation, surfaced for diagnostic display.
-#[derive(Clone, Debug)]
-pub struct SlowOp {
-    pub label: String,
-    pub duration: Duration,
-    pub at: Instant,
-}
 
 /// Identifies an in-flight request for de-duplication. We never queue two
 /// concurrent requests for the same target — that just floods the worker
@@ -69,11 +52,11 @@ enum FsRequest {
 /// written into the shared cache; this message just tells the main thread
 /// "you can dispatch a fresh request for this key now."
 enum FsResponse {
-    LoadGraphDone { duration: Duration, success: bool },
-    LoadDiskSnapshotDone { duration: Duration },
-    StatDone { path: PathBuf, duration: Duration },
-    StreamingDone { coord_id: u32, duration: Duration },
-    BumpDone { duration: Duration },
+    LoadGraphDone,
+    LoadDiskSnapshotDone,
+    StatDone { path: PathBuf },
+    StreamingDone { coord_id: u32 },
+    BumpDone,
 }
 
 /// Shared state between worker and main thread.
@@ -95,10 +78,6 @@ struct AsyncFsInner {
     streaming_cache: Mutex<HashMap<u32, String>>,
     /// Bumped each time any streaming entry changes.
     streaming_version: AtomicU64,
-
-    /// Most recent slow operation, if any (cleared by visibility timeout
-    /// in `slow_disk_indicator`).
-    last_slow_op: Mutex<Option<SlowOp>>,
 }
 
 pub struct AsyncFs {
@@ -142,7 +121,6 @@ impl AsyncFs {
             stat_cache: Mutex::new(HashMap::new()),
             streaming_cache: Mutex::new(HashMap::new()),
             streaming_version: AtomicU64::new(0),
-            last_slow_op: Mutex::new(None),
         });
         Self {
             bulk_tx,
@@ -187,34 +165,19 @@ impl AsyncFs {
     pub fn drain_responses(&mut self) -> CacheChanges {
         while let Ok(resp) = self.response_rx.try_recv() {
             match resp {
-                FsResponse::LoadGraphDone { duration, .. } => {
+                FsResponse::LoadGraphDone => {
                     self.in_flight.remove(&RequestKey::LoadGraph);
-                    self.note_op("graph.jsonl", duration);
                 }
-                FsResponse::LoadDiskSnapshotDone { duration } => {
+                FsResponse::LoadDiskSnapshotDone => {
                     self.in_flight.remove(&RequestKey::LoadDiskSnapshot);
-                    if duration >= SLOW_OP_THRESHOLD {
-                        self.note_op("disk-sentinel snapshot", duration);
-                    }
                 }
-                FsResponse::StatDone { path, duration } => {
+                FsResponse::StatDone { path } => {
                     self.in_flight.remove(&RequestKey::Stat(path.clone()));
-                    if duration >= SLOW_OP_THRESHOLD {
-                        let label = format!("stat {}", path.display());
-                        self.note_op(&label, duration);
-                    }
                 }
-                FsResponse::StreamingDone { coord_id, duration } => {
+                FsResponse::StreamingDone { coord_id } => {
                     self.in_flight.remove(&RequestKey::Streaming(coord_id));
-                    if duration >= SLOW_OP_THRESHOLD {
-                        self.note_op("streaming read", duration);
-                    }
                 }
-                FsResponse::BumpDone { duration } => {
-                    if duration >= SLOW_OP_THRESHOLD {
-                        self.note_op("chat-interaction bump", duration);
-                    }
-                }
+                FsResponse::BumpDone => {}
             }
         }
         let graph_v = self.inner.graph_version.load(Ordering::Relaxed);
@@ -226,16 +189,6 @@ impl AsyncFs {
         CacheChanges {
             graph: graph_changed,
             streaming: streaming_changed,
-        }
-    }
-
-    fn note_op(&self, label: &str, duration: Duration) {
-        if duration >= SLOW_OP_THRESHOLD {
-            *self.inner.last_slow_op.lock().unwrap() = Some(SlowOp {
-                label: label.to_string(),
-                duration,
-                at: Instant::now(),
-            });
         }
     }
 
@@ -386,16 +339,6 @@ impl AsyncFs {
                 session_ref,
             });
     }
-
-    /// The most recent slow operation, if it happened within the last
-    /// [`SLOW_OP_VISIBLE`] window. Used by the status-bar renderer.
-    pub fn slow_disk_indicator(&self) -> Option<SlowOp> {
-        let guard = self.inner.last_slow_op.lock().unwrap();
-        guard
-            .as_ref()
-            .filter(|s| s.at.elapsed() < SLOW_OP_VISIBLE)
-            .cloned()
-    }
 }
 
 impl Default for AsyncFs {
@@ -451,40 +394,26 @@ fn worker_loop(rx: Receiver<FsRequest>, tx: SyncSender<FsResponse>, inner: Arc<A
         match req {
             FsRequest::Shutdown => break,
             FsRequest::LoadGraph(path) => {
-                let start = Instant::now();
                 let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-                let result = worksgood::parser::load_graph(&path);
-                let success = result.is_ok();
-                if let Ok(graph) = result {
+                if let Ok(graph) = worksgood::parser::load_graph(&path) {
                     *inner.graph_cache.lock().unwrap() = Some((Arc::new(graph), mtime));
                     inner.graph_version.fetch_add(1, Ordering::Relaxed);
                 }
-                let _ = tx.send(FsResponse::LoadGraphDone {
-                    duration: start.elapsed(),
-                    success,
-                });
+                let _ = tx.send(FsResponse::LoadGraphDone);
             }
             FsRequest::LoadDiskSnapshot(workgraph_dir) => {
-                let start = Instant::now();
                 let snapshot = worksgood::disk_sentinel::load_snapshot(&workgraph_dir)
                     .ok()
                     .flatten();
                 *inner.disk_snapshot_cache.lock().unwrap() = snapshot;
-                let _ = tx.send(FsResponse::LoadDiskSnapshotDone {
-                    duration: start.elapsed(),
-                });
+                let _ = tx.send(FsResponse::LoadDiskSnapshotDone);
             }
             FsRequest::Stat(path) => {
-                let start = Instant::now();
                 let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
                 inner.stat_cache.lock().unwrap().insert(path.clone(), mtime);
-                let _ = tx.send(FsResponse::StatDone {
-                    path,
-                    duration: start.elapsed(),
-                });
+                let _ = tx.send(FsResponse::StatDone { path });
             }
             FsRequest::ReadStreaming { path, coord_id } => {
-                let start = Instant::now();
                 let text = std::fs::read_to_string(&path).unwrap_or_default();
                 {
                     let mut cache = inner.streaming_cache.lock().unwrap();
@@ -495,20 +424,14 @@ fn worker_loop(rx: Receiver<FsRequest>, tx: SyncSender<FsResponse>, inner: Arc<A
                         inner.streaming_version.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                let _ = tx.send(FsResponse::StreamingDone {
-                    coord_id,
-                    duration: start.elapsed(),
-                });
+                let _ = tx.send(FsResponse::StreamingDone { coord_id });
             }
             FsRequest::BumpChatInteraction {
                 workgraph_dir,
                 session_ref,
             } => {
-                let start = Instant::now();
                 worksgood::chat::bump_chat_interaction(&workgraph_dir, &session_ref);
-                let _ = tx.send(FsResponse::BumpDone {
-                    duration: start.elapsed(),
-                });
+                let _ = tx.send(FsResponse::BumpDone);
             }
         }
     }
@@ -581,24 +504,6 @@ mod tests {
         assert_eq!(afs.in_flight.len(), 1);
     }
 
-    #[test]
-    fn slow_op_indicator_set_when_threshold_exceeded() {
-        let mut afs = AsyncFs::new();
-        // Synthetic slow op via the internal hook.
-        afs.note_op("synthetic", Duration::from_millis(800));
-        let ind = afs.slow_disk_indicator();
-        assert!(ind.is_some());
-        let s = ind.unwrap();
-        assert_eq!(s.label, "synthetic");
-    }
-
-    #[test]
-    fn slow_op_indicator_filtered_below_threshold() {
-        let afs = AsyncFs::new();
-        afs.note_op("fast", Duration::from_millis(50));
-        assert!(afs.slow_disk_indicator().is_none());
-    }
-
     /// The architectural property tested by `fix-tui-must`: every main-thread
     /// API on `AsyncFs` must return in < 10ms even when the worker is busy
     /// servicing a slow request. We simulate "the worker is stuck on a slow
@@ -641,10 +546,6 @@ mod tests {
 
             let t0 = Instant::now();
             let _ = afs.drain_responses();
-            max_call_duration = max_call_duration.max(t0.elapsed());
-
-            let t0 = Instant::now();
-            let _ = afs.slow_disk_indicator();
             max_call_duration = max_call_duration.max(t0.elapsed());
 
             // Fire-and-forget chat bump (the keystroke path).

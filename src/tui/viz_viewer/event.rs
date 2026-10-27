@@ -3205,11 +3205,6 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.toggle_trace();
         }
 
-        // T: toggle token display (was t)
-        KeyCode::Char('T') => {
-            app.show_total_tokens = !app.show_total_tokens;
-        }
-
         // One automation/plumbing control: hidden → running only → all.
         // Keep both historical keys as compatible aliases for the same clear
         // cycle rather than two independent, contradictory toggles.
@@ -5498,13 +5493,6 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 return;
             }
 
-            // Service health badge click
-            let in_service_badge =
-                app.last_service_badge_area.width > 0 && app.last_service_badge_area.contains(pos);
-            if in_service_badge {
-                app.toggle_service_control_panel();
-                return;
-            }
             if in_coordinator_bar {
                 // Click on coordinator/user-board tab bar.
                 app.focused_panel = FocusedPanel::RightPanel;
@@ -9607,7 +9595,6 @@ mod scrollbar_tests {
         app.last_fullscreen_right_border_area = Rect::default();
         app.last_fullscreen_top_border_area = Rect::default();
         app.last_fullscreen_bottom_border_area = Rect::default();
-        app.last_service_badge_area = Rect::default();
         app.last_chat_input_area = Rect::default();
         app.last_message_input_area = Rect::default();
         app.last_chat_message_area = Rect::default();
@@ -13502,7 +13489,6 @@ mod chat_open_tests {
         app.last_panel_scrollbar_area = Rect::default();
         app.last_graph_hscrollbar_area = Rect::default();
         app.last_coordinator_bar_area = Rect::default();
-        app.last_service_badge_area = Rect::default();
         app.last_minimized_strip_area = Rect::default();
         app.last_fullscreen_restore_area = Rect::default();
     }
@@ -13681,7 +13667,6 @@ mod chat_open_tests {
             app.last_graph_scrollbar_area = Rect::default();
             app.last_panel_scrollbar_area = Rect::default();
             app.last_graph_hscrollbar_area = Rect::default();
-            app.last_service_badge_area = Rect::default();
             app.last_minimized_strip_area = Rect::default();
             app.last_fullscreen_restore_area = Rect::default();
             app.last_graph_area = Rect::default();

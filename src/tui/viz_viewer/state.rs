@@ -18,9 +18,7 @@ use ratatui::layout::Rect;
 
 use crate::commands::viz::{VizOptions, VizOutput};
 use worksgood::config::Config;
-use worksgood::graph::{
-    CycleAnalysis, Status, TokenUsage, format_tokens, parse_token_usage_live_cached,
-};
+use worksgood::graph::{Status, TokenUsage, format_tokens, parse_token_usage_live_cached};
 use worksgood::parser::load_graph;
 use worksgood::{AgentRegistry, AgentStatus};
 
@@ -1281,10 +1279,10 @@ impl AnimationMode {
 /// the documented InProgress-vs-`html.rs` divergence.
 ///
 /// Every TUI surface that colours a task status MUST route through this function
-/// (`render.rs::cycle_timing_color` is the status-bar consumer) so a status can
-/// never carry two different colours in the same frame. Do not add a local
-/// `match Status { … => Color::… }` table anywhere in the TUI; add the colour to
-/// `status_palette` instead.
+/// (the live consumer is the graph splash animation's `StatusChange` flash) so a
+/// status can never carry two different colours in the same frame. Do not add a
+/// local `match Status { … => Color::… }` table anywhere in the TUI; add the
+/// colour to `status_palette` instead.
 pub(crate) fn flash_color_for_status(status: &Status) -> (u8, u8, u8) {
     worksgood::status_palette::status_rgb(status)
 }
@@ -5829,95 +5827,20 @@ pub fn format_duration_compact(secs: u64) -> String {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// HUD Vitals bar
+// Lifecycle pulse (context-row vitals)
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// State for the always-visible vitals strip at the bottom of the TUI.
+/// Cached lifecycle pulse read by the inspector's one contextual row.
 #[derive(Default)]
 pub struct VitalsState {
     /// Number of agents currently alive.
     pub agents_alive: usize,
-    /// Task status counts for the vitals bar.
-    pub open: usize,
+    /// Number of in-progress (=running) tasks.
     pub running: usize,
-    pub done: usize,
-    /// Time of the last operations.jsonl modification (for "last event X ago").
-    pub last_event_time: Option<SystemTime>,
     /// Coordinator last tick time (parsed from coordinator-state).
     pub coord_last_tick: Option<SystemTime>,
     /// Whether the service daemon is running.
     pub daemon_running: bool,
-}
-
-/// Format a vitals bar string from the current state.
-/// Returns a compact one-line string like:
-/// `● 2 agents | 8 open · 3 running · 45 done | last event 4s ago | coord ● 3s`
-#[allow(dead_code)]
-pub fn format_vitals(vitals: &VitalsState) -> String {
-    let mut parts = Vec::new();
-
-    // Agent count
-    let dot = if vitals.agents_alive > 0 {
-        "●"
-    } else {
-        "○"
-    };
-    parts.push(format!("{} {} agents", dot, vitals.agents_alive));
-
-    // Task counts
-    parts.push(format!(
-        "{} open · {} running · {} done",
-        vitals.open, vitals.running, vitals.done
-    ));
-
-    // Last event
-    let event_str = match vitals.last_event_time {
-        Some(t) => match t.elapsed() {
-            Ok(d) => format!("last event {} ago", format_duration_compact(d.as_secs())),
-            Err(_) => "last event just now".to_string(),
-        },
-        None => "no events".to_string(),
-    };
-    parts.push(event_str);
-
-    // Coordinator heartbeat
-    if vitals.daemon_running {
-        let coord_str = match vitals.coord_last_tick {
-            Some(t) => match t.elapsed() {
-                Ok(d) => format!("coord ● {}", format_duration_compact(d.as_secs())),
-                Err(_) => "coord ● 0s".to_string(),
-            },
-            None => "coord ● –".to_string(),
-        };
-        parts.push(coord_str);
-    } else {
-        parts.push("coord ○ down".to_string());
-    }
-
-    parts.join(" | ")
-}
-
-/// Classify the staleness of a duration for color coding.
-/// Returns: Green (<30s), Yellow (30s-5m), Red (>5m).
-pub fn vitals_staleness_color(secs: u64) -> VitalsStaleness {
-    if secs < 30 {
-        VitalsStaleness::Fresh
-    } else if secs < 300 {
-        VitalsStaleness::Stale
-    } else {
-        VitalsStaleness::Dead
-    }
-}
-
-/// Staleness level for vitals color coding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VitalsStaleness {
-    /// <30s — green
-    Fresh,
-    /// 30s–5m — yellow
-    Stale,
-    /// >5m — red
-    Dead,
 }
 
 /// Format a chrono::TimeDelta as a short human-readable duration (e.g. "3m", "1h12m").
@@ -9058,23 +8981,6 @@ pub struct TaskCounts {
     pub plumbing_running: usize,
 }
 
-/// Active cycle timing info for status bar display.
-#[derive(Clone)]
-pub struct CycleTimingEntry {
-    /// Task ID of the cycle header (config owner).
-    pub task_id: String,
-    /// 1-based iteration number.
-    pub iteration: u32,
-    /// Max iterations configured.
-    pub max_iterations: u32,
-    /// Seconds since last iteration completed (None if never completed).
-    pub last_completed_ago_secs: Option<i64>,
-    /// Seconds until next iteration is due (None if unknown, negative if overdue).
-    pub next_due_in_secs: Option<i64>,
-    /// Current status of the cycle header.
-    pub status: Status,
-}
-
 /// A single fuzzy match result for a line.
 #[derive(Clone)]
 pub struct FuzzyLineMatch {
@@ -9124,9 +9030,7 @@ pub(super) struct GraphViewSnapshot {
     visible_position_by_line: Vec<Option<usize>>,
     task_counts: TaskCounts,
     total_usage: TokenUsage,
-    visible_usage: TokenUsage,
     task_token_map: HashMap<String, TokenUsage>,
-    cycle_timing: Vec<CycleTimingEntry>,
     task_order: Vec<String>,
     task_index: HashMap<String, usize>,
     line_task_map: HashMap<usize, String>,
@@ -9234,16 +9138,6 @@ pub struct VizApp {
     /// Incrementally enriched usage from active logs. Bounded tail workers
     /// publish this map independently of base-graph derivation.
     live_task_token_map: Arc<HashMap<String, TokenUsage>>,
-    /// Aggregate usage for the current worker-derived visible set. Rendering
-    /// reads this value instead of scanning every graph line each frame.
-    visible_usage: TokenUsage,
-    /// Active cycle timing info (refreshed with graph stats).
-    pub cycle_timing: Vec<CycleTimingEntry>,
-
-    // ── Token display toggle ──
-    /// When true, show total WG token usage; when false, show visible-tasks only.
-    pub show_total_tokens: bool,
-
     // ── Help overlay ──
     pub show_help: bool,
     pub help: HelpOverlayState,
@@ -9704,8 +9598,6 @@ pub struct VizApp {
 
     // ── Service health indicator ──
     pub service_health: ServiceHealthState,
-    /// Hit-test area for the service health badge (set each frame by renderer).
-    pub last_service_badge_area: Rect,
 
     // ── HUD vitals bar ──
     pub vitals: VitalsState,
@@ -10164,7 +10056,6 @@ impl VizApp {
         }
         app.key_feedback_enabled = force_show_keys || configured_show_keys;
         app.rebuild_snapshot_indexes();
-        app.visible_usage = app.compute_visible_token_usage();
         Ok(app.into_bootstrap_apply())
     }
 
@@ -10938,15 +10829,6 @@ impl VizApp {
             },
             task_token_map: HashMap::new(),
             live_task_token_map: Arc::new(HashMap::new()),
-            visible_usage: TokenUsage {
-                cost_usd: 0.0,
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
-            },
-            cycle_timing: Vec::new(),
-            show_total_tokens: false,
             show_help: false,
             help: HelpOverlayState::default(),
             show_system_tasks: config.tui.show_system_tasks,
@@ -11136,7 +11018,6 @@ impl VizApp {
             agent_streams: HashMap::new(),
             agent_stream_tails: HashMap::new(),
             service_health: ServiceHealthState::default(),
-            last_service_badge_area: Rect::default(),
             vitals: VitalsState::default(),
             time_counters: TimeCounters::new(&config.tui.counters),
             firehose: FirehoseState::default(),
@@ -11315,8 +11196,6 @@ impl VizApp {
             },
         );
         let task_token_map = std::mem::take(&mut self.task_token_map);
-        let visible_usage = std::mem::replace(&mut self.visible_usage, zero_token_usage());
-        let cycle_timing = std::mem::take(&mut self.cycle_timing);
         let task_order = std::mem::take(&mut self.task_order);
         let task_index = std::mem::take(&mut self.task_index);
         let line_task_map = std::mem::take(&mut self.line_task_map);
@@ -11388,8 +11267,6 @@ impl VizApp {
             app.task_counts = task_counts;
             app.total_usage = total_usage;
             app.task_token_map = task_token_map;
-            app.visible_usage = visible_usage;
-            app.cycle_timing = cycle_timing;
             app.task_order = task_order;
             app.task_index = task_index;
             app.line_task_map = line_task_map;
@@ -11760,7 +11637,6 @@ impl VizApp {
         app.rerun_search();
         app.recompute_trace_sync();
         app.rebuild_snapshot_indexes();
-        app.visible_usage = app.compute_visible_token_usage();
         if token.is_cancelled() {
             return Err("cancelled".to_string());
         }
@@ -11828,9 +11704,7 @@ impl VizApp {
             visible_position_by_line: std::mem::take(&mut self.visible_position_by_line),
             task_counts: std::mem::take(&mut self.task_counts),
             total_usage: std::mem::replace(&mut self.total_usage, zero_token_usage()),
-            visible_usage: std::mem::replace(&mut self.visible_usage, zero_token_usage()),
             task_token_map: std::mem::take(&mut self.task_token_map),
-            cycle_timing: std::mem::take(&mut self.cycle_timing),
             task_order: std::mem::take(&mut self.task_order),
             task_index: std::mem::take(&mut self.task_index),
             line_task_map: std::mem::take(&mut self.line_task_map),
@@ -11895,9 +11769,7 @@ impl VizApp {
         self.visible_position_by_line = std::mem::take(&mut snapshot.visible_position_by_line);
         self.task_counts = std::mem::take(&mut snapshot.task_counts);
         self.total_usage = std::mem::replace(&mut snapshot.total_usage, zero_token_usage());
-        self.visible_usage = std::mem::replace(&mut snapshot.visible_usage, zero_token_usage());
         self.task_token_map = std::mem::take(&mut snapshot.task_token_map);
-        self.cycle_timing = std::mem::take(&mut snapshot.cycle_timing);
         self.task_order = std::mem::take(&mut snapshot.task_order);
         self.task_index = std::mem::take(&mut snapshot.task_index);
         self.line_task_map = std::mem::take(&mut snapshot.line_task_map);
@@ -13510,65 +13382,6 @@ impl VizApp {
         self.total_usage = total_usage;
         self.task_token_map = task_token_map;
 
-        // Compute cycle timing from graph.
-        {
-            let cycle_analysis = CycleAnalysis::from_graph(graph);
-            let utc_now = chrono::Utc::now();
-            let mut entries = Vec::new();
-
-            for cycle in &cycle_analysis.cycles {
-                let config_owner = cycle.members.iter().find_map(|mid| {
-                    let task = graph.get_task(mid)?;
-                    task.cycle_config.as_ref()?;
-                    Some(task)
-                });
-
-                let Some(owner) = config_owner else {
-                    continue;
-                };
-                let cc = owner.cycle_config.as_ref().unwrap();
-
-                let last_completed = owner
-                    .last_iteration_completed_at
-                    .as_ref()
-                    .or(owner.completed_at.as_ref())
-                    .cloned();
-
-                let last_ago = last_completed.as_ref().and_then(|ts| {
-                    let parsed = ts.parse::<chrono::DateTime<chrono::Utc>>().ok()?;
-                    Some(utc_now.signed_duration_since(parsed).num_seconds())
-                });
-
-                let next_due_in = owner
-                    .ready_after
-                    .as_ref()
-                    .and_then(|ts| ts.parse::<chrono::DateTime<chrono::Utc>>().ok())
-                    .or_else(|| {
-                        let delay_secs = cc
-                            .delay
-                            .as_ref()
-                            .and_then(|d| worksgood::graph::parse_delay(d))?;
-                        let last_ts = last_completed
-                            .as_ref()?
-                            .parse::<chrono::DateTime<chrono::Utc>>()
-                            .ok()?;
-                        Some(last_ts + chrono::Duration::seconds(delay_secs as i64))
-                    })
-                    .map(|next_ts| (next_ts - utc_now).num_seconds());
-
-                entries.push(CycleTimingEntry {
-                    task_id: owner.id.clone(),
-                    iteration: owner.loop_iteration + 1,
-                    max_iterations: cc.max_iterations,
-                    last_completed_ago_secs: last_ago,
-                    next_due_in_secs: next_due_in,
-                    status: owner.status,
-                });
-            }
-
-            self.cycle_timing = entries;
-        }
-
         // Refresh coordinator message statuses for all tasks. Uses the cached
         // single-pass reader so this O(N-tasks) loop is free on no-op refreshes
         // and avoids the second JSONL parse the standalone function would do.
@@ -13608,7 +13421,6 @@ impl VizApp {
 
         // Enforce animation cap: drop oldest if we exceed MAX_ANIMATIONS.
         self.enforce_animation_cap();
-        self.visible_usage = self.compute_visible_token_usage();
     }
 
     /// Check if the graph has changed on disk and refresh if needed.
@@ -14251,36 +14063,6 @@ impl VizApp {
             LayoutMode::Tree => "tree",
             LayoutMode::Diamond => "diamond",
         }
-    }
-
-    /// Compute aggregate token usage for tasks currently visible on screen.
-    /// Extracts task IDs from the plain_lines visible in the viewport.
-    pub fn visible_token_usage(&self) -> TokenUsage {
-        self.visible_usage.clone()
-    }
-
-    fn compute_visible_token_usage(&self) -> TokenUsage {
-        let mut usage = TokenUsage {
-            cost_usd: 0.0,
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-        };
-        // Collect unique task IDs from all visible lines (not just viewport)
-        let visible_count = self.visible_line_count();
-        let mut seen = HashSet::new();
-        for visible_idx in 0..visible_count {
-            let orig_idx = self.visible_to_original(visible_idx);
-            if let Some(plain) = self.plain_lines.get(orig_idx)
-                && let Some(task_id) = extract_task_id(plain)
-                && seen.insert(task_id.clone())
-                && let Some(task_usage) = self.task_token_map.get(&task_id)
-            {
-                usage.accumulate(task_usage);
-            }
-        }
-        usage
     }
 
     /// Toggle mouse capture on/off.
@@ -17173,15 +16955,6 @@ impl VizApp {
             },
             task_token_map: HashMap::new(),
             live_task_token_map: Arc::new(HashMap::new()),
-            visible_usage: TokenUsage {
-                cost_usd: 0.0,
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
-            },
-            cycle_timing: Vec::new(),
-            show_total_tokens: false,
             show_help: false,
             help: HelpOverlayState::default(),
             show_system_tasks: false,
@@ -17362,7 +17135,6 @@ impl VizApp {
             agent_streams: HashMap::new(),
             agent_stream_tails: HashMap::new(),
             service_health: ServiceHealthState::default(),
-            last_service_badge_area: Rect::default(),
             vitals: VitalsState::default(),
             time_counters: TimeCounters::new("uptime,cumulative,active"),
             firehose: FirehoseState::default(),
@@ -19962,20 +19734,14 @@ impl VizApp {
         self.service_health.last_poll = Instant::now();
     }
 
-    /// Update the HUD vitals bar state from existing app state and cheap syscalls.
+    /// Refresh the cached lifecycle pulse from already-computed app state.
     pub fn update_vitals(&mut self) {
         // Agent count: reuse service_health (already refreshed)
         self.vitals.agents_alive = self.service_health.agents_alive;
         self.vitals.daemon_running = self.service_health.level != ServiceHealthLevel::Red;
 
-        // Task counts: reuse already-computed task_counts
-        self.vitals.open = self.task_counts.open;
+        // Running task count: reuse already-computed task_counts
         self.vitals.running = self.task_counts.in_progress;
-        self.vitals.done = self.task_counts.done;
-
-        // Last event time: operations.jsonl mtime (cheap stat syscall)
-        let ops_path = self.workgraph_dir.join("log").join("operations.jsonl");
-        self.vitals.last_event_time = std::fs::metadata(&ops_path).and_then(|m| m.modified()).ok();
 
         // Coordinator last tick: parse coordinator-state without quarantining
         // malformed chat route metadata during a graph-only TUI open.
@@ -27035,40 +26801,6 @@ fn compute_filtered_indices(
     result
 }
 
-/// Extract a task ID from a plain (ANSI-stripped) viz line.
-/// Task lines look like: `  ├→ task-id  (status · tokens)` or `task-id  (status)`.
-/// Returns None for non-task lines (summaries, blanks, box-drawing-only lines).
-fn extract_task_id(plain: &str) -> Option<String> {
-    // Skip summary/separator lines
-    if is_summary_line(plain) {
-        return None;
-    }
-    // Find the first alphanumeric/hyphen/underscore sequence (the task ID).
-    // Task IDs consist of [a-zA-Z0-9_-].
-    let trimmed = plain.trim_start();
-    // Strip leading tree connectors (box-drawing + arrows + spaces)
-    let after_connectors: &str =
-        trimmed.trim_start_matches(|c: char| is_box_drawing(c) || c == ' ');
-    if after_connectors.is_empty() {
-        return None;
-    }
-    // The task ID is the first "word" — characters that are alphanumeric, hyphen, or underscore.
-    let id: String = after_connectors
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    if id.is_empty() {
-        return None;
-    }
-    // Verify it looks like a task line: after the ID there should be whitespace then '('
-    let rest = &after_connectors[id.len()..];
-    if rest.trim_start().starts_with('(') {
-        Some(id)
-    } else {
-        None
-    }
-}
-
 /// Replace box-drawing and arrow characters with spaces so fuzzy search
 /// doesn't match on visual decoration (├│─◀▶╌ etc.).
 fn sanitize_for_search(line: &str) -> String {
@@ -32350,124 +32082,6 @@ mod nav_stack_tests {
                 task_id: "t".into()
             }
         );
-    }
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Tests for HUD vitals bar formatting
-// ══════════════════════════════════════════════════════════════════════════════
-#[cfg(test)]
-mod vitals_tests {
-    use super::*;
-    use std::time::{Duration, SystemTime};
-
-    #[test]
-    fn vitals_staleness_fresh() {
-        assert_eq!(vitals_staleness_color(0), VitalsStaleness::Fresh);
-        assert_eq!(vitals_staleness_color(15), VitalsStaleness::Fresh);
-        assert_eq!(vitals_staleness_color(29), VitalsStaleness::Fresh);
-    }
-
-    #[test]
-    fn vitals_staleness_stale() {
-        assert_eq!(vitals_staleness_color(30), VitalsStaleness::Stale);
-        assert_eq!(vitals_staleness_color(120), VitalsStaleness::Stale);
-        assert_eq!(vitals_staleness_color(299), VitalsStaleness::Stale);
-    }
-
-    #[test]
-    fn vitals_staleness_dead() {
-        assert_eq!(vitals_staleness_color(300), VitalsStaleness::Dead);
-        assert_eq!(vitals_staleness_color(3600), VitalsStaleness::Dead);
-    }
-
-    #[test]
-    fn format_vitals_zero_agents() {
-        let v = VitalsState {
-            agents_alive: 0,
-            open: 5,
-            running: 0,
-            done: 10,
-            last_event_time: None,
-            coord_last_tick: None,
-            daemon_running: false,
-        };
-        let s = format_vitals(&v);
-        assert!(s.contains("○ 0 agents"), "got: {}", s);
-        assert!(s.contains("5 open"), "got: {}", s);
-        assert!(s.contains("0 running"), "got: {}", s);
-        assert!(s.contains("10 done"), "got: {}", s);
-        assert!(s.contains("no events"), "got: {}", s);
-        assert!(s.contains("coord ○ down"), "got: {}", s);
-    }
-
-    #[test]
-    fn format_vitals_with_agents() {
-        let now = SystemTime::now();
-        let v = VitalsState {
-            agents_alive: 3,
-            open: 8,
-            running: 3,
-            done: 45,
-            last_event_time: Some(now - Duration::from_secs(4)),
-            coord_last_tick: Some(now - Duration::from_secs(2)),
-            daemon_running: true,
-        };
-        let s = format_vitals(&v);
-        assert!(s.contains("● 3 agents"), "got: {}", s);
-        assert!(s.contains("8 open"), "got: {}", s);
-        assert!(s.contains("3 running"), "got: {}", s);
-        assert!(s.contains("45 done"), "got: {}", s);
-        assert!(s.contains("last event"), "got: {}", s);
-        assert!(s.contains("coord ●"), "got: {}", s);
-    }
-
-    #[test]
-    fn format_vitals_single_agent() {
-        let v = VitalsState {
-            agents_alive: 1,
-            open: 2,
-            running: 1,
-            done: 0,
-            last_event_time: None,
-            coord_last_tick: None,
-            daemon_running: true,
-        };
-        let s = format_vitals(&v);
-        assert!(s.contains("● 1 agents"), "got: {}", s);
-        assert!(s.contains("coord ● –"), "got: {}", s);
-    }
-
-    #[test]
-    fn format_vitals_daemon_down() {
-        let v = VitalsState {
-            agents_alive: 0,
-            open: 0,
-            running: 0,
-            done: 0,
-            last_event_time: None,
-            coord_last_tick: None,
-            daemon_running: false,
-        };
-        let s = format_vitals(&v);
-        assert!(s.contains("coord ○ down"), "got: {}", s);
-    }
-
-    #[test]
-    fn format_vitals_old_event() {
-        let now = SystemTime::now();
-        let v = VitalsState {
-            agents_alive: 0,
-            open: 0,
-            running: 0,
-            done: 100,
-            last_event_time: Some(now - Duration::from_secs(600)),
-            coord_last_tick: None,
-            daemon_running: false,
-        };
-        let s = format_vitals(&v);
-        // 600s = 10m
-        assert!(s.contains("last event 10m ago"), "got: {}", s);
     }
 }
 
