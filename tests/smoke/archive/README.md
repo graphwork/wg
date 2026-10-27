@@ -22,14 +22,18 @@ path in one step.
 
 ## Current counts
 
-**128 of 392** manifest entries are retired (264 stay on the default gate).
+**131 of 392** manifest entries are retired (261 stay on the default gate).
 The first wave (`archive-retired-smokes`) retired **98** (20 spark plane + 78
 non-pi handler). The second wave (`port-incidental-smoke-routes`) ported the
 residual *fixture-route* scenarios to a credential-free `pi:` route and then
 retired the **15** whose ported body passes (99 → 113). The third wave
 (`fix-residual-smoke-drift`) re-triaged the ported-but-blocked remainder:
 **7 bodies were repaired and stay on the default gate**, and **15 were retired**
-with the reasons below (113 → 128).
+with the reasons below (113 → 128). The fourth wave
+(`retire-removed-surface-smokes`) retired the **3** residual scenarios whose
+*subject surface was deleted* by the config/endpoint redesigns (`[llm_endpoints]`
+global routing, the endpoint-pinned chat route) — each now guards its body with a
+loud `loud_skip` (exit 77) that names the missing surface (128 → 131).
 
 ## Why these scenarios were retired
 
@@ -204,12 +208,10 @@ unexpectedly succeeds, and restores the exact prior trap afterwards.
 
 | Scenario(s) | Blocker (route-independent, pre-existing) |
 |---|---|
-| `launcher_custom_url_register_persists`, `profile_use_preserve_openrouter_endpoint`, `setup_scope_flag` | the surface under test is gone with the retired endpoint/global-routing config model (`[llm_endpoints]`, `--route claude-cli`, global routing writes) |
 | `pi_plugin_live_validation` | SKIP without a real `pi`/`claude` CLI + model credentials (not credential-free) |
 
-Those five are the residual follow-ups: the first three belong to the
-config/endpoint-redesign retirement, the last two are credential-gated. They are
-not fixture drift, which is why this wave left them alone.
+That one is the residual follow-up: it is credential-gated, not fixture drift,
+which is why the earlier waves left it alone.
 
 `secret_keyring_round_trip`, `wg_html_*` (owned by `retire-html-renderer`) and
 the TUI chat-*selector* scenarios are still default-gate members by design:
@@ -217,6 +219,42 @@ their subject really is the preset/route menu or another task's surface.
 
 This wave deliberately changed **no production code**; the blocked list above is
 the evidence trail for the follow-ups, not a widening of this task.
+
+### Wave 4: the removed-surface scenarios (`retire-removed-surface-smokes`)
+
+The three scenarios the earlier waves left on the default gate because their
+subject was *deleted*, not merely drifted, are now retired with a guarded body
+(exactly the `pilot_dry_run` pattern below). Each script probes the surface it
+pinned and, when the probe shows the surface is gone, prints a named
+`SMOKE SKIPPED` banner and exits **77** — so `wg done --full-smoke` records a
+SKIP, never a FAIL, and a `git revert` of the removal re-arms the unchanged body.
+
+| Scenario | Removed surface (task / commit / doc) | Guard probe |
+|---|---|---|
+| `launcher_custom_url_register_persists` | the endpoint-pinned chat route: `wg chat create --executor <handler> --model <bare-model> --endpoint <url>` is refused with `WG-EXEC-ROUTE-REQUIRED` (live chats are Pi-only, the model must be handler-first) — task `make-pi-the-2`, commit `9e52f9f7`, `docs/design-retire-model-registry.md` | runs the legacy `wg chat create` in a throwaway dir; `WG-EXEC-ROUTE-REQUIRED` ⇒ `LEGACY ENDPOINT CHAT ROUTE RETIRED` |
+| `profile_use_preserve_openrouter_endpoint` | machine-global profile overlay: `wg profile use` is a deprecated alias for project-local `wg profile select` and never rewrites `~/.wg/config.toml`, so "the pi route lands in the GLOBAL config" has no producer — task `project-local-pi-cli`, commit `27e802d9`, `docs/design-project-local-pi-config.md` + `docs/config-precedence.md` | runs `wg profile use pi --no-reload` under a throwaway `$HOME`; "never mutates ~/.wg/config.toml" / "Global config … changed: false" ⇒ `GLOBAL PROFILE-OVERLAY SURFACE RETIRED` |
+| `setup_scope_flag` | machine-global routing writes: `wg setup --scope global\|both` fails closed with `error[WG-GLOBAL-CONFIG-WRITE-REFUSED]`, and `--scope local` writes the project document `worksgood.toml` rather than `./.wg/config.toml` — task `project-local-pi-cli`, commit `27e802d9`, same docs | runs the refused `wg setup --scope global` in a throwaway dir; `WG-GLOBAL-CONFIG-WRITE-REFUSED` ⇒ `SETUP --scope GLOBAL\|BOTH RETIRED` |
+
+No live coverage is lost. The surviving half of the first scenario (project-local
+`wg endpoint add` → `wg endpoint list`) is still exercised by the archived body
+below its guard, and the replacement contracts for the other two — project
+selection writes only `worksgood.toml`, never `~/.wg/config.toml` /
+`~/.wg/active-profile`, and global setup writes are refused — are pinned by the
+**live** `project_local_pi_cli` scenario (`tests/smoke/scenarios/`).
+
+Two of the three also pinned a *route* the current binary rejects outright
+(`wg init -m claude:opus`, `--executor native --model qwen3-coder`), so even a
+partial port would have had to replace the asserted subject rather than the
+fixture — which is why they are retired instead of repaired.
+
+Verified under the real harness (`run_scenarios` over `tests/smoke/manifest.toml`,
+all four selected entries in one run): the three moved scripts each report
+`SKIP` with their named banner above — never `FAIL` — and
+`smoke_manifest_retired_scenarios` still passes (it re-checks every retired row
+for a non-empty `retired_reason`, an `archive/`-relative script that exists,
+parses, is git-tracked and is no longer present in `scenarios/`). The live
+replacement scenario `project_local_pi_cli` was re-run in the same harness and
+passes.
 
 ## Shared routing invariants
 
@@ -239,14 +277,29 @@ only smoke-pinned, which is why retiring the scenarios does not lose them.
 
 ## When the *subject verb* is retired too
 
-`pilot_dry_run` is the one archived scenario whose subject was **removed**, not just
-retired: task `retire-wg-pilot` (reduction plan S10) deleted `wg pilot`
-(`src/commands/pilot_cmd.rs`, `pilot.example.toml`, `Commands::Pilot`). Its manifest entry
-and script are still here (grow-only history), and the script now guards its body with a
-loud `loud_skip "PILOT VERB RETIRED"` (exit 77) when `wg pilot --help` fails, so
-`--full-smoke` records a SKIP instead of a FAIL. Restoring the verb (`git revert`) makes
-the unchanged body run again. Follow this pattern for any future verb removal: archive,
-keep the manifest entry, and SKIP loudly on the missing subject.
+`pilot_dry_run` is the canonical archived scenario whose subject **verb** was
+**removed**, not just retired: task `retire-wg-pilot` (reduction plan S10) deleted
+`wg pilot` (`src/commands/pilot_cmd.rs`, `pilot.example.toml`, `Commands::Pilot`). Its
+manifest entry and script are still here (grow-only history), and the script now guards
+its body with a loud `loud_skip "PILOT VERB RETIRED"` (exit 77) when `wg pilot --help`
+fails, so `--full-smoke` records a SKIP instead of a FAIL. Restoring the verb
+(`git revert`) makes the unchanged body run again.
+
+Wave 4 (`retire-removed-surface-smokes`) reused the same pattern for three scenarios
+whose subject was removed by the config/endpoint redesigns rather than by a verb
+deletion: `launcher_custom_url_register_persists`
+(`loud_skip "LEGACY ENDPOINT CHAT ROUTE RETIRED"`),
+`profile_use_preserve_openrouter_endpoint`
+(`loud_skip "GLOBAL PROFILE-OVERLAY SURFACE RETIRED"`) and `setup_scope_flag`
+(`loud_skip "SETUP --scope GLOBAL|BOTH RETIRED"`). Their guards probe the *behaviour*
+(the refused legacy route / the never-mutated global config / the refused global
+write) instead of a help banner, because the verbs and flags still exist — only the
+surface behind them is gone.
+
+Follow this pattern for any future verb **or surface** removal: archive, keep the
+manifest entry and `owners`, add `retired = true` + `retired_reason` naming the
+removal (task / commit / doc), and SKIP loudly on the missing subject — never FAIL a
+scenario whose subject was removed on purpose.
 
 ## Why the scripts still work from here
 

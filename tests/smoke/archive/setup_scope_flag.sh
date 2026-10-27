@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# Scenario: setup_scope_flag — ARCHIVED (retired). The `--scope global` / `--scope
+# both` contract it pins was removed by task `project-local-pi-cli` (commit
+# 27e802d9, `docs/design-project-local-pi-config.md` + `docs/config-precedence.md`):
+# machine-global routing is no longer writable, so `wg setup --scope global|both`
+# fails closed with `error[WG-GLOBAL-CONFIG-WRITE-REFUSED]` before any mutation, and
+# `--scope local` is the only accepted value — it writes the project document
+# `worksgood.toml`, not `./.wg/config.toml`. Both halves of the fixture's file-path
+# assertions therefore have no subject. The script and its grow-only `[[scenario]]`
+# manifest entry are preserved for history; the scenario SKIPs loudly (exit 77)
+# instead of FAILing. The replacement contract (setup writes only the project
+# document and refuses machine-global writes) is pinned by the live
+# `project_local_pi_cli` scenario. Original header follows.
+#
 # Scenario: setup_scope_flag
 #
 # Locks in the `wg setup --scope <global|local|both>` contract introduced by
@@ -32,6 +45,25 @@ fake_home="$scratch/home"
 mkdir -p "$fake_home"
 export HOME="$fake_home"
 unset WG_DIR ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY 2>/dev/null || true
+
+# ── Retirement guard: machine-global setup writes are refused ───────────────
+# `wg setup --scope global|both` now fails closed (`WG-GLOBAL-CONFIG-WRITE-REFUSED`)
+# before any mutation — task `project-local-pi-cli`, commit 27e802d9. The scenario's
+# subject (global/both writes, and the `.wg/config.toml` paths they land in) has no
+# producer, so prove the refusal behaviourally in a throwaway dir and SKIP loudly;
+# never FAIL a scenario whose subject was removed on purpose.
+probe="$scratch/retire-probe"
+mkdir -p "$probe/home"
+(
+    cd "$probe" || exit 1
+    env -u WG_DIR -u WG_PROJECT_ROOT -u WG_TASK_ID -u WG_AGENT_ID \
+        HOME="$probe/home" \
+        wg setup --scope global --route pi --model pi:test:fake --yes 2>&1 || true
+) >"$probe/probe.log" 2>&1
+if grep -q 'WG-GLOBAL-CONFIG-WRITE-REFUSED' "$probe/probe.log"; then
+    loud_skip "SETUP --scope GLOBAL|BOTH RETIRED" \
+        'machine-global routing writes were removed by task project-local-pi-cli (commit 27e802d9, docs/design-project-local-pi-config.md): `wg setup --scope global|both` fails closed with error[WG-GLOBAL-CONFIG-WRITE-REFUSED] and `--scope local` writes the project document worksgood.toml rather than ./.wg/config.toml, so the per-scope file-path assertions in this scenario have no subject. The replacement contract is pinned by project_local_pi_cli.'
+fi
 
 # ── 1. --scope global writes only global ──────────────────────────────
 proj1="$scratch/proj1"

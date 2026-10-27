@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# Scenario: launcher_custom_url_register_persists — ARCHIVED (retired). The
+# endpoint-pinned chat route it pins was removed by task `make-pi-the-2`
+# (commit 9e52f9f7, `docs/design-retire-model-registry.md`): a live chat is
+# Pi-only, the executor is derived from the exact route, and the model must be
+# handler-first, so `wg chat create --executor native --model <bare>
+# --endpoint <url>` is now refused with `WG-EXEC-ROUTE-REQUIRED`. The script and
+# its grow-only `[[scenario]]` manifest entry are preserved for history; the
+# scenario SKIPs loudly (exit 77) instead of FAILing, because the subject — a
+# chat pinned to a registered ad-hoc endpoint — no longer exists. The half that
+# still lives (project-local `wg endpoint add` → `wg endpoint list`) is exercised
+# by the guarded body below and is no longer the scenario's subject.
+# Original header follows.
+#
 # Scenario: launcher_custom_url_register_persists
 #
 # Regression lock for fix-new-chat: the TUI new-chat dialog allows users
@@ -31,6 +44,31 @@
 set -euo pipefail
 . "$(dirname "$0")/_helpers.sh"
 require_wg
+
+# ── Retirement guard: the legacy endpoint chat route is gone ─────────────
+# The subject is the launcher's "register the ad-hoc Custom URL, then create the
+# chat against it with `--executor <x> --model <bare-model> --endpoint <url>`"
+# flow. That route was removed by `make-pi-the-2` (commit 9e52f9f7): chat routes
+# are `pi:`-only and the endpoint/executor chat inputs are DEPRECATED/UNSUPPORTED,
+# so the legacy call is refused before any graph write. SKIP loudly; never FAIL a
+# scenario whose subject was removed on purpose. Restoring the surface makes this
+# body run unchanged again.
+probe=$(make_scratch)
+mkdir -p "$probe/home"
+(
+    cd "$probe" || exit 1
+    env -u WG_DIR -u WG_PROJECT_ROOT -u WG_TASK_ID -u WG_AGENT_ID \
+        HOME="$probe/home" \
+        wg chat create --name retire-probe \
+            --executor native \
+            --model qwen3-coder \
+            --endpoint 'https://retired.invalid/v1' \
+            --json 2>&1 || true
+) >"$probe/probe.log" 2>&1
+if grep -q 'WG-EXEC-ROUTE-REQUIRED' "$probe/probe.log"; then
+    loud_skip "LEGACY ENDPOINT CHAT ROUTE RETIRED" \
+        'the `wg chat create --executor <handler> --model <bare-model> --endpoint <url>` route was removed by task make-pi-the-2 (commit 9e52f9f7, docs/design-retire-model-registry.md): live chats are Pi-only and the model must be handler-first, so the endpoint-pinned chat this scenario asserts no longer exists.'
+fi
 
 # Isolate HOME so any background config reads can't pollute global config.
 SMOKE_HOME=$(mktemp -d)

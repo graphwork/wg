@@ -387,13 +387,15 @@ retired_reason = "pins a claude/codex/nex/native/opencode handler route the dail
 
 [[scenario]]
 name = "launcher_custom_url_register_persists"
-script = "scenarios/launcher_custom_url_register_persists.sh"
+script = "archive/launcher_custom_url_register_persists.sh"
 owners = [
     "fix-new-chat",
     "smoke-gate-is",
 ]
 description = "fix-new-chat: the TUI new-chat dialog allows ad-hoc Custom URL entry plus optional 'register with name'. Filling the name persists the endpoint to GLOBAL config (~/.wg/config.toml) so it shows up in `wg endpoint list` afterward, while the chat itself still pins to that URL."
 timeout_seconds = 30
+retired = true
+retired_reason = "removed surface (endpoint-pinned chat route): `wg chat create --executor <handler> --model <bare-model> --endpoint <url>` was removed by task make-pi-the-2 (commit 9e52f9f7, docs/design-retire-model-registry.md) — live chats are Pi-only and the model must be handler-first, so the legacy call is refused with WG-EXEC-ROUTE-REQUIRED and the endpoint-pinned chat this scenario asserts no longer exists. Archived under tests/smoke/archive/; the guarded body SKIPs loudly (exit 77) naming the missing surface, so `wg done --full-smoke` records a SKIP instead of a FAIL."
 
 [[scenario]]
 name = "tui_launcher_modal_does_not_leak_keys"
@@ -574,12 +576,14 @@ retired_reason = "pins a claude/codex/nex/native/opencode handler route the dail
 
 [[scenario]]
 name = "setup_scope_flag"
-script = "scenarios/setup_scope_flag.sh"
+script = "archive/setup_scope_flag.sh"
 owners = [
     "improve-wg-setup",
 ]
 description = "`wg setup --scope global|local|both` writes the requested target only. --scope global writes only ~/.wg/config.toml; --scope local writes only ./.wg/config.toml; --scope both writes both. Invalid --scope refuses with helpful message. Summary screen prints DELTA: 'Will write N keys' + 'Will NOT write (built-in defaults): M more' (per docs/config-ux-design.md §4)."
 timeout_seconds = 30
+retired = true
+retired_reason = "removed surface (machine-global routing writes): `wg setup --scope global|both` was removed by task project-local-pi-cli (commit 27e802d9, docs/design-project-local-pi-config.md + docs/config-precedence.md) — those scopes now fail closed with error[WG-GLOBAL-CONFIG-WRITE-REFUSED] before any mutation, and `--scope local` writes the project document worksgood.toml instead of ./.wg/config.toml, so both halves of the per-scope file-path assertions lost their subject. The replacement contract is pinned by the live `project_local_pi_cli` scenario. Archived under tests/smoke/archive/; the guarded body SKIPs loudly (exit 77) naming the missing surface."
 
 [[scenario]]
 name = "setup_provider_login_onboarding"
@@ -2399,12 +2403,14 @@ timeout_seconds = 60
 
 [[scenario]]
 name = "profile_use_preserve_openrouter_endpoint"
-script = "scenarios/profile_use_preserve_openrouter_endpoint.sh"
+script = "archive/profile_use_preserve_openrouter_endpoint.sh"
 owners = [
     "bug-profile-use-preserve-openrouter-endpoint",
 ]
 description = "Pins bug-profile-use-preserve-openrouter-endpoint: `wg profile use pi` must NOT clobber a configured OpenRouter endpoint (api_key_ref) and must NOT reintroduce deprecated `dispatcher.poll_interval` or removed compaction/verify keys. Pre-fix, profile activation was a byte-for-byte swap that dropped the endpoint set by `wg login openrouter --global`, and the pinned-model path's `Config::save_global` round-trip re-emitted deprecated field names with serde defaults. Post-fix, profile activation is an OVERLAY: the profile's routing keys merge onto the existing global config (preserving `[[llm_endpoints]]`), and the merged file is canonicalized via the same predicates as `wg migrate config`. Credential-free; isolated $HOME + WG_GLOBAL_DIR so the host global config is untouched. Falsifiable assertions: (1) the OpenRouter endpoint (name/provider/api_key_ref/URL/default flag) survives the pi swap; (2) the pi strong-tier route takes effect; (3) no deprecated/removed keys are reintroduced (no poll_interval, compactor_interval, compaction_token_threshold, verify_autospawn_enabled, verify_mode); (4) `wg config lint --global` reports zero migrate findings (removed/renamed/rewritten all empty)."
 timeout_seconds = 60
+retired = true
+retired_reason = "removed surface (machine-global profile overlay): profile activation is project-local and copy-by-value into worksgood.toml since task project-local-pi-cli (commit 27e802d9, docs/design-project-local-pi-config.md + docs/config-precedence.md); `wg profile use` is a deprecated alias for `wg profile select` that NEVER rewrites ~/.wg/config.toml, so 'the pi route lands in the GLOBAL config after activation' has no producer left. The replacement contract (project selection writes only worksgood.toml, never ~/.wg/config.toml / ~/.wg/active-profile) is pinned by the live `project_local_pi_cli` scenario. Archived under tests/smoke/archive/; the guarded body SKIPs loudly (exit 77) naming the missing surface."
 
 [[scenario]]
 name = "task_timeout_edit_publish_recover"

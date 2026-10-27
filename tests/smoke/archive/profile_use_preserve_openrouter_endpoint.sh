@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# Scenario: profile_use_preserve_openrouter_endpoint — ARCHIVED (retired). The
+# machine-global profile-overlay surface it pins was removed by task
+# `project-local-pi-cli` (commit 27e802d9, `docs/design-project-local-pi-config.md`
+# + `docs/config-precedence.md`): a profile selection is project-local and
+# copy-by-value into `worksgood.toml`, `wg profile use` is a deprecated alias for
+# `wg profile select`, and the global overlay (`~/.wg/config.toml`) is NEVER
+# rewritten — so "the pi route appears in the GLOBAL config after activation" has
+# no producer left. The script and its grow-only `[[scenario]]` manifest entry are
+# preserved for history; the scenario SKIPs loudly (exit 77) instead of FAILing.
+# The replacement contract (project selection writes only `worksgood.toml`, never
+# `~/.wg/config.toml` / `~/.wg/active-profile`) is pinned by the live
+# `project_local_pi_cli` scenario. Original header follows.
+#
 # Scenario: profile_use_preserve_openrouter_endpoint
 #
 # Regression lock for bug-profile-use-preserve-openrouter-endpoint.
@@ -35,6 +48,28 @@ require_wg
 
 scratch=$(make_scratch)
 cd "$scratch"
+
+# ── Retirement guard: the GLOBAL profile-overlay surface is gone ──────────
+# The subject is `wg profile use <name>` OVERLAYING the machine-global config
+# (`~/.wg/config.toml`) — preserving its `[[llm_endpoints]]` credentials and
+# re-writing the pi route there. Since `project-local-pi-cli` (commit 27e802d9)
+# profile activation is project-local and never mutates the global config, so the
+# assertions below have no subject. Prove that behaviourally (a throwaway HOME +
+# project dir; nothing global is touched) and SKIP loudly; never FAIL a scenario
+# whose subject was removed on purpose.
+probe="$scratch/retire-probe"
+mkdir -p "$probe/home/.wg"
+(
+    cd "$probe" || exit 1
+    env -u WG_DIR -u WG_PROJECT_ROOT -u WG_TASK_ID -u WG_AGENT_ID \
+        HOME="$probe/home" \
+        wg profile use pi --no-reload 2>&1 || true
+) >"$probe/probe.log" 2>&1
+if grep -q 'never mutates ~/.wg/config.toml\|Global config, active-profile, and Pi console settings changed: false' \
+    "$probe/probe.log"; then
+    loud_skip "GLOBAL PROFILE-OVERLAY SURFACE RETIRED" \
+        'machine-global profile activation was removed by task project-local-pi-cli (commit 27e802d9, docs/design-project-local-pi-config.md): `wg profile use` is a deprecated alias for project-local `wg profile select` and never rewrites ~/.wg/config.toml, so "the pi route lands in the GLOBAL config" no longer exists. The replacement (project selection writes only worksgood.toml) is pinned by project_local_pi_cli.'
+fi
 
 # Isolate HOME so the GLOBAL config dir is $scratch/.wg (NOT the host's ~/.wg).
 export HOME="$scratch"
