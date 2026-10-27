@@ -131,20 +131,16 @@ set_task_field status=in-progress
 done_log="$scratch/done-refuse.log"
 unset WG_AGENT_ID
 unset WG_SMOKE_AGENT_OVERRIDE
-set +e
-WG_WORKTREE_PATH="$project_root" \
-WG_BRANCH="wg/smoke/intake-preflight" \
-WG_PROJECT_ROOT="$project_root" \
-    wg --dir "$wg_dir" done intake-preflight --skip-smoke \
-    >"$done_log" 2>&1
-done_exit=$?
-set -e
+# The refusal IS the subject here, so run it through the helpers' supported
+# expected-failure wrapper: a bare failing command would trip the central ERR
+# trap and abort the scenario at its own assertion.
+wg_expect_fail env \
+    WG_WORKTREE_PATH="$project_root" \
+    WG_BRANCH="wg/smoke/intake-preflight" \
+    WG_PROJECT_ROOT="$project_root" \
+    wg --dir "$wg_dir" done intake-preflight --skip-smoke
+printf '%s\n' "$WG_EXPECT_FAIL_OUTPUT" >"$done_log"
 
-if [[ $done_exit -eq 0 ]]; then
-    loud_fail "wg done exited 0 despite missing deliverable 'latest.pt' — G1 preflight regressed.
-done.log:
-$(cat "$done_log")"
-fi
 if ! grep -q "deliverable preflight refused" "$done_log"; then
     loud_fail "wg done refusal did not mention 'deliverable preflight refused'.
 done.log:
@@ -172,11 +168,7 @@ fi
 set_task_field status=open retry_count=1
 
 spawn_log="$scratch/spawn.log"
-set +e
-wg --dir "$wg_dir" spawn intake-preflight >"$spawn_log" 2>&1
-spawn_exit=$?
-set -e
-if [[ $spawn_exit -ne 0 ]]; then
+if ! wg --dir "$wg_dir" spawn intake-preflight >"$spawn_log" 2>&1; then
     loud_fail "wg spawn of intake-preflight failed: $(cat "$spawn_log")"
 fi
 if ! grep -qi "spawned" "$spawn_log"; then
@@ -215,16 +207,11 @@ echo "checkpoint bytes" > "$project_root/latest.pt"
 done_log2="$scratch/done-succeed.log"
 unset WG_AGENT_ID
 unset WG_SMOKE_AGENT_OVERRIDE
-set +e
-WG_WORKTREE_PATH="$project_root" \
-WG_BRANCH="wg/smoke/intake-preflight" \
-WG_PROJECT_ROOT="$project_root" \
+if ! WG_WORKTREE_PATH="$project_root" \
+    WG_BRANCH="wg/smoke/intake-preflight" \
+    WG_PROJECT_ROOT="$project_root" \
     wg --dir "$wg_dir" done intake-preflight --skip-smoke \
-    >"$done_log2" 2>&1
-done_exit2=$?
-set -e
-
-if [[ $done_exit2 -ne 0 ]]; then
+    >"$done_log2" 2>&1; then
     loud_fail "wg done failed after the deliverable was produced — expected success.
 done.log:
 $(cat "$done_log2")"

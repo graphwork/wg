@@ -13,6 +13,17 @@ project="$scratch/project"
 mkdir -p "$bindir" "$fake_home/.config/workgraph" "$project"
 : >"$fake_home/.config/workgraph/config.toml"
 
+# The REQUIRED-ISOLATION spawn preflight takes a git worktree from the project,
+# so the fixture project must be a real committed repository (it used to be a
+# bare directory, which made spawn refuse before the fake pi ever ran).
+git -C "$project" init -q -b main . || loud_fail "git init failed in $project"
+git -C "$project" config user.email "smoke@test" >/dev/null
+git -C "$project" config user.name "Smoke" >/dev/null
+echo fixture >"$project/README.md"
+git -C "$project" add README.md >/dev/null
+git -C "$project" commit -qm "fixture base" >/dev/null \
+    || loud_fail "git initial commit failed in $project"
+
 cat >"$bindir/pi" <<'FAKE_PI'
 #!/usr/bin/env bash
 set -euo pipefail
