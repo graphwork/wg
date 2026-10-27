@@ -37,7 +37,7 @@ fi
 scratch=$(make_scratch)
 cd "$scratch"
 
-if ! wg init -x claude >init.log 2>&1; then
+if ! wg init -m pi:test:fake >init.log 2>&1; then
     loud_fail "wg init failed during smoke setup: $(tail -5 init.log)"
 fi
 

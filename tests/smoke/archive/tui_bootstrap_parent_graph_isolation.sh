@@ -22,9 +22,9 @@ cleanup_tui_isolation() {
 }
 add_cleanup_hook cleanup_tui_isolation
 
-env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID wg --dir "$parent/.wg" init --route claude-cli >/dev/null 2>&1 \
+env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID wg --dir "$parent/.wg" init --route pi >/dev/null 2>&1 \
     || loud_fail "failed to initialize sentinel parent graph"
-env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID wg --dir "$scratch/.wg" init --route claude-cli >/dev/null 2>&1 \
+env -u WG_DIR -u WG_TASK_ID -u WG_AGENT_ID wg --dir "$scratch/.wg" init --route pi >/dev/null 2>&1 \
     || loud_fail "failed to initialize scratch TUI graph"
 
 parent_graph="$parent/.wg/graph.jsonl"

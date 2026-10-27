@@ -37,10 +37,10 @@ require_wg
 scratch=$(make_scratch)
 cd "$scratch"
 
-if ! wg init -x shell >init.log 2>&1; then
-    if ! wg init -x claude >init.log 2>&1; then
-        loud_fail "wg init failed: $(tail -5 init.log)"
-    fi
+# Credential-free pi fixture route: `wg chat create`/`create-chat` needs a
+# selected execution route, but this scenario never makes a model call.
+if ! wg init -m pi:test:fake >init.log 2>&1; then
+    loud_fail "wg init failed: $(tail -5 init.log)"
 fi
 
 # Boot daemon WITHOUT a chat agent so we don't need credentials. We also

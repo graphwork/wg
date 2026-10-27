@@ -9,7 +9,7 @@ require_wg
 scratch=$(make_scratch)
 cd "$scratch"
 
-wg init -m claude:opus >/tmp/chat-last-interaction-init.log 2>&1 \
+wg init -m pi:test:fake >/tmp/chat-last-interaction-init.log 2>&1 \
     || loud_fail "wg init failed: $(tail -5 /tmp/chat-last-interaction-init.log)"
 
 wg chat create --name older --json >/tmp/chat-last-interaction-c0.json 2>&1 \

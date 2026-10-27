@@ -112,14 +112,14 @@ reg = {
     "agents": {
         "agent-fail": {
             "id": "agent-fail", "pid": pid, "task_id": "smoke-retry",
-            "executor": "claude", "started_at": "2026-06-24T00:00:00Z",
+            "executor": "pi", "started_at": "2026-06-24T00:00:00Z",
             "last_heartbeat": "2026-06-24T00:00:45Z", "status": "failed",
             "output_file": ".wg/agents/agent-fail/output.log",
             "completed_at": "2026-06-24T00:00:45Z",
         },
         "agent-live": {
             "id": "agent-live", "pid": pid, "task_id": "smoke-retry",
-            "executor": "claude", "started_at": "2026-06-24T00:01:30Z",
+            "executor": "pi", "started_at": "2026-06-24T00:01:30Z",
             "last_heartbeat": "2026-06-24T00:01:35Z", "status": "working",
             "output_file": ".wg/agents/agent-live/output.log",
         },

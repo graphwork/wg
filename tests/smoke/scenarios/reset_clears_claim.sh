@@ -21,7 +21,7 @@ scratch=$(make_scratch)
 cd "$scratch"
 
 # Init with a minimal handler so we don't need any external endpoint.
-if ! wg init -m claude:opus >init.log 2>&1; then
+if ! wg init -m pi:test:fake >init.log 2>&1; then
     loud_fail "wg init failed during smoke setup: $(tail -10 init.log)"
 fi
 

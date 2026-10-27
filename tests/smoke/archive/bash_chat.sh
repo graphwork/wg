@@ -9,7 +9,7 @@ require_wg
 scratch=$(make_scratch)
 cd "$scratch"
 
-wg init -m claude:opus >/tmp/bash-chat-init.log 2>&1 || loud_fail "wg init failed: $(tail -5 /tmp/bash-chat-init.log)"
+wg init -m pi:test:fake >/tmp/bash-chat-init.log 2>&1 || loud_fail "wg init failed: $(tail -5 /tmp/bash-chat-init.log)"
 
 out=$(wg chat new --name shell --command 'bash' --json 2>&1) || loud_fail "wg chat new --command bash failed: $out"
 

@@ -62,7 +62,7 @@ write_legacy_config() {
 model = "pi:openrouter:anthropic/claude-opus-4-7"
 
 [coordinator]
-executor = "claude"
+executor = "pi"
 model = "pi:openrouter:anthropic/claude-opus-4-7"
 compactor_interval = 99
 

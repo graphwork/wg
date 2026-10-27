@@ -38,7 +38,7 @@ echo "init" > README.md
 git add README.md
 git commit -qm "init" || loud_fail "git commit failed"
 
-wg init -m local:test -e http://127.0.0.1:1 >init.log 2>&1 \
+wg init -m pi:test:fake >init.log 2>&1 \
     || loud_fail "wg init failed: $(cat init.log)"
 
 if [ -d .wg ]; then
@@ -80,7 +80,7 @@ cat > "$wg_dir/service/registry.json" <<EOF
       "id": "agent-99",
       "pid": $sleep_pid_a,
       "task_id": "hung-task-a",
-      "executor": "claude",
+      "executor": "pi",
       "started_at": "$now",
       "last_heartbeat": "$now",
       "status": "working",
@@ -150,7 +150,7 @@ cat > "$wg_dir/service/registry.json" <<EOF
       "id": "agent-200",
       "pid": $sleep_pid_b,
       "task_id": "hung-task-b",
-      "executor": "claude",
+      "executor": "pi",
       "started_at": "$now2",
       "last_heartbeat": "$now2",
       "status": "working",

@@ -41,7 +41,7 @@ git add README.md
 git commit -qm "init" || loud_fail "git commit failed"
 
 # Use shell executor — fastest init, no model needed.
-wg init -m local:test -e http://127.0.0.1:1 >init.log 2>&1 \
+wg init -m pi:test:fake >init.log 2>&1 \
     || loud_fail "wg init failed: $(cat init.log)"
 
 mkdir -p .wg-worktrees/agent-A/target/debug
@@ -73,7 +73,7 @@ cat > "$wg_dir/service/registry.json" <<EOF
       "id": "agent-A",
       "pid": 2147483646,
       "task_id": "shared-task",
-      "executor": "claude",
+      "executor": "pi",
       "started_at": "$now",
       "last_heartbeat": "$now",
       "status": "failed",
@@ -84,7 +84,7 @@ cat > "$wg_dir/service/registry.json" <<EOF
       "id": "agent-B",
       "pid": $my_pid,
       "task_id": "shared-task",
-      "executor": "claude",
+      "executor": "pi",
       "started_at": "$now",
       "last_heartbeat": "$now",
       "status": "working",

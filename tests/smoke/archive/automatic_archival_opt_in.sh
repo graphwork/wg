@@ -32,25 +32,32 @@ cd "$scratch"
 "$WG_BIN" init --no-agency -x shell >/dev/null
 G="$scratch/.wg"
 [[ -d "$G" ]] || loud_fail "new graph missing at explicit dir $G"
-"$WG_BIN" --dir "$G" config --local --model claude:opus --no-reload >/dev/null
+"$WG_BIN" --dir "$G" config --local --model pi:test:fake --no-reload >/dev/null
 "$WG_BIN" --dir "$G" config set agency.auto_assign false --no-reload >/dev/null
 "$WG_BIN" --dir "$G" config set agency.auto_evaluate false --no-reload >/dev/null
 
 # Upgrade simulation: an older/minimal config may not mention the key at all.
 # Its missing value must resolve to the new safe default, never to an age
-# trigger introduced by the candidate build.
-python3 - "$G/config.toml" <<'PY'
+# trigger introduced by the candidate build. The key can live in either the
+# graph config or the checked-in project document, so strip it from both.
+python3 - "$G/config.toml" "$scratch/worksgood.toml" <<'PY'
 import pathlib,sys
-p=pathlib.Path(sys.argv[1])
-lines=[line for line in p.read_text().splitlines() if not line.strip().startswith("archive_retention_days =")]
-p.write_text("\n".join(lines)+"\n")
+for arg in sys.argv[1:]:
+    p=pathlib.Path(arg)
+    if not p.exists():
+        continue
+    lines=[line for line in p.read_text().splitlines() if not line.strip().startswith("archive_retention_days =")]
+    p.write_text("\n".join(lines)+"\n")
 PY
 resolved=$("$WG_BIN" --dir "$G" --json config get dispatcher.archive_retention_days)
 python3 - "$resolved" <<'PY'
 import json,sys
 v=json.loads(sys.argv[1])
 assert v["value"] == 0, v
-assert v["source"] == "default", v
+# `wg` reports the built-in fallback label as "builtin-default"; the intent of
+# this assertion (missing key resolves to the built-in safe default, never to
+# an age trigger written by the candidate build) is unchanged.
+assert v["source"] == "builtin-default", v
 PY
 
 for id in reviewed-a reviewed-b; do

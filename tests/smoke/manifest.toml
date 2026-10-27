@@ -111,30 +111,36 @@ retired_reason = "pins a claude/codex/nex/native/opencode handler route the dail
 
 [[scenario]]
 name = "bash_chat"
-script = "scenarios/bash_chat.sh"
+script = "archive/bash_chat.sh"
 owners = [
     "implement-generalize-chat",
 ]
 description = "Pins implement-generalize-chat: `wg chat new --command 'bash'` creates a generic command chat task with command_argv/working_dir metadata and no LLM preset."
 timeout_seconds = 30
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — graph fixture: bash-executor chat creation; route was an incidental claude scaffold; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "custom_command_chat"
-script = "scenarios/custom_command_chat.sh"
+script = "archive/custom_command_chat.sh"
 owners = [
     "implement-generalize-chat",
 ]
 description = "Pins implement-generalize-chat: arbitrary command lines such as `tail -f /tmp/test.log` are stored as generic persistent chat pane commands."
 timeout_seconds = 30
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — graph fixture: custom-command chat task creation; route was an incidental claude scaffold; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "chat_last_interaction_sort"
-script = "scenarios/chat_last_interaction_sort.sh"
+script = "archive/chat_last_interaction_sort.sh"
 owners = [
     "fix-chat-tasks",
 ]
 description = "Pins fix-chat-tasks: sending to an older .chat-N updates last_interaction_at, wg show displays it, and activity sorting puts the recently active chat first without live LLM credentials."
 timeout_seconds = 30
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — graph/TUI fixture: chat sort by last interaction; route was an incidental claude scaffold; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "tui_chat_pty_last_interaction"
@@ -296,7 +302,7 @@ retired_reason = "pins a claude/codex/nex/native/opencode handler route the dail
 
 [[scenario]]
 name = "dispatcher_boot_no_orphan_supervisor"
-script = "scenarios/dispatcher_boot_no_orphan_supervisor.sh"
+script = "archive/dispatcher_boot_no_orphan_supervisor.sh"
 owners = [
     "rename-dispatcher-daemon",
     "bug-a-regression-test",
@@ -304,6 +310,8 @@ owners = [
 ]
 description = "Boot dispatcher and confirm no orphan supervisor / ghost task is registered (Bug A regression check)."
 timeout_seconds = 60
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — service fixture: dispatcher boot leaves no orphan supervisor; route was an incidental claude scaffold; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "claude_executor_with_global_openrouter_default"
@@ -625,12 +633,14 @@ timeout_seconds = 120
 
 [[scenario]]
 name = "tui_log_pane_follows_retry"
-script = "scenarios/tui_log_pane_follows_retry.sh"
+script = "archive/tui_log_pane_follows_retry.sh"
 owners = [
     "fix-tui-retry-log",
 ]
 description = "After a fail→retry, wg tui's '4: Log' pane defaults to the LIVE (latest/assigned) agent's events — not the first (failed) attempt's stale log — and labels the displayed attempt 'attempt N/M (live|failed)'. '{' cycles to the previous (failed) attempt. Regression for load_log_pane() picking the first agent-* mentioned in the task log, which stuck the pane on the dead attempt while the graph progressed on a live retry agent."
 timeout_seconds = 90
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — TUI fixture: Log pane follows a retry; agent records were an incidental claude fixture; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "tui_log_pane_live_retry_tail"
@@ -643,12 +653,14 @@ timeout_seconds = 90
 
 [[scenario]]
 name = "wg_show_retry_attempts"
-script = "scenarios/wg_show_retry_attempts.sh"
+script = "archive/wg_show_retry_attempts.sh"
 owners = [
     "rshow",
 ]
 description = "Pins `wg show <retried-task>`'s Attempt History attribution: each archived attempt renders the agent that ran it (attempt 1 via the output.txt fallback scanner over the COMPACT-JSON `cwd` agent id; attempt 2 via the authoritative `agent-id` file, which wins over a divergent cwd) AND only the eval that scored it (attempt 1 → 0.10, attempt 2 → 0.88 — never the single newest eval echoed onto every attempt). Regression for print_retry_history's whitespace-split agent-id scan (always None on compact JSON) and find_eval_for_attempt ignoring the archive timestamp."
 timeout_seconds = 30
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — graph/CLI fixture: `wg show` attempt history; route was an incidental claude scaffold; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "tui_log_scroll_controls"
@@ -1025,13 +1037,15 @@ retired_reason = "pins a claude/codex/nex/native/opencode handler route the dail
 
 [[scenario]]
 name = "dispatcher_kick_bypasses_settling_delay"
-script = "scenarios/dispatcher_kick_bypasses_settling_delay.sh"
+script = "archive/dispatcher_kick_bypasses_settling_delay.sh"
 owners = [
     "dispatcher-poll-lower",
     "smoke-gate-is",
 ]
 description = "Pins the explicit release contract: draft-only `wg add` emits GraphChanged but never kicks dispatch; `wg publish --only` (like `wg unclaim` / `wg service resume`) logs `KickDispatcher received, ticking immediately` and fires a coordinator tick within 1 second, bypassing settling. This prevents implicit LLM work on add while preserving prompt response after publish."
 timeout_seconds = 30
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — dispatch fixture: kick path bypasses the settling delay; route was an incidental claude scaffold; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "reset_clears_claim"
@@ -1167,12 +1181,14 @@ retired_reason = "pins a claude/codex/nex/native/opencode handler route the dail
 
 [[scenario]]
 name = "config_load_no_stderr_spam"
-script = "scenarios/config_load_no_stderr_spam.sh"
+script = "archive/config_load_no_stderr_spam.sh"
 owners = [
     "deduplicate-config-deprecation",
 ]
 description = "Pins deduplicate-config-deprecation: reusable config-load paths (Config::load / load_merged / load_with_sources / load_or_default) are side-effect-free w.r.t. terminal output. A config with deprecated keys ([coordinator] section alias, explicit executor key, retired compaction key) surfaces each finding AT MOST ONCE on a CLI inspect surface (wg config --show / wg status) — never once per internal load; wg config lint --local still surfaces the COMPLETE copy-pasteable migration findings; a migrated-clean config is SILENT on every surface (must-not-over-block); and the daemon logs the deprecation at most once across startup + repeated hot reloads (no per-tick / per-reload log growth)."
 timeout_seconds = 60
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — config-load fixture: no stderr spam on a legacy config; kept the deprecated executor label as a claude fixture; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "purge_chats_skips_active_by_default"
@@ -1960,21 +1976,25 @@ timeout_seconds = 240
 
 [[scenario]]
 name = "pi_handler_plugin_transports"
-script = "scenarios/pi_handler_plugin_transports.sh"
+script = "archive/pi_handler_plugin_transports.sh"
 owners = [
     "pi-plugin-impl-smoke",
 ]
 description = "Pins plugin-first pi handler transports without live credentials: a fake `pi --mode rpc` transport receives piped stdio plus explicit provider/model and writes an inbox-driven reply, and a fake Node-host plugin bundle receives WG_PI_PROVIDER/WG_PI_MODEL and writes an inbox-driven reply. Guards the RPC and Node-host plugin-in-loop load paths."
 timeout_seconds = 45
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route (the assertion is unchanged) and the scenario is not on the pi-only daily path — pi plugin transport scenario whose scaffold route was an incidental claude init; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "pi_config_lint_rejects_unsatisfied_route"
-script = "scenarios/pi_config_lint_rejects_unsatisfied_route.sh"
+script = "archive/pi_config_lint_rejects_unsatisfied_route.sh"
 owners = [
     "pi-plugin-impl-smoke",
 ]
 description = "Pins pi config lint: a project configured with a pi: route warns/rejects when PATH has neither a pi binary nor node and WG_PI_PLUGIN_DIR points at no Node-host bundle, so an unsatisfiable pi route cannot silently pass configuration audit."
 timeout_seconds = 30
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — pi profile/config-lint scenario whose scaffold route was an incidental claude init; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "pi_worker_one_shot_prompt_and_cred_error"
@@ -2450,12 +2470,14 @@ timeout_seconds = 60
 
 [[scenario]]
 name = "service_start_survives_pty_hangup"
-script = "scenarios/service_start_survives_pty_hangup.sh"
+script = "archive/service_start_survives_pty_hangup.sh"
 owners = [
     "fix-recurring-daemon",
 ]
 description = "Pins daemon detachment through the real terminal lifecycle: forkpty launches ordinary `wg service start` without external setsid, the PTY master closes while the launcher is still in its startup wait, and the recorded daemon PID must survive the resulting terminal hangup and complete multiple later 1s coordinator ticks. Credential-free and isolated to a disposable graph. Pre-fix, the child retained the launcher's session/process group and died with the PTY."
 timeout_seconds = 30
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — service fixture: daemon survives a PTY hangup; route was an incidental claude scaffold; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "service_daemon_crash_supervisor"
@@ -2553,12 +2575,14 @@ timeout_seconds = 30
 
 [[scenario]]
 name = "tui_bootstrap_parent_graph_isolation"
-script = "scenarios/tui_bootstrap_parent_graph_isolation.sh"
+script = "archive/tui_bootstrap_parent_graph_isolation.sh"
 owners = [
     "fix-integration-test",
 ]
 description = "Real tmux/PTY regression for integration-test/TUI subprocess isolation: launch a scratch TUI with a sentinel parent WG_DIR plus worker identity, prove opening alone leaves both graphs unchanged, then drive explicit command-mode n/Enter, require .chat-0 in scratch, and prove the parent graph remains unchanged with no legacy .coordinator ghost. Credential-free."
 timeout_seconds = 30
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — TUI fixture: parent/scratch graph isolation; both graphs used the retired claude-cli route; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "tui_immediate_chat_startup"
@@ -3140,10 +3164,12 @@ timeout_seconds = 180
 
 [[scenario]]
 name = "tui_help_modal_scroll"
-script = "scenarios/tui_help_modal_scroll.sh"
+script = "archive/tui_help_modal_scroll.sh"
 owners = ["move-panel-shortcut"]
 description = "Candidate-binary real tmux/nested-PTY and SGR mouse flow for modal Help: proves the actual painted question-mark hit and keyboard shortcut open the same surface; Up/Down, PageUp/PageDown, Home/End, vertical wheel, and horizontal trackpad-equivalent events move/clamp rendered below-fold content with a visible range/thumb affordance without changing the underlying focus/selection/panel/scroll route; inside clicks are contained; outside down+up dismisses without click-through; Escape and resize restore exact workspace metadata; wide/narrow captures keep first-viewport Panel/move/activate/close/Help-scroll essentials legible while the persistent task bar has no Panel hint."
 timeout_seconds = 180
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — TUI fixture: modal Help scrolling; route was an incidental claude config value; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "lazy_evaluation_tui_evidence"
@@ -3281,17 +3307,21 @@ timeout_seconds = 240
 
 [[scenario]]
 name = "automatic_archival_restart_hold"
-script = "scenarios/automatic_archival_restart_hold.sh"
+script = "archive/automatic_archival_restart_hold.sh"
 owners = ["fix-surprise-startup-archival"]
 description = "Candidate-binary credential-free real daemon + attended tmux/TUI regression for surprise backlog archival: a legacy service state and 38-day-old terminal graph with explicit 7d retention restart into an exact visible operator hold with zero archived records; service status/TUI expose dry-run+confirm; confirmation applies the exact IDs once; undo restores canonical task bytes/status/log/dependencies; an acknowledged restart processes only one newly-eligible incremental task without rescanning restored pre-watermark history; retention=0 remains non-destructive."
 timeout_seconds = 240
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — service fixture: archival restart hold; route was an incidental claude scaffold; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "automatic_archival_opt_in"
-script = "scenarios/automatic_archival_opt_in.sh"
+script = "archive/automatic_archival_opt_in.sh"
 owners = ["make-automatic-archival-opt-in"]
 description = "Candidate-binary clean-room daemon/terminal proof with isolated HOME and explicit --dir: a missing/fresh retention key resolves to 0; old Done evidence survives start plus restart/upgrade simulation; service status and archive auto --dry-run report disabled; a live held batch is cancelled by retention=0 reload/restart with graph bytes and visible states preserved; deliberate short-retention opt-in archives only the exact digest-reviewed batch while a later eligible record stays visible and manually previewable. Credential-free."
 timeout_seconds = 180
+retired = true
+retired_reason = "retired by port-incidental-smoke-routes: the fixture route was ported to a credential-free `pi:` route and the assertion is unchanged, but the scenario's route is a fixture rather than its subject — service fixture: automatic archival opt-in semantics; route was an incidental claude scaffold; docs reduction-plan C1.2 residual set"
 
 [[scenario]]
 name = "exited_worker_finish_convergence"

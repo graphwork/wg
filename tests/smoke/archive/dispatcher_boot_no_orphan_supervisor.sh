@@ -19,11 +19,10 @@ require_wg
 scratch=$(make_scratch)
 cd "$scratch"
 
-if ! wg init -x shell >init.log 2>&1; then
-    # Older builds may not support shell executor; fall back to claude scaffold
-    if ! wg init -x claude >init.log 2>&1; then
-        loud_fail "wg init failed: $(tail -5 init.log)"
-    fi
+# Credential-free pi fixture route (pi is the sole LLM handler); this
+# scenario boots the daemon with --no-chat-agent and never calls a model.
+if ! wg init -m pi:test:fake >init.log 2>&1; then
+    loud_fail "wg init failed: $(tail -5 init.log)"
 fi
 
 # --no-chat-agent (legacy alias --no-coordinator-agent) skips spawning the

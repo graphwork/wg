@@ -26,9 +26,9 @@ require_wg
 scratch=$(make_scratch)
 cd "$scratch"
 
-# Initialize with claude scaffold (no LLM calls happen in this scenario;
+# Initialize with a credential-free pi scaffold (no LLM calls happen here;
 # the daemon just needs to boot and accept IPC).
-if ! wg init -m claude:opus >init.log 2>&1; then
+if ! wg init -m pi:test:fake >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -5 init.log)"
 fi
 

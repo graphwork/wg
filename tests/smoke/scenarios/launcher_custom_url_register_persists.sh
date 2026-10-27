@@ -41,7 +41,7 @@ mkdir -p "$SMOKE_HOME/.wg"
 scratch=$(make_scratch)
 cd "$scratch"
 
-if ! wg init -m claude:opus >init.log 2>&1; then
+if ! wg init -m pi:test:fake >init.log 2>&1; then
     echo "FAIL: wg init: $(tail -5 init.log)"
     exit 1
 fi

@@ -136,9 +136,10 @@ build_link_test_safety_bytes = 0
 EOF
 
 # A shell task still needs a route selected before admission (the route selects
-# the executor plan; the shell task itself never invokes it). codex self-auths
+# the executor plan; the shell task itself never invokes it). the pi route
+# is a credential-free fixture: no worker is ever dispatched here.
 # and is never launched, so this stays credential-free.
-wg --dir "$project" config --local --model codex:gpt-5.5 --no-reload >/dev/null
+wg --dir "$project" config --local --model pi:test:fake --no-reload >/dev/null
 
 out_a="$scratch/out-a"
 out_b="$scratch/out-b"

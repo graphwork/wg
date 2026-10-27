@@ -12,7 +12,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 require_wg
 scratch=$(make_scratch)
 cd "$scratch"
-wg init -m claude:opus >init.log 2>&1 || loud_fail "wg init failed: $(tail -10 init.log)"
+wg init -m pi:test:fake >init.log 2>&1 || loud_fail "wg init failed: $(tail -10 init.log)"
 wg_dir=$(graph_dir_in "$scratch") || loud_fail "wg init did not create a graph"
 
 WG_BIN=$(command -v wg)

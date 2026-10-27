@@ -36,7 +36,7 @@ chmod +x "$bindir/pi"
 (
     cd "$project" || exit 1
     env HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" PATH="$bindir:$PATH" \
-        wg init -m claude:opus --no-agency >/dev/null 2>&1
+        wg init -m pi:test:fake --no-agency >/dev/null 2>&1
 ) || loud_fail "wg init failed"
 
 (

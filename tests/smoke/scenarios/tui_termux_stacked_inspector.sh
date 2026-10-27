@@ -22,7 +22,7 @@ G="$scratch/project/.wg"
 "$WG_BIN" --dir "$G" init --no-agency >/dev/null
 cat >"$G/config.toml" <<'TOML'
 [dispatcher]
-model = "claude:opus"
+model = "pi:test:fake"
 TOML
 "$WG_BIN" --dir "$G" chat create --name termux-stack --command cat >/dev/null
 "$WG_BIN" --dir "$G" add "termux-graph-anchor" -d "phone stack task detail" >/dev/null

@@ -34,7 +34,7 @@ require_wg
 scratch=$(make_scratch)
 cd "$scratch"
 
-if ! wg init -m claude:opus >init.log 2>&1; then
+if ! wg init -m pi:test:fake >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -10 init.log)"
 fi
 

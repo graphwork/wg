@@ -39,7 +39,7 @@ printf 'main\n' >main.txt
 git add main.txt
 git commit -qm initial
 
-"$WG_BIN" init -m claude:opus --no-agency >init.log 2>&1 \
+"$WG_BIN" init -m pi:test:fake --no-agency >init.log 2>&1 \
   || loud_fail "wg init failed: $(tail -30 init.log)"
 wg_dir="$project/.wg"
 

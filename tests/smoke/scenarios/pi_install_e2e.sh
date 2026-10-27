@@ -54,7 +54,7 @@ mkdir -p "$s2/home" "$s2/cache" "$s2/proj"
 
 ( cd "$s2/proj" && clean_env HOME="$s2/home" XDG_CACHE_HOME="$s2/cache" \
     XDG_CONFIG_HOME="$s2/home/.config" \
-    wg init -m openrouter:anthropic/claude-3.5-haiku --no-agency >/dev/null 2>&1 ) \
+    wg init -m pi:openrouter:anthropic/claude-3.5-haiku --no-agency >/dev/null 2>&1 ) \
     || loud_fail "wg init (scenario 2 project) failed"
 
 prof_out=$( cd "$s2/proj" && clean_env HOME="$s2/home" XDG_CACHE_HOME="$s2/cache" \
@@ -123,7 +123,7 @@ if command -v pi >/dev/null 2>&1; then
     mkdir -p "$sh/home" "$sh/cache" "$sh/proj"
     ( cd "$sh/proj" && clean_env HOME="$sh/home" XDG_CACHE_HOME="$sh/cache" \
         XDG_CONFIG_HOME="$sh/home/.config" \
-        wg init -m openrouter:anthropic/claude-3.5-haiku --no-agency >/dev/null 2>&1 ) \
+        wg init -m pi:openrouter:anthropic/claude-3.5-haiku --no-agency >/dev/null 2>&1 ) \
         || loud_fail "wg init (handler project) failed"
     wgdir="$sh/proj/.wg"
     hlog="$wgdir/chat/chat-1/handler.log"

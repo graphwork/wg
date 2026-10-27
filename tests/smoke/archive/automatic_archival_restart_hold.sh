@@ -33,7 +33,7 @@ cd "$scratch"
 G="$scratch/.wg"
 # No worker is dispatchable, but service startup still requires an explicit
 # handler-first route selection. Native CLI auth is never touched here.
-"$WG_BIN" --dir "$G" config --local --model claude:opus --no-reload >/dev/null
+"$WG_BIN" --dir "$G" config --local --model pi:test:fake --no-reload >/dev/null
 "$WG_BIN" --dir "$G" config set coordinator.archive_retention_days 7 --no-reload >/dev/null
 "$WG_BIN" --dir "$G" config set agency.auto_assign false --no-reload >/dev/null
 "$WG_BIN" --dir "$G" config set agency.auto_evaluate false --no-reload >/dev/null

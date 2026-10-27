@@ -35,7 +35,7 @@ echo "shared checkout sentinel" > source.txt
 git add source.txt
 git commit -qm initial
 
-"$WG_BIN" init -m claude:opus >init.log 2>&1 \
+"$WG_BIN" init -m pi:test:fake >init.log 2>&1 \
   || loud_fail "wg init failed: $(tail -30 init.log)"
 wg_dir="$project/.wg"
 

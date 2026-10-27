@@ -81,7 +81,7 @@ JSON
 
 (
     cd "$project" || exit 1
-    HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" wg init -m claude:opus --no-agency >/dev/null 2>&1
+    HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" wg init -m pi:test:fake --no-agency >/dev/null 2>&1
 ) || loud_fail "wg init failed"
 
 # Give wg_ready a real graph surface and make the large-output request cheap to

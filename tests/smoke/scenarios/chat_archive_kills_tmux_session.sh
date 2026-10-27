@@ -33,9 +33,9 @@ fi
 scratch=$(make_scratch)
 cd "$scratch"
 
-# wg init succeeds in a fresh dir; --executor claude is fine even
-# without API keys because we never actually run the agent.
-if ! wg init -x claude >init.log 2>&1; then
+# wg init succeeds in a fresh dir; a credential-free pi route is fine
+# because we never actually run the agent.
+if ! wg init -m pi:test:fake >init.log 2>&1; then
     loud_fail "wg init failed: $(tail -5 init.log)"
 fi
 

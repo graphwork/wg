@@ -73,7 +73,7 @@ build_link_test_safety_bytes = 0
 max_build_agents = 3
 disk_agent_heartbeat_seconds = 60
 EOF
-"$WG_BIN" --dir "$project/.wg" config --local --model codex:gpt-5.5 --no-reload >/dev/null
+"$WG_BIN" --dir "$project/.wg" config --local --model pi:test:fake --no-reload >/dev/null
 git add .gitignore AGENTS.md CLAUDE.md worksgood.toml
 git commit -qm wg-fixture
 [[ -z "$(git status --porcelain)" ]] || loud_fail "baseline fixture source is dirty"
