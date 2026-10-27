@@ -132,6 +132,13 @@ tui_help_modal_scroll              tui_log_pane_follows_retry
 wg_show_retry_attempts
 ```
 
+Each of the 15 was re-run **from this directory** after the move (`bash
+tests/smoke/archive/<name>.sh` under the harness bridge) and passed; the
+graph/service/CLI ones are fast and deterministic, and the TUI ones keep their
+historical timing sensitivity (`tui_log_pane_follows_retry` needs its usual TUI
+startup grace, so a rare flake under heavy load is expected — it is retired, so
+only `--full-smoke` pays for it).
+
 The ports are route-only: `wg init -m claude:opus` / `-x claude` /
 `config --local --model codex:gpt-5.5` / `--route claude-cli` became
 `wg init -m pi:test:fake` (or `--route pi`), graph fixtures moved
