@@ -308,12 +308,90 @@ export {
   openFleetPanel,
   makeFleetFetcher,
   makeFleetDetailFetcher,
+  makeFleetDetailJsonFetcher,
+  printableText,
   FLEET_PANEL_POLL_MS,
   FLEET_NOTICE_MS,
   FLEET_RESIZE_STEP_PCT,
+  FLEET_SPLIT_MIN_BODY,
   DETAIL_ENTER_GUARD_MS,
   resizeDeltaForInput,
 } from "./fleet-panel.js";
+// ── Full TUI interaction parity: the keymap, the dock layout, the query state,
+// the task actions, the help modal and the inspector model. ──
+export {
+  FLEET_BINDINGS,
+  FLEET_HELP_SECTIONS,
+  FLEET_MOUSE_BINDINGS,
+  bindingIds,
+  helpBindings,
+  helpLines,
+  matchFleetBinding,
+  validateFleetBindings,
+} from "./fleet-bindings.js";
+export type { FleetBinding, FleetBindingId, FleetBindingScope, FleetMouseBinding } from "./fleet-bindings.js";
+export {
+  DEFAULT_FLEET_LAYOUT,
+  FLEET_DOCK_MAX_PERCENT,
+  FLEET_DOCK_MIN_PERCENT,
+  FLEET_DOCK_STEP_PERCENT,
+  FLEET_PRESET_PERCENT,
+  FLEET_VIZ_STEP_PERCENT,
+  applyPreset,
+  clampDockPercent,
+  cycleLayout,
+  dividerPercentAfterDrag,
+  dockPercent,
+  growDock,
+  growVizPane,
+  isDocked,
+  layoutFromConfig,
+  layoutLabel,
+  layoutMode,
+  layoutToConfig,
+  normalizeLayout,
+  pendingForLayoutKey,
+  shrinkDock,
+  shrinkVizPane,
+  toggleDock,
+} from "./fleet-layout.js";
+export type { FleetInspectorMode, FleetLayout, FleetLayoutMode, FleetLayoutPreset } from "./fleet-layout.js";
+export {
+  FLEET_SORT_ORDER,
+  FLEET_VISIBILITY_ORDER,
+  FleetSearchState,
+  filterRenderedRows,
+  isPlumbingTask,
+  nextSortMode,
+  nextVisibilityMode,
+  searchRowMatches,
+  sortLabel,
+  sortTaskRows,
+  taskVisible,
+  visibilityLabel,
+} from "./fleet-query.js";
+export type { FilterableRow, FleetSortMode, FleetVisibilityMode } from "./fleet-query.js";
+export {
+  FLEET_ACTION_NOTIFY_CHARS,
+  FLEET_ACTION_NOTIFY_LINES,
+  FLEET_ACTIONS,
+  actionForKind,
+  actionNotifyLines,
+  availableActions,
+  confirmPrompt,
+  inputPrompt,
+} from "./fleet-actions.js";
+export type { FleetActionKind, FleetActionPrompt, FleetActionSpec } from "./fleet-actions.js";
+export { FLEET_HELP_MODAL_MIN_ROWS, helpMaxScroll, helpWindow } from "./fleet-help.js";
+export type { HelpWindow } from "./fleet-help.js";
+export {
+  applySectionCollapse,
+  collapsibleSectionAt,
+  isSectionHeading,
+  sectionKeyAt,
+  splitDetailSections,
+} from "./fleet-inspector.js";
+export type { DetailSection } from "./fleet-inspector.js";
 export {
   compareBuildStamps,
   ownBuildDigest,
@@ -334,7 +412,14 @@ export type {
   StackStatusJson,
   StackVerdict,
 } from "./stack-status.js";
-export type { FleetPanelOptions, FleetTui, OpenFleetPanelOptions, FleetSnapshotFetcher, FleetDetailFetcher } from "./fleet-panel.js";
+export type {
+  FleetActionRunner,
+  FleetPanelOptions,
+  FleetTui,
+  OpenFleetPanelOptions,
+  FleetSnapshotFetcher,
+  FleetDetailFetcher,
+} from "./fleet-panel.js";
 export {
   DEFAULT_TRANSCRIPT_LINES,
   FLEET_PANEL_DEFAULT_HEIGHT,
@@ -370,6 +455,7 @@ export {
   FLEET_CONFIG_DIRS,
   FLEET_HEIGHT_PCT_ENV,
   FLEET_HEIGHT_PCT_KEY,
+  FLEET_LAYOUT_KEY,
   MAX_FLEET_HEIGHT_PCT,
   MIN_FLEET_HEIGHT_PCT,
   clampHeightFraction,
@@ -379,6 +465,8 @@ export {
   readFleetViewConfig,
   resolveAgentDir,
   writeFleetViewHeightPct,
+  writeFleetViewLayout,
+  writeFleetViewSetting,
 } from "./fleet-config.js";
 export type { FleetViewConfig, FleetPlacement, FleetConfigIO } from "./fleet-config.js";
 export {

@@ -15,7 +15,11 @@
  *     "fleetViewExpanded": false,  // unfolded: compact body (a few live agents)
  *     "fleetViewPlacement": "belowEditor",
  *     "fleetViewPollMs": 5000,
- *     "fleetViewHeightPct": 0.6       // how much of the height the cockpit covers
+ *     "fleetViewHeightPct": 0.6,      // how much of the height the cockpit covers
+ *     "fleetViewLayout": {           // the inspector dock: split/full/hidden + %
+ *       "mode": "split",
+ *       "sizePercent": 50
+ *     }
  *   }
  *
  * **The strip is the default surface, not the exception.** It used to default to
@@ -32,22 +36,27 @@
  *   2. the first existing config file among the candidate dirs;
  *   3. the safe default (`enabled: true`, `collapsed: true`).
  *
- * Reads are pure/read-only. The ONE write is
- * {@link writeFleetViewHeightPct} — the cockpit's drag/keyboard resize persists
- * the operator's chosen `fleetViewHeightPct` so it sticks across opens (the
- * operator-reported gap: "no click-drag or way to modulate the screen fraction
- * covered"). It rewrites only that one key, atomically, and never touches any
- * other config field.
+ * Reads are pure/read-only. The writes are
+ * {@link writeFleetViewHeightPct} (the cockpit's drag/keyboard resize persists
+ * the operator's chosen `fleetViewHeightPct` so it sticks across opens — the
+ * operator-reported gap "no click-drag or way to modulate the screen fraction
+ * covered") and {@link writeFleetViewLayout} (the inspector-dock layout chosen
+ * with `1`/`2`/`3`, `=`, `\`, `i`/`v`, the layout row or the divider drag, so
+ * the panel reopens exactly as the operator left it). Both go through
+ * {@link writeFleetViewSetting}: one key, atomic, never touching any other field.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { DEFAULT_FLEET_LAYOUT, layoutFromConfig, layoutToConfig, } from "./fleet-layout.js";
 /** Smallest cockpit fraction (three rows' worth on a normal terminal). */
 export const MIN_FLEET_HEIGHT_PCT = 0.2;
 /** Largest cockpit fraction (the whole interactive area). */
 export const MAX_FLEET_HEIGHT_PCT = 1;
 /** The config key the panel's resize persists. */
 export const FLEET_HEIGHT_PCT_KEY = "fleetViewHeightPct";
+/** The config key the inspector-dock layout persists. */
+export const FLEET_LAYOUT_KEY = "fleetViewLayout";
 /** Env override for the cockpit height fraction. */
 export const FLEET_HEIGHT_PCT_ENV = "WG_PI_FLEET_HEIGHT_PCT";
 /** Safe defaults: visible one-line strip, compact body, below the editor, 5s cadence. */
@@ -58,6 +67,7 @@ export const DEFAULT_FLEET_VIEW_CONFIG = {
     placement: "belowEditor",
     pollMs: 5000,
     heightPct: MAX_FLEET_HEIGHT_PCT,
+    layout: { ...DEFAULT_FLEET_LAYOUT },
 };
 /**
  * Candidate extension-config directories under `<agent-dir>/extensions/`.
@@ -167,6 +177,7 @@ export function parseFleetViewConfig(raw) {
         placement: asPlacement(obj.fleetViewPlacement, DEFAULT_FLEET_VIEW_CONFIG.placement),
         pollMs: asPollMs(obj.fleetViewPollMs, DEFAULT_FLEET_VIEW_CONFIG.pollMs),
         heightPct: asHeightPct(obj[FLEET_HEIGHT_PCT_KEY], DEFAULT_FLEET_VIEW_CONFIG.heightPct),
+        layout: layoutFromConfig(obj[FLEET_LAYOUT_KEY] ?? DEFAULT_FLEET_VIEW_CONFIG.layout),
     };
 }
 /**
@@ -195,6 +206,7 @@ export function readFleetViewConfig(env = process.env, io = defaultIO, explicitP
         placement: asPlacement(env.WG_PI_FLEET_VIEW_PLACEMENT, config.placement),
         pollMs: asPollMs(env.WG_PI_FLEET_VIEW_POLL_MS, config.pollMs),
         heightPct: asHeightPct(env[FLEET_HEIGHT_PCT_ENV], config.heightPct),
+        layout: config.layout,
     };
 }
 /**
@@ -210,7 +222,26 @@ export function readFleetViewConfig(env = process.env, io = defaultIO, explicitP
  * failed — a resize must never throw into the chat.
  */
 export function writeFleetViewHeightPct(pct, env = process.env, io = defaultIO) {
-    const value = clampHeightPct(pct);
+    return writeFleetViewSetting(FLEET_HEIGHT_PCT_KEY, clampHeightPct(pct), env, io);
+}
+/**
+ * Persist the operator's chosen inspector-dock layout.
+ *
+ * SAME contract as {@link writeFleetViewHeightPct}: one key, atomic temp+rename,
+ * every other key preserved verbatim, `null` on no-change/failure (a dock change
+ * must never throw into the chat). The panel calls this on every applied layout
+ * so the next open restores it.
+ */
+export function writeFleetViewLayout(layout, env = process.env, io = defaultIO) {
+    return writeFleetViewSetting(FLEET_LAYOUT_KEY, layoutToConfig(layout), env, io);
+}
+/**
+ * Write ONE `fleetView*` key atomically, preserving every other key.
+ *
+ * Returns the path written, or `null` when the value was unchanged or the write
+ * failed.
+ */
+export function writeFleetViewSetting(key, value, env = process.env, io = defaultIO) {
     const paths = fleetConfigPaths(env);
     const target = paths.find((path) => io.exists(path)) ?? paths[0];
     if (!target)
@@ -228,9 +259,12 @@ export function writeFleetViewHeightPct(pct, env = process.env, io = defaultIO) 
         // A corrupt config must not block the resize: rewrite it from scratch.
         raw = {};
     }
-    if (asHeightPct(raw[FLEET_HEIGHT_PCT_KEY], -1) === value)
+    const unchanged = key === FLEET_HEIGHT_PCT_KEY
+        ? asHeightPct(raw[key], -1) === value
+        : JSON.stringify(raw[key] ?? null) === JSON.stringify(value);
+    if (unchanged)
         return null;
-    raw[FLEET_HEIGHT_PCT_KEY] = value;
+    raw[key] = value;
     // The writer seams are optional on the IO interface (a read-only test double
     // stays valid); resolve them to the real filesystem when absent.
     const mkdir = io.mkdir ?? defaultIO.mkdir;

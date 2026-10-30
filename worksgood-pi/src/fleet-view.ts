@@ -47,13 +47,19 @@ import {
   DEFAULT_FLEET_VIEW_CONFIG,
   readFleetViewConfig,
   writeFleetViewHeightPct,
+  writeFleetViewLayout,
   type FleetViewConfig,
 } from "./fleet-config.js";
 import { fleetSummaryLine, type FleetLine, type FleetSnapshot } from "./fleet-readmodel.js";
 import { fleetSnapshotWithFallback } from "./fleet-snapshot.js";
 import { DEFAULT_TRANSCRIPT_LINES } from "./fleet-panel-model.js";
 import { FleetStripComponent, type FleetStripMode } from "./fleet-strip.js";
-import { makeFleetDetailFetcher, makeFleetFetcher, openFleetPanel } from "./fleet-panel.js";
+import {
+  makeFleetDetailFetcher,
+  makeFleetDetailJsonFetcher,
+  makeFleetFetcher,
+  openFleetPanel,
+} from "./fleet-panel.js";
 
 /** Widget registration key (also the settings-visible surface id). */
 export const FLEET_WIDGET_KEY = "wg-fleet";
@@ -306,6 +312,7 @@ export function installFleetView(
         pollMs: config.pollMs,
         transcriptLines: DEFAULT_TRANSCRIPT_LINES,
         fetchDetail: makeFleetDetailFetcher(backend),
+        fetchDetailJson: makeFleetDetailJsonFetcher(backend),
         // The operator's chosen screen fraction is sticky: read the persisted
         // `fleetViewHeightPct` on open, write it back on drag-resize/`+`/`-`.
         heightPct: config.heightPct,
@@ -313,6 +320,16 @@ export function installFleetView(
           config.heightPct = pct;
           writeFleetViewHeightPct(pct);
         },
+        // The inspector-dock layout is sticky too (`fleetViewLayout`): the dock
+        // percentage/presets and the divider drag survive the next open.
+        layout: config.layout,
+        persistLayout: (layout) => {
+          config.layout = layout;
+          writeFleetViewLayout(layout);
+        },
+        // In-panel task actions drive the SAME `wg` binary the tools use.
+        runAction: (argv) => backend.run([...argv]),
+        onRefresh: () => refresh(ctx),
         ...(taskId ? { initialTaskId: taskId } : {}),
       });
       await refresh(ctx);
