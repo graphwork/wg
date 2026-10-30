@@ -31,6 +31,8 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { formatActivationStatus, } from "./activation.js";
+import { isWorkerSession, ownBuildDigest } from "./plugin-stamp.js";
+import { formatStackStatus, probeStackStatus } from "./stack-status.js";
 export const WG_SUBCOMMANDS = [
     "init",
     "ready",
@@ -153,7 +155,14 @@ export function formatOffLine(outcome) {
         "settings.json, the extension entry, .wg/ and the daemon untouched — " +
         "running agents are separate processes and keep running · context re-priced");
 }
-export function registerWgCommands(pi, backend, activation) {
+/**
+ * Register the human-facing `/wg` · `/wg-model` commands.
+ *
+ * `stackProbe` is the `/wg status` STACK probe (daemon build age + plugin-cache
+ * currency). It is injectable for tests and defaults to the real read-only
+ * `wg status --json` + `wg pi-plugin status` probes — see `stack-status.ts`.
+ */
+export function registerWgCommands(pi, backend, activation, stackProbe) {
     // Stash the model registry from the live context so /wg-model autocomplete
     // can list available models (getArgumentCompletions has no ctx of its own).
     let modelSpecs = [];
@@ -265,7 +274,30 @@ export function registerWgCommands(pi, backend, activation) {
                     if (!activation)
                         return emit(ctx, notWired("status"), "warning");
                     const state = await activation.status(ctx);
-                    emit(ctx, formatActivationStatus(state), "info");
+                    // The STACK segment answers "is this session running a current build?"
+                    // from INSIDE the session (an old daemon payload is why the fleet
+                    // panel can fall back to the local palette, and a stale plugin cache
+                    // is why a shipped fix can appear to be missing). Best-effort: a
+                    // failed probe renders "unknown", never a broken status line.
+                    let stack = null;
+                    try {
+                        stack =
+                            (await stackProbe?.()) ??
+                                (await probeStackStatus(backend, {
+                                    pluginDigest: ownBuildDigest(),
+                                    workerSession: isWorkerSession(),
+                                }));
+                    }
+                    catch {
+                        stack = formatStackStatus({
+                            status: null,
+                            pluginStatusText: null,
+                            pluginDigest: undefined,
+                            workerSession: isWorkerSession(),
+                        });
+                    }
+                    const base = formatActivationStatus(state);
+                    emit(ctx, stack ? `${base} · ${stack.text}` : base, stack && stack.verdict !== "current" ? "warning" : "info");
                     return;
                 }
                 default:

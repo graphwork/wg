@@ -40,7 +40,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { ACTIVATION_STATE_DIR, projectRootFromDir } from "./activation.js";
-import { DEFAULT_FLEET_VIEW_CONFIG, readFleetViewConfig, } from "./fleet-config.js";
+import { DEFAULT_FLEET_VIEW_CONFIG, readFleetViewConfig, writeFleetViewHeightPct, } from "./fleet-config.js";
 import { fleetSummaryLine } from "./fleet-readmodel.js";
 import { fleetSnapshotWithFallback } from "./fleet-snapshot.js";
 import { DEFAULT_TRANSCRIPT_LINES } from "./fleet-panel-model.js";
@@ -228,6 +228,13 @@ export function installFleetView(pi, backend, env, options = {}) {
                 pollMs: config.pollMs,
                 transcriptLines: DEFAULT_TRANSCRIPT_LINES,
                 fetchDetail: makeFleetDetailFetcher(backend),
+                // The operator's chosen screen fraction is sticky: read the persisted
+                // `fleetViewHeightPct` on open, write it back on drag-resize/`+`/`-`.
+                heightPct: config.heightPct,
+                persistHeightPct: (pct) => {
+                    config.heightPct = pct;
+                    writeFleetViewHeightPct(pct);
+                },
                 ...(taskId ? { initialTaskId: taskId } : {}),
             });
             await refresh(ctx);
@@ -242,7 +249,14 @@ export function installFleetView(pi, backend, env, options = {}) {
         if (!ctx || ctx.mode !== "tui")
             return;
         try {
-            await openFleetPanel(ctx, makeFleetFetcher(backend), env.dir, { inactive: true });
+            await openFleetPanel(ctx, makeFleetFetcher(backend), env.dir, {
+                inactive: true,
+                heightPct: config.heightPct,
+                persistHeightPct: (pct) => {
+                    config.heightPct = pct;
+                    writeFleetViewHeightPct(pct);
+                },
+            });
         }
         catch {
             // Silent degrade: the panel must never throw into the chat.

@@ -27,6 +27,7 @@ import { installCompletionWatcher } from "./completion-watcher.js";
 import { installBashToolTimeout, readBashTimeoutConfig } from "./bash-timeout.js";
 import { installSessionActivation } from "./activation.js";
 import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
+import { isWorkerSession, readEmbedDigestAt } from "./plugin-stamp.js";
 
 /**
  * Compat tripwire (mirrors WG_AGENCY_COMPAT_VERSION): a version-skewed plugin
@@ -74,13 +75,11 @@ import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
  *
  * The daemon exports `WG_AGENT_ID` for every spawned task agent, and an
  * attempt-scoped sandbox holds `WG_WORKER_CAPABILITY`. Either signal means the
- * session is administered by WG, so the console self-heal must not run.
+ * session is administered by WG, so the console self-heal must not run. The
+ * implementation lives in `plugin-stamp.ts` (shared with the `/wg status` stack
+ * probe, which must not attempt admin verbs either) and is re-exported here.
  */
-export function isWorkerSession(env: NodeJS.ProcessEnv = process.env): boolean {
-  const nonEmpty = (value: string | undefined): boolean =>
-    typeof value === "string" && value.trim().length > 0;
-  return nonEmpty(env.WG_AGENT_ID) || nonEmpty(env.WG_WORKER_CAPABILITY);
-}
+export { isWorkerSession } from "./plugin-stamp.js";
 function assertCompatVersionSync(): void {
   const expected = process.env.WG_PI_PLUGIN_COMPAT_VERSION?.trim();
   if (expected && expected !== EMBEDDED_COMPAT) {
@@ -98,16 +97,10 @@ function assertCompatVersionSync(): void {
  * Only a binary-materialized cache dir carries the `.wg-embed-digest` companion
  * stamp (written beside the version dir by `ensure-pi-plugin`). A dev tree or an
  * npm `node_modules` install has no stamp — return `undefined` so we never
- * nag about a build `wg` does not own.
+ * nag about a build `wg` does not own. Shared with the `/wg status` stack probe
+ * (`plugin-stamp.ts`) so the two can never disagree about what "our build" is.
  */
-export function readEmbedDigestAt(versionDir: string): string | undefined {
-  try {
-    const text = readFileSync(path.join(versionDir, ".wg-embed-digest"), "utf8").trim();
-    return text || undefined;
-  } catch {
-    return undefined;
-  }
-}
+export { readEmbedDigestAt } from "./plugin-stamp.js";
 
 /** The version dir this copy of the plugin was loaded from (parent of `pi-worksgood/`). */
 function ownVersionDir(): string {
@@ -316,8 +309,31 @@ export {
   makeFleetFetcher,
   makeFleetDetailFetcher,
   FLEET_PANEL_POLL_MS,
+  FLEET_NOTICE_MS,
+  FLEET_RESIZE_STEP_PCT,
   DETAIL_ENTER_GUARD_MS,
+  resizeDeltaForInput,
 } from "./fleet-panel.js";
+export {
+  compareBuildStamps,
+  ownBuildDigest,
+  ownVersionDir,
+  shortDigest,
+} from "./plugin-stamp.js";
+export type { BuildSkew } from "./plugin-stamp.js";
+export {
+  formatStackStatus,
+  parsePluginCacheStatus,
+  probeStackStatus,
+} from "./stack-status.js";
+export type {
+  PluginCacheStatus,
+  StackProbeBackend,
+  StackStatus,
+  StackStatusInput,
+  StackStatusJson,
+  StackVerdict,
+} from "./stack-status.js";
 export type { FleetPanelOptions, FleetTui, OpenFleetPanelOptions, FleetSnapshotFetcher, FleetDetailFetcher } from "./fleet-panel.js";
 export {
   DEFAULT_TRANSCRIPT_LINES,
@@ -352,10 +368,17 @@ export type { TextTail, WgTreeLine, WgTreeRender } from "./fleet-panel-model.js"
 export {
   DEFAULT_FLEET_VIEW_CONFIG,
   FLEET_CONFIG_DIRS,
+  FLEET_HEIGHT_PCT_ENV,
+  FLEET_HEIGHT_PCT_KEY,
+  MAX_FLEET_HEIGHT_PCT,
+  MIN_FLEET_HEIGHT_PCT,
+  clampHeightFraction,
+  clampHeightPct,
   fleetConfigPaths,
   parseFleetViewConfig,
   readFleetViewConfig,
   resolveAgentDir,
+  writeFleetViewHeightPct,
 } from "./fleet-config.js";
 export type { FleetViewConfig, FleetPlacement, FleetConfigIO } from "./fleet-config.js";
 export {
@@ -386,13 +409,16 @@ export type {
   FleetSnapshot,
 } from "./fleet-readmodel.js";
 export {
+  FALLBACK_PALETTE_NOTICE,
   FALLBACK_STATUS_PALETTE,
+  WG_PALETTE_STATUS,
   colorModeOf,
   fgAnsi,
   normalizeStatusPalette,
   paintRgb,
   paintStatusText,
   paletteNotice,
+  paletteStatus,
   resolveStatusPalette,
   rgbToAnsi256,
   statusRgb,

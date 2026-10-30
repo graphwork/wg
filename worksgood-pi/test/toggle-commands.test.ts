@@ -100,12 +100,23 @@ function baseBackend(overrides: Record<string, unknown> = {}): any {
   };
 }
 
-function wire(overrides: Record<string, unknown> = {}, cwd = project()) {
+/** A deterministic `/wg status` STACK segment (the real probe is env-dependent). */
+const STACK_CURRENT = {
+  verdict: "current" as const,
+  text: "stack: daemon up 2h · build matches b3:abc… · plugin cache: current (b3:abc…)",
+};
+const defaultStackProbe = async () => STACK_CURRENT;
+
+function wire(
+  overrides: Record<string, unknown> = {},
+  cwd = project(),
+  stackProbe: () => Promise<{ verdict: string; text: string }> = defaultStackProbe,
+) {
   const backend = baseBackend(overrides);
   const { pi, commands, tools } = makePi();
   registerWgTools(pi, backend);
   const activation = installSessionActivation(pi, backend, {}, {});
-  registerWgCommands(pi, backend, activation);
+  registerWgCommands(pi, backend, activation, stackProbe as never);
   return { backend, pi, commands, activation, cwd, tools };
 }
 
@@ -252,12 +263,35 @@ describe("/wg status", () => {
 
     await commands.get("wg")!.handler("status", ctx);
     const line = notify.mock.calls[0][0] as string;
-    expect(line).toBe("session: dormant · project: dormant · tools: 0 wg tools visible · daemon: running");
+    // One line: the four activation fields PLUS the STACK segment (daemon build
+    // age + plugin-cache currency), so a stale stack is visible from inside the
+    // session instead of only via out-of-session `wg dev-check`.
+    expect(line).toBe(
+      "session: dormant · project: dormant · tools: 0 wg tools visible · daemon: running" +
+        ` · ${STACK_CURRENT.text}`,
+    );
+    expect(line.split("\n")).toHaveLength(1);
+    expect(line).toContain("stack:");
 
     await commands.get("wg")!.handler("on", ctx);
     await commands.get("wg")!.handler("status", ctx);
     const active = notify.mock.calls.at(-1)![0] as string;
-    expect(active).toBe("session: active · project: marked active · tools: 12 wg tools visible · daemon: running");
+    expect(active).toBe(
+      "session: active · project: marked active · tools: 12 wg tools visible · daemon: running" +
+        ` · ${STACK_CURRENT.text}`,
+    );
+  });
+
+  it("warns (never hides) when the stack is stale", async () => {
+    const stale = {
+      verdict: "skew" as const,
+      text: "stack: STALE — this plugin build b3:old ≠ wg binary embed b3:new (daemon older than plugin); run wg dev-sync then restart pi · daemon up 2h",
+    };
+    const { commands } = wire({}, project(), async () => stale);
+    const { ctx, notify } = makeCtx(project());
+    await commands.get("wg")!.handler("status", ctx);
+    expect(notify.mock.calls[0][0]).toContain("STALE");
+    expect(notify.mock.calls[0][1]).toBe("warning");
   });
 
   it("reports daemon down and unknown honestly", async () => {

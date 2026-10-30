@@ -48,10 +48,12 @@ import type { GetFleetSnapshot, GetTaskDetail, WgBackend } from "./wg-backend.js
 import { taskColor, type FleetColor } from "./fleet-readmodel.js";
 import {
   paintStatusText,
-  paletteNotice,
+  paletteLabel,
+  paletteWarning,
   resolveStatusPalette,
   type StatusPalette,
 } from "./status-palette.js";
+import { MAX_FLEET_HEIGHT_PCT, clampHeightFraction } from "./fleet-config.js";
 import {
   DEFAULT_TRANSCRIPT_LINES,
   FLEET_PANEL_DEFAULT_HEIGHT,
@@ -74,6 +76,28 @@ import type { PiMouseResult } from "./mouse.js";
 
 /** Default bounded poll cadence for the open panel. */
 export const FLEET_PANEL_POLL_MS = 5000;
+
+/**
+ * Keyboard resize step as a fraction of the terminal height. `+`/`]` grow the
+ * panel, `-`/`[` shrink it, in 5% increments (2 rows on a 40-row terminal).
+ */
+export const FLEET_RESIZE_STEP_PCT = 0.05;
+
+/** How long a transient in-panel notice (e.g. the Ctrl+C explanation) stays. */
+export const FLEET_NOTICE_MS = 4000;
+
+/**
+ * Keys that resize the panel: `+`/`=`/`]` grow, `-`/`_`/`[` shrink.
+ *
+ * There is a keyboard path for every mouse gesture (pi's regular mode has no
+ * mouse at all), and this is the resize path — the operator-reported gap
+ * ("no way to modulate the screen fraction covered") applies to both.
+ */
+export function resizeDeltaForInput(data: string): number {
+  if (data === "+" || data === "=" || data === "]") return 1;
+  if (data === "-" || data === "_" || data === "[") return -1;
+  return 0;
+}
 
 /**
  * Enter is both "open detail" (tree) and "back to tree" (detail). Some
@@ -105,6 +129,17 @@ export interface FleetPanelOptions {
   inactive?: boolean;
   /** Preselect this task (a click on an ambient agent row opens on that task). */
   initialTaskId?: string;
+  /**
+   * Initial cockpit height as a fraction of the terminal (`0.2`–`1`). Defaults
+   * to the persisted `fleetViewHeightPct` value supplied by the caller.
+   */
+  heightPct?: number;
+  /**
+   * Called with the new fraction after a drag-resize release or a keyboard
+   * resize, so the caller can persist `fleetViewHeightPct`. Best-effort: a
+   * throwing callback never breaks the panel.
+   */
+  onHeightPctChange?: (pct: number) => void;
 }
 
 /** A renderable panel line plus the semantic colour to paint it with. */
@@ -151,6 +186,18 @@ export class FleetPanelComponent {
   private pressGesture = false;
   /** Whether the row under the current press was selected *before* the press. */
   private pressWasSelected = false;
+  /**
+   * An active top-edge RESIZE gesture (press on the header row). Kept until
+   * release so the drag keeps resizing even when the pointer leaves the header,
+   * and so the chosen fraction is persisted exactly once, on release.
+   */
+  private resize: { startY: number; startPct: number; rows: number; moved: boolean } | null = null;
+  /** Cockpit height as a fraction of the terminal (persisted by the caller). */
+  private heightPct: number;
+  /** A transient in-panel notice (e.g. "ctrl+c ignored") and its expiry. */
+  private notice: { text: string; until: number } | null = null;
+  /** The trigger that closed the panel (`q` / `escape`), for the close notify. */
+  private closeTrigger: string | null = null;
   private cachedLines: string[] | null = null;
   private cachedWidth = -1;
   private cachedHeight = -1;
@@ -169,6 +216,7 @@ export class FleetPanelComponent {
   ) {
     this.snapshot = snapshot;
     this.inactive = options.inactive === true;
+    this.heightPct = clampHeightFraction(options.heightPct ?? MAX_FLEET_HEIGHT_PCT);
     this.selectedId = options.initialTaskId ?? this.firstVisibleId();
     this.refreshDetailTail();
   }
@@ -200,26 +248,53 @@ export class FleetPanelComponent {
   // ── viewport geometry ─────────────────────────────────────────────────────
 
   private viewportHeight(): number {
+    const rows = this.terminalRows();
+    const scaled = Math.round(rows * this.heightPct);
+    return Math.max(FLEET_PANEL_MIN_HEIGHT, Math.min(rows, scaled));
+  }
+
+  /** The full (unscaled) row budget the panel may occupy. */
+  private terminalRows(): number {
     let rows = FLEET_PANEL_DEFAULT_HEIGHT;
     try {
       rows = this.options.height?.() ?? this.tui.terminal?.rows ?? FLEET_PANEL_DEFAULT_HEIGHT;
     } catch {
       rows = FLEET_PANEL_DEFAULT_HEIGHT;
     }
-    if (!Number.isFinite(rows)) rows = FLEET_PANEL_DEFAULT_HEIGHT;
+    if (!Number.isFinite(rows) || rows <= 0) rows = FLEET_PANEL_DEFAULT_HEIGHT;
     return Math.max(FLEET_PANEL_MIN_HEIGHT, Math.trunc(rows));
+  }
+
+  /**
+   * The palette FALLBACK warning row, or `null` when WG's RGB is in play.
+   *
+   * It occupies its own chrome row (never squeezed into the header), so a
+   * wrong-coloured panel always says why: `palette: fallback (daemon older than
+   * plugin) — run wg dev-sync`.
+   */
+  private paletteWarningRow(): string | null {
+    if (!this.snapshot) return null;
+    return paletteWarning(resolveStatusPalette(this.snapshot.tree?.palette), {
+      hasWgTree: !!this.snapshot.tree?.text,
+    });
+  }
+
+  /** Chrome rows above the body in the live view (header + palette warning). */
+  private chromeRows(): number {
+    return 1 + (this.paletteWarningRow() ? 1 : 0);
   }
 
   /** Body rows between the fixed header and footer. */
   bodyViewport(): number {
-    return Math.max(1, this.viewportHeight() - 2);
+    return Math.max(1, this.viewportHeight() - 2 - (this.paletteWarningRow() ? 1 : 0));
   }
 
   /**
    * Scrollable rows for the DORMANT view: it reserves 4 chrome rows (counts +
-   * two hint lines + a spacer) and 1 footer row, so its window is smaller than
-   * the live cockpit's. Scroll clamping and rendering MUST agree on this or the
-   * offset jumps on the next render.
+   * two hint lines + a spacer), the palette warning row when present, and 1
+   * footer row, so its window is smaller than the live cockpit's. Scroll
+   * clamping and rendering MUST agree on this or the offset jumps on the next
+   * render.
    */
   private inactiveBody(): number {
     return Math.max(1, this.bodyViewport() - 5);
@@ -231,12 +306,13 @@ export class FleetPanelComponent {
   }
 
   /**
-   * Inclusive panel rows that hold scrollable body content: row 0 is the
-   * header, the last row is the footer, everything between is content. Presses
-   * outside this range are ignored (never start a selection or a drag).
+   * Inclusive panel rows that hold scrollable body content: the header (and the
+   * palette warning row, when present) above, the last row is the footer,
+   * everything between is content. Presses outside this range are ignored (never
+   * start a selection or a drag/resize).
    */
   private contentRows(): { top: number; bottom: number } {
-    return { top: 1, bottom: this.viewportHeight() - 2 };
+    return { top: this.chromeRows(), bottom: this.viewportHeight() - 2 };
   }
 
   /**
@@ -516,6 +592,86 @@ export class FleetPanelComponent {
     this.onClose();
   }
 
+  /**
+   * Close the panel from a NAMED trigger (`q` / `escape`) so the caller can
+   * announce it (`fleet closed (q)`). Closing is always deliberate: it happens
+   * only on an explicit close key, never on Ctrl+C (see {@link handleInput}).
+   */
+  closeWith(trigger: string): void {
+    this.closeTrigger = trigger;
+    this.close();
+  }
+
+  /** The trigger that closed the panel, or `null` while it is open. */
+  get closedWith(): string | null {
+    return this.closeTrigger;
+  }
+
+  // ── height fraction (drag-resize + keyboard) ──────────────────────────────
+
+  /** The cockpit height as a fraction of the terminal (`0.2`–`1`). */
+  get heightFraction(): number {
+    return this.heightPct;
+  }
+
+  /**
+   * Set the cockpit height fraction and re-render.
+   *
+   * `persist` (default true) reports the new value to the caller's
+   * `onHeightPctChange` so it can be written to the plugin config — the
+   * operator-reported gap that the chosen size did not stick. A drag passes
+   * `persist: false` per step and reports once on release, so a drag is one
+   * write, not fifty.
+   */
+  setHeightPct(pct: number, opts: { persist?: boolean } = {}): number {
+    const next = clampHeightFraction(pct, MAX_FLEET_HEIGHT_PCT);
+    if (next === this.heightPct) return this.heightPct;
+    this.heightPct = next;
+    // A shorter pane must not leave the scroll offset past the end.
+    const body = this.activeBody();
+    this.treeScroll = clampScroll(this.treeScroll, this.treeLineCount(), body);
+    if (this.mode === "detail") {
+      this.detailScroll = clampScroll(this.detailScroll, this.detailContent().length, body);
+    }
+    this.invalidate();
+    this.tui.requestRender();
+    if (opts.persist !== false) this.reportHeightPct(next);
+    return this.heightPct;
+  }
+
+  /** Grow/shrink the panel by `steps` × {@link FLEET_RESIZE_STEP_PCT}. */
+  resizeBy(steps: number): number {
+    if (!Number.isFinite(steps) || steps === 0) return this.heightPct;
+    const next = Math.round((this.heightPct + steps * FLEET_RESIZE_STEP_PCT) * 100) / 100;
+    return this.setHeightPct(next);
+  }
+
+  private reportHeightPct(pct: number): void {
+    try {
+      this.options.onHeightPctChange?.(pct);
+    } catch {
+      /* a persistence failure must never break the panel */
+    }
+  }
+
+  /**
+   * Show a transient in-panel notice (footer line) for `ms`. Used to make a
+   * swallowed key knowable: an ignored Ctrl+C says so instead of silently
+   * vanishing (the operator-reported "i clicked and somehow got out?" mystery).
+   */
+  private showNotice(text: string, ms: number = FLEET_NOTICE_MS): void {
+    this.notice = { text, until: Date.now() + ms };
+    this.invalidate();
+    this.tui.requestRender();
+  }
+
+  /** The currently-visible transient notice, or `null` once it expired. */
+  get visibleNotice(): string | null {
+    if (!this.notice) return null;
+    if (Date.now() >= this.notice.until) return null;
+    return this.notice.text;
+  }
+
   // ── transcript tail ───────────────────────────────────────────────────────
 
   private refreshDetailTail(): void {
@@ -535,11 +691,36 @@ export class FleetPanelComponent {
 
   handleInput(data: string): void {
     if (this.disposed) return;
+    // Ctrl+C NEVER closes the fleet panel.
+    //
+    // The operator-reported mystery ("i clicked and somehow got out? escape?
+    // control+c? unclear which") is exactly this: Ctrl+C is pi's global
+    // clear/interrupt, and a panel that lets it through can vanish under a
+    // habitual keypress with no explanation. pi-tui deliberately hands Ctrl+C to
+    // the focused component ("the focused component can decide how to handle
+    // Ctrl+C"), so we swallow it here and SAY SO instead of exiting. Closing is
+    // deliberate: `q` or `Esc` from the tree (announced by the close notify).
+    if (matchesKey(data, Key.ctrl("c")) || data === "\x03") {
+      this.showNotice("ctrl+c ignored — press q or Esc to close the fleet view");
+      return;
+    }
+    // Height control has a keyboard path in EVERY state (inactive included):
+    // `+`/`]` grow, `-`/`[` shrink, and the fraction is persisted by the caller.
+    const resizeSteps = resizeDeltaForInput(data);
+    if (resizeSteps !== 0) {
+      const pct = this.resizeBy(resizeSteps);
+      this.showNotice(`fleet height ${Math.round(pct * 100)}%`);
+      return;
+    }
     // The dormant view is READ-ONLY: there is no cockpit to navigate. Only
     // close and scroll are meaningful.
     if (this.inactive) {
-      if (matchesKey(data, Key.escape) || data === "q") {
-        this.close();
+      if (matchesKey(data, Key.escape)) {
+        this.closeWith("esc");
+        return;
+      }
+      if (data === "q") {
+        this.closeWith("q");
         return;
       }
       if (matchesKey(data, Key.up)) this.scrollBy(-1);
@@ -579,9 +760,13 @@ export class FleetPanelComponent {
       else if (matchesKey(data, Key.end)) this.scrollBy(this.detailContent().length);
       return;
     }
-    // Tree view: q/Esc closes the whole panel.
-    if (matchesKey(data, Key.escape) || data === "q") {
-      this.close();
+    // Tree view: q/Esc closes the whole panel — deliberately, and announced.
+    if (matchesKey(data, Key.escape)) {
+      this.closeWith("esc");
+      return;
+    }
+    if (data === "q") {
+      this.closeWith("q");
       return;
     }
     if (matchesKey(data, Key.up)) this.moveSelection(-1);
@@ -630,14 +815,31 @@ export class FleetPanelComponent {
       return { handled: true };
     }
 
-    // Dormant read-only view: there is nothing to select or open. Clicks are
-    // ignored (unhandled) so the host keeps its own behaviour.
+    // Dormant read-only view: there is nothing to select, open or resize.
+    // Clicks are ignored (unhandled) so the host keeps its own behaviour.
     if (this.inactive) return undefined;
 
-    // A live pan gesture owns the pointer stream until release. pi retargets
-    // drag/release to the component that handled the press, so this runs even
-    // for coordinates outside the content area (capture semantics).
+    // A live RESIZE gesture (top-edge press) owns the pointer stream until
+    // release. `capture: true` on the press keeps drag/release routed here even
+    // when the pointer leaves the header row, and the panel's height follows the
+    // pointer: drag UP → taller, drag DOWN → shorter. Because pi reports the
+    // pointer relative to the CAPTURED target's origin (fixed at press time),
+    // the local `y` delta is the screen delta even while the panel resizes.
     if (type === "drag" || type === "mouse.drag" || type === "move" || type === "mouse.move") {
+      if (this.resize) {
+        const y =
+          typeof event.y === "number" && Number.isFinite(event.y)
+            ? Math.trunc(event.y)
+            : this.resize.startY;
+        const dy = this.resize.startY - y;
+        const startRows = Math.round(this.resize.rows * this.resize.startPct);
+        const pct = clampHeightFraction((startRows + dy) / this.resize.rows);
+        if (pct !== this.heightPct) {
+          this.resize.moved = true;
+          this.setHeightPct(pct, { persist: false });
+        }
+        return { handled: true, capture: true };
+      }
       if (!this.drag) return undefined;
       const y =
         typeof event.y === "number" && Number.isFinite(event.y) ? Math.trunc(event.y) : this.drag.prevY;
@@ -651,6 +853,16 @@ export class FleetPanelComponent {
     }
 
     if (type === "release" || type === "mouse.release") {
+      if (this.resize) {
+        const { moved } = this.resize;
+        this.resize = null;
+        // Persist ONCE per gesture (on release), not on every drag step.
+        if (moved) {
+          this.reportHeightPct(this.heightPct);
+          this.showNotice(`fleet height ${Math.round(this.heightPct * 100)}% (saved)`);
+        }
+        return { handled: true };
+      }
       if (!this.drag && !this.pressGesture) return undefined;
       const moved = this.drag?.moved ?? false;
       this.drag = null;
@@ -663,25 +875,40 @@ export class FleetPanelComponent {
       return { handled: true };
     }
 
-    // DETAIL VIEW: the header row is the clickable BACK affordance (`[<-]`).
+    // DETAIL VIEW: the header row is the clickable BACK affordance (`[< Back]`).
     // A click on the header is outside the content area, so it never starts a
     // press gesture; pi synthesizes the standalone click and it lands here —
-    // mirroring `<-`/`h`/`q`/`Esc` exactly.
+    // mirroring `←`/`h`/`q`/`Esc` exactly.
     if (type === "click" || type === "mouse.click") {
       const headerRow = typeof event.y === "number" && Number.isFinite(event.y) ? Math.trunc(event.y) : -1;
       if (this.mode === "detail" && headerRow === 0) {
         this.pressGesture = false;
         this.pressWasSelected = false;
         this.drag = null;
+        this.resize = null;
         this.closeDetail();
         return { handled: true };
       }
     }
 
     if (type === "press" || type === "mouse.press") {
+      const y = typeof event.y === "number" && Number.isFinite(event.y) ? Math.trunc(event.y) : Number.NaN;
+      // TREE VIEW, header row (0) = the resize grip: the panel's visible top
+      // edge. Pressing it starts a captured height drag instead of a selection.
+      if (this.mode === "tree" && y === 0) {
+        this.drag = null;
+        this.pressGesture = false;
+        this.pressWasSelected = false;
+        this.resize = {
+          startY: y,
+          startPct: this.heightPct,
+          rows: this.terminalRows(),
+          moved: false,
+        };
+        return { handled: true, capture: true, focus: true };
+      }
       const lineIndex = this.contentLineIndex(event.y);
       if (lineIndex === null) return undefined; // header/footer/out of content area
-      const y = Math.trunc(event.y as number);
       const wasSelected = this.selectedId;
       this.drag = { prevY: y, moved: false };
       this.pressGesture = true;
@@ -700,6 +927,7 @@ export class FleetPanelComponent {
       this.pressGesture = false;
       this.pressWasSelected = false;
       this.drag = null;
+      this.resize = null;
       if (this.mode !== "tree") return fromPress ? { handled: true } : undefined;
       if (lineIndex === null) return fromPress ? { handled: true } : undefined;
       const id = this.selectTreeLine(lineIndex);
@@ -806,10 +1034,14 @@ export class FleetPanelComponent {
       // ── dormant read-only view: counts + hint, NOT the live cockpit ──
       // Checked FIRST: a dormant session usually has NO daemon running, and the
       // whole point of this view is that it still explains itself.
-      const header = snapshot
-        ? `${fleetCountsHeader(snapshot.counts)} · inactive`
-        : "wg-fleet ▸ inactive · no live counts (daemon offline)";
+      const counts = snapshot
+        ? `${fleetCountsHeader(snapshot.counts).replace("wg-fleet ▸ ", "")} · inactive`
+        : "inactive · no live counts (daemon offline)";
+      const palette = resolveStatusPalette(snapshot?.tree?.palette);
+      const header = `wg-fleet ▸ ⇕ ${Math.round(this.heightPct * 100)}% · inactive · ${paletteLabel(palette)} · ${counts}`;
       lines.push({ text: header, color: "accent" });
+      const warning = this.paletteWarningRow();
+      if (warning) lines.push({ text: `  ⚠ ${warning}`, color: "warning" });
       lines.push({
         text: "  WG is dormant in this session — nothing is polling and no agents are tracked.",
         color: "dim",
@@ -825,7 +1057,7 @@ export class FleetPanelComponent {
       const room = this.inactiveBody();
       this.treeScroll = clampScroll(this.treeScroll, tree.lines.length, room);
       lines.push(...tree.lines.slice(this.treeScroll, this.treeScroll + room));
-      lines.push({ text: "  read-only · ↑/↓ scroll · q/Esc close · /wg on to activate", color: "dim" });
+      lines.push({ text: "  read-only · ↑/↓ scroll · +/- resize · q/Esc close · /wg on to activate", color: "dim" });
     } else if (!snapshot) {
       lines.push({ text: "wg-fleet · daemon offline", color: "dim" });
       lines.push({ text: "  no fleet snapshot available · q close", color: "dim" });
@@ -836,28 +1068,41 @@ export class FleetPanelComponent {
       const detail = this.detailContent();
       // Position indicator lives in the HEADER (always visible even when a
       // long body is clipped at the bottom of pi's overlay) as well as the
-      // footer (key hints).
+      // footer (key hints). `[< Back]` leads the header so the back affordance
+      // is VISIBLE at the top-left — the operator-reported "we can't click at the
+      // top to get back to the normal view" is a discovery failure, not only a
+      // wiring one.
       const total = detail.length;
       const maxOff = maxScroll(total, body);
       const pct = maxOff > 0 ? Math.round((this.detailScroll / maxOff) * 100) : 100;
       const top = total === 0 ? 0 : this.detailScroll + 1;
       const bottom = Math.min(total, this.detailScroll + body);
+      this.detailScroll = clampScroll(this.detailScroll, total, body);
       lines.push({
         text: this.color(
           "accent",
-          `wg-fleet · ${this.selectedId ?? "?"} · detail (wg show) · ${pct}% [lines ${top}-${bottom}/${total}] · [← back]`,
+          `[< Back] · wg-fleet · ${this.selectedId ?? "?"} · detail (wg show) · ${pct}% [lines ${top}-${bottom}/${total}]`,
         ),
         color: "accent",
-      });      const windowed = detail.slice(this.detailScroll, this.detailScroll + body);
+      });
+      const windowed = detail.slice(this.detailScroll, this.detailScroll + body);
       lines.push(...windowed);
       lines.push({
-        text: `  PgUp/PgDn ↑/↓ Home/End scroll · ←/q/Esc or click the header to go back · tail below is pi-side`,
+        text: this.footerText(
+          "  PgUp/PgDn ↑/↓ Home/End scroll · ←/q/Esc or click [< Back] to return to the tree · +/- resize",
+        ),
         color: "dim",
       });
     } else {
-      const notice = paletteNotice(palette, snapshot.tasks.map((t) => t.status));
-      const header = fleetCountsHeader(snapshot.counts);
-      lines.push({ text: notice ? `${header} · ${notice}` : header, color: "accent" });
+      // The palette state is ALWAYS stated (never a silent fallback): a short
+      // label right after the resize grip (so truncation can never hide it) plus
+      // a dedicated WARNING row when the local mirror is painting. This is the
+      // answer to "colors are not those in wg viz/wg tui".
+      const counts = fleetCountsHeader(snapshot.counts).replace("wg-fleet ▸ ", "");
+      const header = `wg-fleet ▸ ⇕ ${Math.round(this.heightPct * 100)}% · ${paletteLabel(palette)} · ${counts}`;
+      lines.push({ text: header, color: "accent" });
+      const warning = this.paletteWarningRow();
+      if (warning) lines.push({ text: `  ⚠ ${warning}`, color: "warning" });
       const tree = this.treeContent();
       this.treeScroll = clampScroll(this.treeScroll, tree.lines.length, body);
       const windowed = tree.lines.slice(this.treeScroll, this.treeScroll + body);
@@ -866,9 +1111,9 @@ export class FleetPanelComponent {
       // Footer: bounded so the panel never renders past `height`.
       const overflow = tree.lines.length > this.treeScroll + body;
       const footer = overflow
-        ? `  ↓ ${tree.lines.length - (this.treeScroll + body)} more · wheel/drag pan · enter detail · o expand · q close`
-        : "  ↑/↓ select · drag pan · enter detail · o expand · q close";
-      lines.push({ text: footer, color: "dim" });
+        ? `  ↓ ${tree.lines.length - (this.treeScroll + body)} more · wheel/drag pan · enter detail · o expand · ⇕ drag top edge or +/- resize · q close`
+        : "  ↑/↓ select · drag pan · enter detail · o expand · ⇕ drag top edge or +/- resize · q close";
+      lines.push({ text: this.footerText(footer), color: "dim" });
     }
 
     // Never render past the panel bounds; truncate ANSI-safely per line.
@@ -888,6 +1133,19 @@ export class FleetPanelComponent {
     } catch {
       return text;
     }
+  }
+
+  /**
+   * A footer line, carrying the transient notice when one is live.
+   *
+   * The notice is how a swallowed key becomes KNOWABLE: an ignored Ctrl+C says
+   * `ctrl+c ignored — press q or Esc to close the fleet view` in the panel
+   * instead of the panel silently vanishing (or, worse, silently doing nothing
+   * with no explanation of why the session feels stuck).
+   */
+  private footerText(base: string): string {
+    const notice = this.visibleNotice;
+    return notice ? `  ⚠ ${notice}` : base;
   }
 
   /**
@@ -915,6 +1173,11 @@ export class FleetPanelComponent {
   /** True while a press-and-drag pan gesture is active (until release). */
   get isDragging(): boolean {
     return this.drag !== null;
+  }
+
+  /** True while a top-edge RESIZE gesture is active (until release). */
+  get isResizing(): boolean {
+    return this.resize !== null;
   }
 
   get treeScrollOffset(): number {
@@ -956,6 +1219,13 @@ export interface OpenFleetPanelOptions {
   inactive?: boolean;
   /** Preselect this task (a click on an ambient agent row opens on that task). */
   initialTaskId?: string;
+  /** Initial cockpit height fraction (`0.2`–`1`); defaults to the full height. */
+  heightPct?: number;
+  /**
+   * Persist a new cockpit height fraction (drag-resize release, `+`/`-`).
+   * Best-effort — a failure never breaks the panel.
+   */
+  persistHeightPct?: (pct: number) => void;
 }
 
 /**
@@ -987,7 +1257,10 @@ export async function openFleetPanel(
   options: OpenFleetPanelOptions = {},
 ): Promise<void> {
   const initial = await fetchSnapshot().catch(() => null);
-  await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+  // The close TRIGGER (`q` / `esc`) is carried out through `done()` so the
+  // caller can announce it. Without this the panel just disappears and the
+  // operator cannot tell what they pressed (the reported "somehow got out?").
+  const closedWith = await ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
     const height = (): number => {
       try {
         return tui.terminal?.rows ?? FLEET_PANEL_DEFAULT_HEIGHT;
@@ -1003,10 +1276,12 @@ export async function openFleetPanel(
         return undefined;
       }
     };
+    // `closeWith` records the trigger BEFORE invoking the close callback, so the
+    // resolved custom-prompt value carries the key that closed the panel.
     const component = new FleetPanelComponent(
       initial,
       tui,
-      () => done(),
+      () => done(component.closedWith ?? undefined),
       theme,
       {
         height,
@@ -1014,6 +1289,8 @@ export async function openFleetPanel(
         enterGuardMs: options.enterGuardMs,
         inactive: options.inactive === true,
         ...(options.initialTaskId ? { initialTaskId: options.initialTaskId } : {}),
+        ...(options.heightPct !== undefined ? { heightPct: options.heightPct } : {}),
+        onHeightPctChange: (pct: number) => options.persistHeightPct?.(pct),
       },
       liveDir,
       options.fetchDetail,
@@ -1057,6 +1334,14 @@ export async function openFleetPanel(
     };
     return instance as never;
   });
+  // Announce the close, naming the trigger, so a panel exit is never mysterious.
+  if (closedWith) {
+    try {
+      ctx.ui.notify(`fleet closed (${closedWith})`, "info");
+    } catch {
+      /* no UI — the close itself already happened */
+    }
+  }
 }
 
 /**

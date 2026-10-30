@@ -46,6 +46,7 @@ import { ACTIVATION_STATE_DIR, projectRootFromDir } from "./activation.js";
 import {
   DEFAULT_FLEET_VIEW_CONFIG,
   readFleetViewConfig,
+  writeFleetViewHeightPct,
   type FleetViewConfig,
 } from "./fleet-config.js";
 import { fleetSummaryLine, type FleetLine, type FleetSnapshot } from "./fleet-readmodel.js";
@@ -305,6 +306,13 @@ export function installFleetView(
         pollMs: config.pollMs,
         transcriptLines: DEFAULT_TRANSCRIPT_LINES,
         fetchDetail: makeFleetDetailFetcher(backend),
+        // The operator's chosen screen fraction is sticky: read the persisted
+        // `fleetViewHeightPct` on open, write it back on drag-resize/`+`/`-`.
+        heightPct: config.heightPct,
+        persistHeightPct: (pct) => {
+          config.heightPct = pct;
+          writeFleetViewHeightPct(pct);
+        },
         ...(taskId ? { initialTaskId: taskId } : {}),
       });
       await refresh(ctx);
@@ -318,7 +326,14 @@ export function installFleetView(
     const ctx = mountedCtx;
     if (!ctx || ctx.mode !== "tui") return;
     try {
-      await openFleetPanel(ctx, makeFleetFetcher(backend), env.dir, { inactive: true });
+      await openFleetPanel(ctx, makeFleetFetcher(backend), env.dir, {
+        inactive: true,
+        heightPct: config.heightPct,
+        persistHeightPct: (pct) => {
+          config.heightPct = pct;
+          writeFleetViewHeightPct(pct);
+        },
+      });
     } catch {
       // Silent degrade: the panel must never throw into the chat.
     }

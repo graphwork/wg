@@ -195,6 +195,9 @@ function bigSnap(n = 40) {
     counts: { in_progress: 0, ready: n, blocked: 0, done: 0, failed: 0, total: n, active_agents: 0 },
     tasks,
     agents: [],
+    // A live daemon exports its RGB palette; keep the fixture on that (healthy,
+    // no-fallback-row) path so the geometry tests below are layout-stable.
+    tree: { text: "", node_lines: {}, palette: WG_PALETTE },
   };
 }
 
@@ -830,15 +833,24 @@ describe("FleetPanelComponent", () => {
     expect(component.isDragging).toBe(false);
   });
 
-  it("ignores presses outside the content area (header/footer/off-panel/NaN)", () => {
+  it("ignores presses outside the content area (footer/off-panel/NaN)", () => {
     const { component, render } = makeComponent(bigSnap(40), 6); // rows 0..5, content 1..4
     render();
     const sel = component.selected;
-    for (const y of [0, 5, -1, 9999, Number.NaN]) {
+    // Row 0 is the RESIZE grip (not a selection); the footer and off-panel
+    // coordinates are still nobody's press.
+    expect(component.handleMouse({ type: "press", y: 0, button: "left" })).toMatchObject({
+      handled: true,
+      capture: true,
+    });
+    expect(component.isResizing).toBe(true);
+    component.handleMouse({ type: "release", y: 0, button: "left" });
+    for (const y of [5, -1, 9999, Number.NaN]) {
       expect(component.handleMouse({ type: "press", y, button: "left" })).toBeUndefined();
     }
     expect(component.selected).toBe(sel);
     expect(component.isDragging).toBe(false);
+    expect(component.isResizing).toBe(false);
   });
 
   it("click selects; clicking the already-selected row (or a double-click) opens detail", () => {
@@ -886,8 +898,8 @@ describe("FleetPanelComponent", () => {
     await flush();
     const detail = component.render(100);
     // The afforance is VISIBLE, so the click is discoverable, not a secret.
-    expect(detail[0]).toContain("[← back]");
-    expect(detail.at(-1)).toContain("click the header to go back");
+    expect(detail[0]).toContain("[< Back]");
+    expect(detail.at(-1)).toContain("click [< Back] to return to the tree");
 
     // A standalone click on the header row (outside the content area) goes back
     // exactly like <-/h/q/Esc — an object result, never a bare boolean.
@@ -902,6 +914,229 @@ describe("FleetPanelComponent", () => {
     expect(component.detailVisible).toBe(true);
     component.handleMouse({ type: "click", y: 3, button: "left", clickCount: 1 });
     expect(component.detailVisible).toBe(true);
+  });
+
+  // ── operator-report fixes: close notify, Ctrl+C, resize, palette ──────────
+
+  it("close is DELIBERATE and announced: q/Esc name their trigger, Ctrl+C never closes", () => {
+    const q = makeComponent(bigSnap(20), 8);
+    q.render();
+    expect(q.component.closedWith).toBeNull();
+    q.component.handleInput("q");
+    expect(q.closed).toHaveBeenCalledTimes(1);
+    expect(q.component.closedWith).toBe("q");
+
+    const esc = makeComponent(bigSnap(20), 8);
+    esc.render();
+    esc.component.handleInput("\x1b");
+    expect(esc.closed).toHaveBeenCalledTimes(1);
+    expect(esc.component.closedWith).toBe("esc");
+
+    // Ctrl+C is pi's global clear/interrupt. A habitual Ctrl+C must NOT make the
+    // panel vanish with no explanation (the reported "somehow got out?"): the
+    // panel refuses it and says so, in the panel, where the operator is looking.
+    for (const mode of ["tree", "detail"] as const) {
+      const c = makeComponent(bigSnap(20), 8, undefined, async () => ({ text: "body" }));
+      c.render();
+      if (mode === "detail") c.component.openDetail();
+      c.component.handleInput("\x03");
+      expect(c.closed).not.toHaveBeenCalled();
+      expect(c.component.closedWith).toBeNull();
+      expect(c.component.visibleNotice ?? "").toContain("ctrl+c ignored");
+      expect(c.render(100).at(-1)).toContain("ctrl+c ignored");
+    }
+
+    // ... and the dormant read-only view is equally protected.
+    const tui = { requestRender: vi.fn(), terminal: { rows: 12, columns: 100 } };
+    const dormantClosed = vi.fn();
+    const dormant = new FleetPanelComponent(bigSnap(20) as never, tui as never, dormantClosed, null, {
+      inactive: true,
+    });
+    dormant.render(100);
+    dormant.handleInput("\x03");
+    expect(dormantClosed).not.toHaveBeenCalled();
+    expect(dormant.visibleNotice ?? "").toContain("ctrl+c ignored");
+  });
+
+  it("keyboard resize: +/- (and [ ]) change the height fraction, clamp, and persist", () => {
+    const persisted: number[] = [];
+    const tui = { requestRender: vi.fn(), terminal: { rows: 40, columns: 100 } };
+    const component = new FleetPanelComponent(
+      bigSnap(40) as never,
+      tui as never,
+      vi.fn(),
+      null,
+      { heightPct: 1, onHeightPctChange: (pct: number) => persisted.push(pct) },
+    );
+    // Full height by default: the whole terminal row budget.
+    expect(component.heightFraction).toBe(1);
+    expect(component.render(100).length).toBe(40);
+
+    // `-` shrinks by one step and the render really got shorter.
+    component.handleInput("-");
+    expect(component.heightFraction).toBeCloseTo(0.95, 5);
+    expect(component.render(100).length).toBe(38);
+    expect(persisted).toEqual([0.95]);
+
+    // `[` is the same gesture (bracket keys are easy to reach).
+    component.handleInput("[");
+    expect(component.heightFraction).toBeCloseTo(0.9, 5);
+    expect(persisted).toEqual([0.95, 0.9]);
+
+    // `+` and `]` grow it back; the fraction is what persists.
+    component.handleInput("+");
+    component.handleInput("]");
+    expect(component.heightFraction).toBeCloseTo(1, 5);
+    expect(persisted.at(-1)).toBe(1);
+
+    // Never past the terminal, never below the floor (the 3-row minimum wins).
+    for (let i = 0; i < 40; i++) component.handleInput("-");
+    expect(component.heightFraction).toBeCloseTo(0.2, 5);
+    expect(component.render(100).length).toBeLessThanOrEqual(40);
+    expect(component.render(100).length).toBeGreaterThanOrEqual(3);
+    for (let i = 0; i < 40; i++) component.handleInput("+");
+    expect(component.heightFraction).toBe(1);
+
+    // The height control is discoverable in the chrome, not a secret key: the
+    // grip mark + fraction lead the header, the gestures are named in the footer.
+    const fresh = new FleetPanelComponent(bigSnap(40) as never, tui as never, vi.fn(), null, {
+      heightPct: 1,
+    });
+    const hints = fresh.render(100);
+    expect(hints[0]).toContain("⇕ 100%");
+    expect(hints[0]).toContain("wg-fleet ▸");
+    expect(hints.at(-1)).toContain("drag top edge");
+    expect(hints.at(-1)).toContain("+/- resize");
+    // A resize ECHOES the new height in the footer (so +/- is never a mystery).
+    expect(component.render(100).at(-1)).toContain("fleet height 100%");
+  });
+
+  it("drag the panel's TOP EDGE to resize: captured gesture, one persisted write", () => {
+    const persisted: number[] = [];
+    const tui = { requestRender: vi.fn(), terminal: { rows: 40, columns: 100 } };
+    const component = new FleetPanelComponent(
+      bigSnap(40) as never,
+      tui as never,
+      vi.fn(),
+      null,
+      { heightPct: 0.5, onHeightPctChange: (pct: number) => persisted.push(pct) },
+    );
+    expect(component.render(100).length).toBe(20); // half of 40
+
+    // The header row IS the grip: press captures the pointer (pi contract).
+    const start = component.handleMouse({ type: "press", y: 0, button: "left" });
+    expect(start).toEqual({ handled: true, capture: true, focus: true });
+    expect(isPiMouseResult(start)).toBe(true);
+    expect(component.isResizing).toBe(true);
+    expect(component.isDragging).toBe(false);
+
+    // Dragging UP grows the panel: 20 rows + 8 = 28 → 0.7 of 40.
+    expect(component.handleMouse({ type: "drag", y: -8, button: "left" })).toMatchObject({
+      handled: true,
+      capture: true,
+    });
+    expect(component.heightFraction).toBeCloseTo(0.7, 5);
+    expect(component.render(100).length).toBe(28);
+    // Nothing persists until release (a drag is ONE write, not fifty).
+    expect(persisted).toEqual([]);
+
+    // Dragging DOWN shrinks it back (and past the floor clamps at 0.2).
+    component.handleMouse({ type: "move", y: 40, button: "left" });
+    expect(component.heightFraction).toBeCloseTo(0.2, 5);
+
+    expect(component.handleMouse({ type: "release", y: 40, button: "left" })).toMatchObject({
+      handled: true,
+    });
+    expect(component.isResizing).toBe(false);
+    expect(persisted).toEqual([0.2]);
+    expect(component.visibleNotice ?? "").toContain("saved");
+
+    // After release the resize stream is no longer ours.
+    expect(component.handleMouse({ type: "drag", y: 3, button: "left" })).toBeUndefined();
+
+    // A resize gesture never selects a task, and never opens a detail.
+    component.render(100);
+    const selBefore = component.selected;
+    expect(component.handleMouse({ type: "press", y: 0, button: "left" })).toMatchObject({
+      handled: true,
+    });
+    component.handleMouse({ type: "drag", y: -2, button: "left" });
+    component.handleMouse({ type: "release", y: -2, button: "left" });
+    expect(component.selected).toBe(selBefore);
+    expect(component.detailVisible).toBe(false);
+  });
+
+  it("always states the palette source — a fallback is explained, never silent", () => {
+    // A truecolour theme stub: `paintStatusText` needs one to emit RGB escapes.
+    const theme = {
+      fg: (_color: string, text: string) => `ROLE:${text}`,
+      getColorMode: () => "truecolor" as const,
+    };
+    const withTheme = (snapshot: unknown, rows = 12) =>
+      new FleetPanelComponent(
+        snapshot as never,
+        { requestRender: vi.fn(), terminal: { rows, columns: 200 } } as never,
+        vi.fn(),
+        theme as never,
+        {},
+      );
+
+    // (1) WG's own exported palette: the default RGB path, stated as such.
+    const good = withTheme(treeSnap()).render(200);
+    expect(good[0]).toContain("palette: wg-rgb");
+    expect(good[0]).not.toContain("fallback");
+
+    // (2) A daemon payload that carries WG's rendered tree but NO palette is the
+    // operator-reported case (an older daemon): the fallback is stated on the
+    // header AND explained on its own warning row, naming the recovery command,
+    // so the wrong colours are no longer a mystery.
+    const noPalette = { ...treeSnap(), tree: { text: WG_TREE_TEXT, node_lines: WG_TREE_NODE_LINES } };
+    const fallback = withTheme(noPalette).render(200);
+    expect(fallback[0]).toContain("palette: fallback");
+    expect(fallback[1]).toContain("palette: fallback (daemon older than plugin)");
+    expect(fallback[1]).toContain("wg dev-sync");
+    // It still paints from the local mirror of WG's palette (exact RGB) — the
+    // fallback is a colour SOURCE change, not a colour loss.
+    expect(fallback.find((l) => l.includes("root-a  (")) ?? "").toContain("38;2;200;200;80");
+
+    // (3) No daemon/tree answer at all: still stated, with the honest cause.
+    const offline = withTheme({ ...bigSnap(5), tree: undefined }).render(200);
+    expect(offline[0]).toContain("palette: fallback");
+    expect(offline[1]).toContain("no palette from the daemon");
+  });
+
+  it("hit regions map to the rendered row at every scroll offset (no drift)", () => {
+    const { component } = makeComponent(bigSnap(40), 8); // body = 6
+    for (const pages of [0, 1, 2, 3]) {
+      for (let i = 0; i < pages; i++) component.handleInput("\x1b[6~"); // PageDown
+      component.render(100);
+      const rows = [...component.hitLines];
+      expect(rows.length).toBe(6);
+      for (let r = 0; r < rows.length; r++) {
+        const expected = rows[r];
+        component.handleMouse({ type: "press", y: r + 1, button: "left" });
+        if (expected) expect(component.selected).toBe(expected);
+        component.handleMouse({ type: "release", y: r + 1, button: "left" });
+      }
+    }
+  });
+
+  it("hit regions map to the rendered row across collapse states", () => {
+    const { component } = makeComponent(treeSnap(), 8);
+    for (const collapse of [false, true]) {
+      if (collapse) {
+        component.selectFirst();
+        component.toggleExpand(); // collapse root-a
+      }
+      component.render(100);
+      const rows = [...component.hitLines];
+      for (let r = 0; r < rows.length; r++) {
+        const expected = rows[r];
+        component.handleMouse({ type: "press", y: r + 1, button: "left" });
+        component.handleMouse({ type: "release", y: r + 1, button: "left" });
+        if (expected) expect(component.selected).toBe(expected);
+      }
+    }
   });
 
   it("ignores standalone clicks outside the content area in tree mode", () => {
@@ -941,7 +1176,8 @@ describe("FleetPanelComponent", () => {
     const lines = component.render(100);
     const text = lines.join("\n");
     expect(lines[0]).toContain("inactive");
-    expect(lines[0]).toContain("in-progress");
+    expect(lines[0]).toContain("palette: wg-rgb");
+    expect(text).toContain("in-progress");
     expect(text).toContain("/wg on to activate");
     expect(text).toContain("read-only");
     // NOT the live cockpit: no selection marker and no per-agent activity.

@@ -2029,6 +2029,15 @@ retired_reason = "fixture drift: the fake-pi argv / stdin / credential-error ass
 
 
 [[scenario]]
+name = "fleet_panel_ux_fixes"
+script = "scenarios/fleet_panel_ux_fixes.sh"
+owners = [
+    "fleet-panel-ux",
+]
+description = "Pins the /wg-fleet operator-report UX fixes (fleet-panel-ux): panel CLOSE is deliberate and announced (q/Esc close and the session says 'fleet closed (<trigger>)'; Ctrl+C is pi's global clear/interrupt and is REFUSED with a visible 'ctrl+c ignored' notice instead of silently destroying the view), clicks reliably select the hit row and a second click opens its detail at any scroll offset and across collapsed subtrees (rendered-line hit map), the detail header carries a visible '[< Back]' and clicking it returns to the tree, the panel's TOP EDGE is a captured drag-resize grip (pi mouse contract {handled,capture}) with a keyboard path (+/- and ]/[) and the chosen fraction persisted as fleetViewHeightPct in the extension config so it sticks across opens, and the palette source is always stated — WG-RGB on the default path, 'palette: fallback (daemon older than plugin) — run wg dev-sync' otherwise — with /wg status carrying a STACK line (daemon build age + plugin-cache currency) so a stale daemon/plugin pair is visible from INSIDE the session. Credential-free: runs the focused plugin unit tests, drives the REAL embedded component through pi-tui's exact dispatch/capture loop, re-embeds and git-diffs (no embed drift), and drives a LIVE fullscreen pi session with synthetic SGR mouse events (persisted 50% honoured, Ctrl+C refused, drag + keyboard resize saved, click-select/open, [< Back] click, announced Esc close, /wg status stack line)."
+timeout_seconds = 420
+
+[[scenario]]
 name = "pi_plugin_live_validation"
 script = "scenarios/pi_plugin_live_validation.sh"
 owners = [

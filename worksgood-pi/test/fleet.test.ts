@@ -15,13 +15,15 @@
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServer, type Server, type Socket } from "node:net";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 // @ts-expect-error — built ESM artifact has no co-located .d.ts on this path during dev
 import {
   DEFAULT_FLEET_VIEW_CONFIG,
   FLEET_WIDGET_KEY,
+  MIN_FLEET_HEIGHT_PCT,
+  clampHeightFraction,
   FleetPoller,
   agentColor,
   agentElapsed,
@@ -42,6 +44,7 @@ import {
   renderFleetLines,
   taskColor,
   taskGlyph,
+  writeFleetViewHeightPct,
 } from "../pi-worksgood/index.js";
 // @ts-expect-error — built ESM artifact import (see above)
 import { installFleetView } from "../pi-worksgood/fleet-view.js";
@@ -331,6 +334,65 @@ describe("fleet config gate", () => {
     expect(config.enabled).toBe(true);
     expect(config.expanded).toBe(true);
     expect(config.placement).toBe("belowEditor");
+  });
+
+  // ── the cockpit's height fraction (drag-resize / +/- persistence) ─────────
+
+  it("height fraction: default full height, configurable as a fraction or a percent", () => {
+    expect(DEFAULT_FLEET_VIEW_CONFIG.heightPct).toBe(1);
+    expect(parseFleetViewConfig({}).heightPct).toBe(1);
+    // A fraction, a percent, and the clamps in both directions.
+    expect(parseFleetViewConfig({ fleetViewHeightPct: 0.6 }).heightPct).toBe(0.6);
+    expect(parseFleetViewConfig({ fleetViewHeightPct: 60 }).heightPct).toBe(0.6);
+    expect(parseFleetViewConfig({ fleetViewHeightPct: 0.05 }).heightPct).toBe(MIN_FLEET_HEIGHT_PCT);
+    expect(parseFleetViewConfig({ fleetViewHeightPct: 5 }).heightPct).toBe(MIN_FLEET_HEIGHT_PCT);
+    // Garbage degrades to the default rather than to something surprising.
+    for (const bad of [0, -1, "nope", null, Number.NaN]) {
+      expect(parseFleetViewConfig({ fleetViewHeightPct: bad }).heightPct).toBe(1);
+    }
+    // The env override wins over the file.
+    expect(readFleetViewConfig({ WG_PI_FLEET_HEIGHT_PCT: "0.5" }).heightPct).toBe(0.5);
+  });
+
+  it("runtime clamp never reinterprets a fraction past the top as a percent", () => {
+    // 1.05 is "one step too tall", not "1.05 percent".
+    expect(clampHeightFraction(1.05)).toBe(1);
+    expect(clampHeightFraction(-0.5)).toBe(MIN_FLEET_HEIGHT_PCT);
+    expect(clampHeightFraction(0.35)).toBe(0.35);
+    expect(clampHeightFraction(Number.NaN, 0.75)).toBe(0.75);
+  });
+
+  it("PERSISTS the dragged/typed height fraction into the extension config", () => {
+    const home = mkdtempSync(join(tmpdir(), "wg-fleet-height-"));
+    const cfgDir = join(home, "extensions", "pi-worksgood");
+    mkdirSync(cfgDir, { recursive: true });
+    const file = join(cfgDir, "config.json");
+    // Pre-existing unrelated keys must survive the rewrite.
+    writeFileSync(file, JSON.stringify({ fleetView: true, fleetViewCollapsed: false, custom: "keep-me" }));
+
+    const written = writeFleetViewHeightPct(0.65, { PI_CODING_AGENT_DIR: home });
+    expect(written).toBe(file);
+    const raw = JSON.parse(readFileSync(file, "utf8"));
+    expect(raw.fleetViewHeightPct).toBe(0.65);
+    expect(raw.fleetView).toBe(true);
+    expect(raw.fleetViewCollapsed).toBe(false);
+    expect(raw.custom).toBe("keep-me");
+    // It round-trips through the reader, so the next `/wg-fleet` opens at 65%.
+    expect(readFleetViewConfig({ PI_CODING_AGENT_DIR: home }).heightPct).toBe(0.65);
+
+    // A no-op write reports null (no churn when the fraction did not change).
+    expect(writeFleetViewHeightPct(0.65, { PI_CODING_AGENT_DIR: home })).toBeNull();
+
+    // A fresh install with no config file creates the primary candidate path.
+    const fresh = mkdtempSync(join(tmpdir(), "wg-fleet-height-new-"));
+    const created = writeFleetViewHeightPct(0.4, { PI_CODING_AGENT_DIR: fresh });
+    expect(created).toBe(join(fresh, "extensions", "pi-worksgood", "config.json"));
+    expect(readFleetViewConfig({ PI_CODING_AGENT_DIR: fresh }).heightPct).toBe(0.4);
+
+    // A corrupt config is replaced rather than blocking the resize.
+    writeFileSync(file, "{not json");
+    expect(writeFleetViewHeightPct(0.3, { PI_CODING_AGENT_DIR: home })).toBe(file);
+    expect(readFleetViewConfig({ PI_CODING_AGENT_DIR: home }).heightPct).toBe(0.3);
   });
 
   it("defaults to enabled with no config file and honours the env opt-out", () => {

@@ -181,11 +181,81 @@ export function paintStatusText(
  * `null` when every status is painted from WG's exported RGB.
  */
 export function paletteNotice(palette: StatusPalette, statuses: Iterable<string>): string | null {
-  if (!palette.fromWg) return "colour: pi theme fallback (WG palette unavailable)";
+  if (!palette.fromWg) return FALLBACK_PALETTE_NOTICE;
   const missing = new Set<string>();
   for (const status of statuses) {
     if (statusRgb(status, palette) === undefined) missing.add(status);
   }
   if (missing.size === 0) return null;
   return `colour: theme fallback for ${[...missing].sort().join(", ")}`;
+}
+
+/** The one-line, in-panel explanation of a fallback palette. */
+export const FALLBACK_PALETTE_NOTICE = "palette: fallback (daemon older than plugin)";
+/** The one-line, in-panel statement that WG's own RGB palette is in play. */
+export const WG_PALETTE_STATUS = "palette: wg-rgb";
+
+/**
+ * The SHORT palette label for a header row (`palette: wg-rgb` /
+ * `palette: fallback`).
+ *
+ * Chrome must survive truncation on a narrow terminal, so the header carries
+ * the label and the explanation goes on its own warning row
+ * ({@link paletteWarning}) — that way a fallback can never be hidden by a long
+ * counts header.
+ */
+export function paletteLabel(palette: StatusPalette): string {
+  return palette.fromWg ? WG_PALETTE_STATUS : "palette: fallback";
+}
+
+/**
+ * The one-line EXPLANATION of a fallback (or `null` when WG's RGB is in play).
+ *
+ * This is the row the operator report asked for: a wrong-coloured panel must
+ * say WHY — the daemon payload is older than the plugin, so it carries no
+ * palette — and name the recovery command instead of leaving the operator to
+ * wonder whether the panel is simply broken.
+ */
+export function paletteWarning(
+  palette: StatusPalette,
+  opts: { hasWgTree?: boolean } = {},
+): string | null {
+  if (palette.fromWg) return null;
+  return opts.hasWgTree === false
+    ? "palette: fallback (no palette from the daemon — offline/CLI payload)"
+    : `${FALLBACK_PALETTE_NOTICE} — run wg dev-sync`;
+}
+
+/**
+ * The panel's palette state as ONE string, ALWAYS rendered (never silent).
+ *
+ * The operator-reported mystery ("colors are not those in `wg viz` / `wg tui`")
+ * had a mundane cause — a stale daemon payload carries no `palette`, so the
+ * local mirror paints instead — and a silent fallback is what made it
+ * mysterious. So the header states the palette source unconditionally:
+ * `palette: wg-rgb` on the RGB path, and
+ * `palette: fallback (daemon older than plugin)` (plus the recovery command)
+ * when WG's table is missing. A status that has no entry in an otherwise
+ * exported palette is named too, because that row really is theme-painted.
+ *
+ * `opts.hasWgTree` narrows the CAUSE: with a rendered WG tree but no palette the
+ * payload is really an older daemon; without any rendered tree there was simply
+ * no daemon answer, and the notice says so instead of blaming a version.
+ */
+export function paletteStatus(
+  palette: StatusPalette,
+  statuses: Iterable<string>,
+  opts: { hasWgTree?: boolean } = {},
+): string {
+  if (!palette.fromWg) {
+    return opts.hasWgTree === false
+      ? "palette: fallback (no palette from the daemon — offline/CLI payload)"
+      : `${FALLBACK_PALETTE_NOTICE} — run wg dev-sync`;
+  }
+  const missing = new Set<string>();
+  for (const status of statuses) {
+    if (statusRgb(status, palette) === undefined) missing.add(status);
+  }
+  if (missing.size === 0) return WG_PALETTE_STATUS;
+  return `${WG_PALETTE_STATUS} · theme fallback for ${[...missing].sort().join(", ")}`;
 }

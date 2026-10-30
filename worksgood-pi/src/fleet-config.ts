@@ -14,7 +14,8 @@
  *     "fleetViewCollapsed": true,  // start FOLDED (the one-line live status strip)
  *     "fleetViewExpanded": false,  // unfolded: compact body (a few live agents)
  *     "fleetViewPlacement": "belowEditor",
- *     "fleetViewPollMs": 5000
+ *     "fleetViewPollMs": 5000,
+ *     "fleetViewHeightPct": 0.6       // how much of the height the cockpit covers
  *   }
  *
  * **The strip is the default surface, not the exception.** It used to default to
@@ -31,12 +32,17 @@
  *   2. the first existing config file among the candidate dirs;
  *   3. the safe default (`enabled: true`, `collapsed: true`).
  *
- * Everything here is pure/read-only — it never writes a config file.
+ * Reads are pure/read-only. The ONE write is
+ * {@link writeFleetViewHeightPct} — the cockpit's drag/keyboard resize persists
+ * the operator's chosen `fleetViewHeightPct` so it sticks across opens (the
+ * operator-reported gap: "no click-drag or way to modulate the screen fraction
+ * covered"). It rewrites only that one key, atomically, and never touches any
+ * other config field.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /** Where the widget is anchored. Mirrors pi's `WidgetPlacement`. */
 export type FleetPlacement = "aboveEditor" | "belowEditor";
@@ -61,7 +67,23 @@ export interface FleetViewConfig {
   placement: FleetPlacement;
   /** Bounded poll cadence in milliseconds. */
   pollMs: number;
+  /**
+   * Fraction (`0.2`–`1`) of the terminal height the `/wg-fleet` cockpit covers.
+   * Default **1** (the whole interactive area, today's behaviour). Set by
+   * dragging the panel's top edge or with `+`/`-` (`]`/`[`), and persisted into
+   * the extension config by {@link writeFleetViewHeightPct}.
+   */
+  heightPct: number;
 }
+
+/** Smallest cockpit fraction (three rows' worth on a normal terminal). */
+export const MIN_FLEET_HEIGHT_PCT = 0.2;
+/** Largest cockpit fraction (the whole interactive area). */
+export const MAX_FLEET_HEIGHT_PCT = 1;
+/** The config key the panel's resize persists. */
+export const FLEET_HEIGHT_PCT_KEY = "fleetViewHeightPct";
+/** Env override for the cockpit height fraction. */
+export const FLEET_HEIGHT_PCT_ENV = "WG_PI_FLEET_HEIGHT_PCT";
 
 /** Safe defaults: visible one-line strip, compact body, below the editor, 5s cadence. */
 export const DEFAULT_FLEET_VIEW_CONFIG: FleetViewConfig = {
@@ -70,6 +92,7 @@ export const DEFAULT_FLEET_VIEW_CONFIG: FleetViewConfig = {
   expanded: false,
   placement: "belowEditor",
   pollMs: 5000,
+  heightPct: MAX_FLEET_HEIGHT_PCT,
 };
 
 /**
@@ -102,6 +125,12 @@ export function fleetConfigPaths(env: Record<string, string | undefined> = proce
 export interface FleetConfigIO {
   exists: (path: string) => boolean;
   readFile: (path: string) => string;
+  /** Writer seam for {@link writeFleetViewHeightPct} (`fs.mkdirSync -p`). */
+  mkdir?: (path: string) => void;
+  /** Writer seam for {@link writeFleetViewHeightPct}. */
+  writeFile?: (path: string, data: string) => void;
+  /** Writer seam for the atomic rename. */
+  rename?: (from: string, to: string) => void;
 }
 
 const defaultIO: FleetConfigIO = {
@@ -113,6 +142,15 @@ const defaultIO: FleetConfigIO = {
     }
   },
   readFile: (path) => readFileSync(path, "utf8"),
+  mkdir: (path) => {
+    mkdirSync(path, { recursive: true });
+  },
+  writeFile: (path, data) => {
+    writeFileSync(path, data, "utf8");
+  },
+  rename: (from, to) => {
+    renameSync(from, to);
+  },
 };
 
 function asBool(value: unknown, fallback: boolean): boolean {
@@ -135,6 +173,39 @@ function asPollMs(value: unknown, fallback: number): number {
   return Number.isFinite(n) && n >= 1000 ? Math.floor(n) : fallback;
 }
 
+/** Clamp a height fraction into `[MIN, MAX]` (NaN/garbage → `fallback`). */
+/**
+ * Clamp an ALREADY-FRACTIONAL cockpit height (`0.2`–`1`) into range.
+ *
+ * This is the runtime clamp used by the panel's drag/keyboard resize, so it must
+ * not reinterpret its input as a percentage: `1.05` (one step past the top) is
+ * "too tall, clamp to 1", never "1.05 percent, clamp to the floor". Non-finite
+ * input degrades to `fallback`.
+ */
+export function clampHeightFraction(value: unknown, fallback = MAX_FLEET_HEIGHT_PCT): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(MAX_FLEET_HEIGHT_PCT, Math.max(MIN_FLEET_HEIGHT_PCT, n));
+}
+
+/**
+ * Parse a CONFIGURED cockpit height: a fraction (`0.6`) or a percent (`60`).
+ * Non-positive / non-numeric values degrade to `fallback` (the default).
+ */
+export function clampHeightPct(value: unknown, fallback = MAX_FLEET_HEIGHT_PCT): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  const normalized = n > 1 ? n / 100 : n; // tolerate a percent (e.g. 60)
+  return clampHeightFraction(normalized, fallback);
+}
+
+function asHeightPct(value: unknown, fallback: number): number {
+  if (value === undefined || value === null || value === "") return fallback;
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return clampHeightPct(n, fallback);
+}
+
 /** Pure parse of a raw config object (unknown keys ignored, bad types degraded). */
 export function parseFleetViewConfig(raw: unknown): FleetViewConfig {
   const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
@@ -144,6 +215,7 @@ export function parseFleetViewConfig(raw: unknown): FleetViewConfig {
     expanded: asBool(obj.fleetViewExpanded, DEFAULT_FLEET_VIEW_CONFIG.expanded),
     placement: asPlacement(obj.fleetViewPlacement, DEFAULT_FLEET_VIEW_CONFIG.placement),
     pollMs: asPollMs(obj.fleetViewPollMs, DEFAULT_FLEET_VIEW_CONFIG.pollMs),
+    heightPct: asHeightPct(obj[FLEET_HEIGHT_PCT_KEY], DEFAULT_FLEET_VIEW_CONFIG.heightPct),
   };
 }
 
@@ -174,5 +246,57 @@ export function readFleetViewConfig(
     expanded: asBool(env.WG_PI_FLEET_VIEW_EXPANDED, config.expanded),
     placement: asPlacement(env.WG_PI_FLEET_VIEW_PLACEMENT, config.placement),
     pollMs: asPollMs(env.WG_PI_FLEET_VIEW_POLL_MS, config.pollMs),
+    heightPct: asHeightPct(env[FLEET_HEIGHT_PCT_ENV], config.heightPct),
   };
+}
+
+/**
+ * Persist the operator's chosen cockpit height fraction.
+ *
+ * Writes `fleetViewHeightPct` into the FIRST existing extension config file (or
+ * the primary `pi-worksgood` path when none exists), preserving every other key
+ * verbatim. The write is atomic (temp file + rename) so a crash mid-write can
+ * never leave a truncated config that would take the next session's config
+ * parse down.
+ *
+ * Returns the path written, or `null` when the value was unchanged or the write
+ * failed — a resize must never throw into the chat.
+ */
+export function writeFleetViewHeightPct(
+  pct: number,
+  env: Record<string, string | undefined> = process.env,
+  io: FleetConfigIO = defaultIO,
+): string | null {
+  const value = clampHeightPct(pct);
+  const paths = fleetConfigPaths(env);
+  const target = paths.find((path) => io.exists(path)) ?? paths[0];
+  if (!target) return null;
+  let raw: Record<string, unknown> = {};
+  try {
+    if (io.exists(target)) {
+      const parsed: unknown = JSON.parse(io.readFile(target));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        raw = { ...(parsed as Record<string, unknown>) };
+      }
+    }
+  } catch {
+    // A corrupt config must not block the resize: rewrite it from scratch.
+    raw = {};
+  }
+  if (asHeightPct(raw[FLEET_HEIGHT_PCT_KEY], -1) === value) return null;
+  raw[FLEET_HEIGHT_PCT_KEY] = value;
+  // The writer seams are optional on the IO interface (a read-only test double
+  // stays valid); resolve them to the real filesystem when absent.
+  const mkdir = io.mkdir ?? defaultIO.mkdir!;
+  const writeFile = io.writeFile ?? defaultIO.writeFile!;
+  const rename = io.rename ?? defaultIO.rename!;
+  try {
+    mkdir(dirname(target));
+    const tmp = `${target}.tmp`;
+    writeFile(tmp, `${JSON.stringify(raw, null, 2)}\n`);
+    rename(tmp, target);
+    return target;
+  } catch {
+    return null;
+  }
 }

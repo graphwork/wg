@@ -25,6 +25,7 @@ import { installCompletionWatcher } from "./completion-watcher.js";
 import { installBashToolTimeout, readBashTimeoutConfig } from "./bash-timeout.js";
 import { installSessionActivation } from "./activation.js";
 import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
+import { isWorkerSession, readEmbedDigestAt } from "./plugin-stamp.js";
 /**
  * Compat tripwire (mirrors WG_AGENCY_COMPAT_VERSION): a version-skewed plugin
  * silently sends the wrong flags to whatever `wg` is on PATH, so we refuse to
@@ -70,12 +71,11 @@ import { WG_PI_PLUGIN_COMPAT_VERSION as EMBEDDED_COMPAT } from "./version.js";
  *
  * The daemon exports `WG_AGENT_ID` for every spawned task agent, and an
  * attempt-scoped sandbox holds `WG_WORKER_CAPABILITY`. Either signal means the
- * session is administered by WG, so the console self-heal must not run.
+ * session is administered by WG, so the console self-heal must not run. The
+ * implementation lives in `plugin-stamp.ts` (shared with the `/wg status` stack
+ * probe, which must not attempt admin verbs either) and is re-exported here.
  */
-export function isWorkerSession(env = process.env) {
-    const nonEmpty = (value) => typeof value === "string" && value.trim().length > 0;
-    return nonEmpty(env.WG_AGENT_ID) || nonEmpty(env.WG_WORKER_CAPABILITY);
-}
+export { isWorkerSession } from "./plugin-stamp.js";
 function assertCompatVersionSync() {
     const expected = process.env.WG_PI_PLUGIN_COMPAT_VERSION?.trim();
     if (expected && expected !== EMBEDDED_COMPAT) {
@@ -90,17 +90,10 @@ function assertCompatVersionSync() {
  * Only a binary-materialized cache dir carries the `.wg-embed-digest` companion
  * stamp (written beside the version dir by `ensure-pi-plugin`). A dev tree or an
  * npm `node_modules` install has no stamp — return `undefined` so we never
- * nag about a build `wg` does not own.
+ * nag about a build `wg` does not own. Shared with the `/wg status` stack probe
+ * (`plugin-stamp.ts`) so the two can never disagree about what "our build" is.
  */
-export function readEmbedDigestAt(versionDir) {
-    try {
-        const text = readFileSync(path.join(versionDir, ".wg-embed-digest"), "utf8").trim();
-        return text || undefined;
-    }
-    catch {
-        return undefined;
-    }
-}
+export { readEmbedDigestAt } from "./plugin-stamp.js";
 /** The version dir this copy of the plugin was loaded from (parent of `pi-worksgood/`). */
 function ownVersionDir() {
     return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -227,11 +220,13 @@ export { installGraphWidget, parseReady, renderWidget } from "./graph-widget.js"
 export { installVizPanel, openVizPanel, VizPanelComponent, VIZ_PANEL_POLL_MS } from "./viz-panel.js";
 export { installFleetView, FLEET_WIDGET_KEY, FLEET_POLL_MS, } from "./fleet-view.js";
 export { FleetStripComponent, STRIP_CLICK_HINT, STRIP_DORMANT_CLICK_HINT, STRIP_DORMANT_GLYPH, STRIP_DORMANT_HINT, STRIP_FOLDED_GLYPH, STRIP_FOLD_HINT, STRIP_LINE_MAX_WIDTH, STRIP_ROW_HINT, STRIP_UNFOLDED_GLYPH, STRIP_UNFOLD_HINT, dormantStripLine, stripSummaryLine, } from "./fleet-strip.js";
-export { FleetPanelComponent, openFleetPanel, makeFleetFetcher, makeFleetDetailFetcher, FLEET_PANEL_POLL_MS, DETAIL_ENTER_GUARD_MS, } from "./fleet-panel.js";
+export { FleetPanelComponent, openFleetPanel, makeFleetFetcher, makeFleetDetailFetcher, FLEET_PANEL_POLL_MS, FLEET_NOTICE_MS, FLEET_RESIZE_STEP_PCT, DETAIL_ENTER_GUARD_MS, resizeDeltaForInput, } from "./fleet-panel.js";
+export { compareBuildStamps, ownBuildDigest, ownVersionDir, shortDigest, } from "./plugin-stamp.js";
+export { formatStackStatus, parsePluginCacheStatus, probeStackStatus, } from "./stack-status.js";
 export { DEFAULT_TRANSCRIPT_LINES, FLEET_PANEL_DEFAULT_HEIGHT, FLEET_PANEL_MIN_HEIGHT, MAX_TRANSCRIPT_BODY_BYTES, MAX_TRANSCRIPT_LINES, MAX_TRANSCRIPT_LINE_CHARS, TRANSCRIPT_TAIL_BYTES, agentActivityLabel, agentForTask, agentStreamCandidates, agentUsageDetailLabel, agentUsageLabel, boundTranscriptBody, buildFleetTree, clampScroll, fleetCountsHeader, getFleetRowToVizTask, getFleetToVizSnapshot, maxScroll, pageScroll, readAgentStreamTail, readTextTail, renderWgTree, safeTailText, scrollToKeepVisible, transcriptLineLimit, wgTreeLineDepth, } from "./fleet-panel-model.js";
-export { DEFAULT_FLEET_VIEW_CONFIG, FLEET_CONFIG_DIRS, fleetConfigPaths, parseFleetViewConfig, readFleetViewConfig, resolveAgentDir, } from "./fleet-config.js";
+export { DEFAULT_FLEET_VIEW_CONFIG, FLEET_CONFIG_DIRS, FLEET_HEIGHT_PCT_ENV, FLEET_HEIGHT_PCT_KEY, MAX_FLEET_HEIGHT_PCT, MIN_FLEET_HEIGHT_PCT, clampHeightFraction, clampHeightPct, fleetConfigPaths, parseFleetViewConfig, readFleetViewConfig, resolveAgentDir, writeFleetViewHeightPct, } from "./fleet-config.js";
 export { agentColor, agentElapsed, agentGlyph, agentLine, agentModel, agentUsageCompact, agentUsageFull, compactCount, fleetCounts, fleetCountsText, fleetHeaderLine, fleetSummaryLine, isAgentAlive, renderFleetLines, taskColor, taskGlyph, } from "./fleet-readmodel.js";
-export { FALLBACK_STATUS_PALETTE, colorModeOf, fgAnsi, normalizeStatusPalette, paintRgb, paintStatusText, paletteNotice, resolveStatusPalette, rgbToAnsi256, statusRgb, } from "./status-palette.js";
+export { FALLBACK_PALETTE_NOTICE, FALLBACK_STATUS_PALETTE, WG_PALETTE_STATUS, colorModeOf, fgAnsi, normalizeStatusPalette, paintRgb, paintStatusText, paletteNotice, paletteStatus, resolveStatusPalette, rgbToAnsi256, statusRgb, } from "./status-palette.js";
 export { FleetPoller, fetchAgents, fetchFleetOverSocket, fleetSnapshotWithFallback, normalizeAgent, } from "./fleet-snapshot.js";
 export { fetchVizSnapshot, resolveSocketPath, socketCandidates, vizSnapshotWithFallback, VizPoller, } from "./viz-snapshot.js";
 export { buildTree, detailLines, lineTaskMap, orderTasks, statusGlyph, taskCounts, treeText, widgetLine, ageOf, tokenDisplay, } from "./viz-readmodel.js";
