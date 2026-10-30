@@ -58,8 +58,8 @@ import { MAX_FLEET_HEIGHT_PCT, clampHeightFraction } from "./fleet-config.js";
 import { DEFAULT_TRANSCRIPT_LINES, FLEET_PANEL_DEFAULT_HEIGHT, FLEET_PANEL_MIN_HEIGHT, agentActivityLabel, agentForTask, agentUsageDetailLabel, agentUsageLabel, boundTranscriptBody, buildFleetTree, clampScroll, fleetCountsHeader, maxScroll, pageScroll, readAgentStreamTail, renderWgTree, scrollToKeepVisible, } from "./fleet-panel-model.js";
 import { FLEET_BINDINGS, helpLines, matchFleetBinding, validateFleetBindings, } from "./fleet-bindings.js";
 import { DEFAULT_FLEET_LAYOUT, applyPreset, cycleLayout, dividerPercentAfterDrag, dockPercent, growDock, growVizPane, isDocked, layoutFromConfig, layoutLabel, normalizeLayout, pendingForLayoutKey, shrinkDock, shrinkVizPane, toggleDock, } from "./fleet-layout.js";
-import { FLEET_ACTIONS, actionNotifyLines, confirmPrompt, inputPrompt, } from "./fleet-actions.js";
-import { FleetSearchState, filterRenderedRows, nextSortMode, nextVisibilityMode, sortLabel, sortTaskRows, visibilityLabel, } from "./fleet-query.js";
+import { FLEET_ACTIONS, actionNotifyLines, availableActions, confirmPrompt, inputPrompt, } from "./fleet-actions.js";
+import { FleetSearchState, filterRenderedRows, taskVisible, nextSortMode, nextVisibilityMode, sortLabel, sortTaskRows, visibilityLabel, } from "./fleet-query.js";
 import { helpMaxScroll, helpWindow } from "./fleet-help.js";
 import { applySectionCollapse, collapsibleSectionAt, splitDetailSections, } from "./fleet-inspector.js";
 /** Default bounded poll cadence for the open panel. */
@@ -381,16 +381,9 @@ export class FleetPanelComponent {
         });
         return this.flatSortedRows(rows, statusById);
     }
+    /** Does a task row survive the plumbing visibility mode (`.`/`<`)? */
     rowVisibleForPlumbing(id, statusById) {
-        const row = { id, status: statusById.get(id) ?? "" };
-        if (row.id.startsWith(".")) {
-            if (this.visibilityValue === "all")
-                return true;
-            if (this.visibilityValue === "running")
-                return row.status === "in-progress" || row.status === "running";
-            return false;
-        }
-        return true;
+        return taskVisible({ id, title: "", status: statusById.get(id) ?? "" }, this.visibilityValue);
     }
     /**
      * Apply the sort mode. `Chrono ↓` keeps WG's own rendered order (the tree is
@@ -1082,7 +1075,10 @@ export class FleetPanelComponent {
      * A dormant session never reaches here: those bindings are hidden.
      */
     beginAction(kind) {
-        if (this.inactive)
+        // A dormant session HIDES the actions: the binding is not dispatchable and
+        // this guard makes the contract hold even if a caller invokes the method
+        // directly (never "attempted and failed").
+        if (!availableActions({ inactive: this.inactive }).includes(kind))
             return;
         const spec = FLEET_ACTIONS[kind];
         const taskId = this.selectedId;

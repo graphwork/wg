@@ -111,6 +111,7 @@ import {
 import {
   FLEET_ACTIONS,
   actionNotifyLines,
+  availableActions,
   confirmPrompt,
   inputPrompt,
   type FleetActionKind,
@@ -118,6 +119,7 @@ import {
 import {
   FleetSearchState,
   filterRenderedRows,
+  taskVisible,
   nextSortMode,
   nextVisibilityMode,
   sortLabel,
@@ -529,15 +531,12 @@ export class FleetPanelComponent {
     return this.flatSortedRows(rows, statusById);
   }
 
+  /** Does a task row survive the plumbing visibility mode (`.`/`<`)? */
   private rowVisibleForPlumbing(id: string, statusById: Map<string, string>): boolean {
-    const row = { id, status: statusById.get(id) ?? "" };
-    if (row.id.startsWith(".")) {
-      if (this.visibilityValue === "all") return true;
-      if (this.visibilityValue === "running")
-        return row.status === "in-progress" || row.status === "running";
-      return false;
-    }
-    return true;
+    return taskVisible(
+      { id, title: "", status: statusById.get(id) ?? "" },
+      this.visibilityValue,
+    );
   }
 
   /**
@@ -1260,7 +1259,10 @@ export class FleetPanelComponent {
    * A dormant session never reaches here: those bindings are hidden.
    */
   beginAction(kind: FleetActionKind): void {
-    if (this.inactive) return;
+    // A dormant session HIDES the actions: the binding is not dispatchable and
+    // this guard makes the contract hold even if a caller invokes the method
+    // directly (never "attempted and failed").
+    if (!availableActions({ inactive: this.inactive }).includes(kind)) return;
     const spec = FLEET_ACTIONS[kind];
     const taskId = this.selectedId;
     if (spec.needsTask && !taskId) {

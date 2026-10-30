@@ -846,7 +846,6 @@ describe("cross-cutting — mouse object shape, keyboard paths, keymap", () => {
       }
     }
     // The mouse table names a keyboard binding for every gesture.
-    for (const row of FLEET_BINDINGS as any[]) void row;
     const labels = helpLines().join("\n");
     expect(labels).toContain("Mouse");
     expect(labels).toContain("click again");
